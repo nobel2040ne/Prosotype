@@ -105,7 +105,7 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
 ## State / open threads (2026-07)
 
 - **THE DESIGN SYSTEM PDF IS IN THE REPO AND IT OUTRANKS EVERYTHING ELSE.**
-  `docs/Caption-With-Intention_Design-System_V1.0.pdf` (54 pp.). Read it with
+  `docs/cwi-design-system-v1.0.pdf` (54 pp.). Read it with
   the Read tool's `pages` argument. Two rounds of work were spent inferring
   motion from the AE template and three screen recordings when the document
   states it outright. **Section 2.2.3, verbatim:**
@@ -521,16 +521,16 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
   word is enlarged for much of its own window, so a full-window median absorbs
   the swell into the baseline and under-reports the ratio — "sizes," measured
   1.355 that way against a true 1.433.
-- **The reference recordings are `docs/1.mov` (character id), `2.mov`
-  (synchronization), `3.mov` (intonation)** — trimmed to one cycle each, which
+- **The reference recordings are `docs/reference/character_identification.mov` (character id), `synchronization.mov`
+  (synchronization), `intonation.mov` (intonation)** — trimmed to one cycle each, which
   removed the loop repeats that used to force `-` skip lines, and captured the
   two section titles the untrimmed captures had missed. True fps is
   frames/duration: **57.27 / 57.13 / 57.36** (NOT the container's 120). Crops,
   full width so a scrolling line is tracked before it exits::
 
-      1.mov  crop=3456:200:0:1270      --scroll --cut 0.75 --rotate 2
-      2.mov  crop=3456:210:0:1075                          --rotate 3
-      3.mov  crop=3456:200:0:1680      --scroll --cut 0.55 --rotate 3
+  character_identification.mov  crop=3456:200:0:1270      --scroll --cut 0.75 --rotate 2
+           synchronization.mov  crop=3456:210:0:1075                          --rotate 3
+                intonation.mov  crop=3456:200:0:1680      --scroll --cut 0.55 --rotate 3
 
   `--rotate` exists because the transcript must stay in RECORDING order for the
   1:1 group match, but the recordings start mid-cycle, so the site's own order

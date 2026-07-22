@@ -2,25 +2,38 @@
 
 The transcript is given (the recordings loop, and they mix captions with title
 cards, so auto-transcription would be guesswork); everything else -- per-word
-timings and per-word emphasis -- is measured from the pixels.
+timings, per-word emphasis and weight, and each word's own motion curves -- is
+measured from the pixels.
 
     .venv/bin/python scripts/derive_reference_spec.py \\
-        --frames "/tmp/c38/n_*.png" --fps 57.11 \\
+        --frames "/tmp/sync/n_*.png" --fps 57.1256 --rotate 3 \\
         --transcript docs/reference/synchronization.txt \\
-        --out assets/reference_specs/synchronization.json [--scroll]
+        --out assets/reference_specs/synchronization.json
 
-The transcript file is one phrase per line, ``SPEAKER<TAB>text``.
+See the README for each recording's true fps, crop and flags. The transcript is
+one caption per line, ``SPEAKER<TAB>text``, in RECORDING order.
 
 Method
 ------
-Each glyph is tracked and its colour turn timed (``autocwi.refmeasure``). The
-renderer's law ``tTurn = start + ((c+0.5)/n)*(end-start)`` is LINEAR in the
-unknowns, so per-word start/end come from one least-squares solve over every
-confident character observation, with priors that keep one- and two-letter
-words solvable. Emphasis is measured as the word's own advance against its
-resting advance -- invariant to the per-character size pop, which scales each
-glyph about its own centre -- and inverted through ``autocwi.ccprosody`` so our
-renderer reproduces it.
+Words first: each word's x extent is read straight off the pixels
+(`word_boxes`), which constrains a DP that assigns tracked glyphs to character
+indices. The renderer's law ``tTurn = start + ((c+0.5)/n)*(end-start)`` is
+LINEAR in the unknowns, so per-word start/end come from one least-squares solve
+over every confident character observation, with priors that keep one- and
+two-letter words solvable.
+
+Then emphasis, from TWO independent measurements, because each fails where the
+other works. Per-glyph tracking is clean but breaks on a word that swells past
+2x or shrinks to half -- its glyphs merge, or grow, and association fails --
+which is precisely the set of words worth measuring. Per-frame segmentation
+survives that but smears at word boundaries. The tracked curve is used by
+default and the framed one where tracking produced nothing or under-read the
+DEVIATION from rest; `Word.emphasis_source` records which won.
+
+Prosody is inverted through ``autocwi.ccprosody`` so our renderer reproduces
+the measured value, and each word's raw curves are baked into ``Word.motion``
+so the derivation can be replayed and checked (`closed_caption.motion_source:
+measured`). The design system's own model is what ships.
 """
 from __future__ import annotations
 

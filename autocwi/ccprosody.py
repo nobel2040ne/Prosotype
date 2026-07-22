@@ -53,8 +53,12 @@ def toward_baseline(value, baseline, response, lo, hi):
 
 
 # The axis keys `cc` may override; anything else comes from `expression`.
+# Every `expression` key the page lets `closed_caption` override. ANCHORS
+# BELONG HERE TOO: 2.3.8 pins a 160-200 Hz voice to Regular 400, and with
+# `anchor_wght` missing from this list a `closed_caption.anchor_wght` was read
+# by nobody -- the setting looked applied and did nothing.
 CC_AXIS_OVERRIDES = ("size_response", "weight_response", "width_response",
-                     "wght_range", "wdth_range")
+                     "wght_range", "wdth_range", "anchor_wght", "anchor_wdth")
 
 
 def merged_expression(cfg):
@@ -129,7 +133,14 @@ def forward(loudness, pitch_hz, median_loudness, median_pitch, cfg,
     emph_scale = 1.0 if dev <= band else 1 + math.copysign(dev - band, emph_scale - 1)
 
     return {"restPct": anchor_pct, "emphScale": emph_scale,
-            "restWght": w_anchor, "emphWght": wght, "wdth": wdth}
+            # ON THE /4 GRID, exactly as the page rounds it. The page quantizes
+            # the ANIMATED weight to multiples of 4, so it puts the resting
+            # weight on the same grid or the two spell one rest state two ways
+            # and its style cache misses on every visibility change. Mirroring
+            # that here is not cosmetic: this map gets INVERTED, so an unrounded
+            # rest silently shifts every derived weight.
+            "restWght": round(w_anchor / 4) * 4, "emphWght": wght,
+            "wdth": wdth}
 
 
 # ---------------------------------------------------------------------------

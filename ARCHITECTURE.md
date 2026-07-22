@@ -1,15 +1,22 @@
 # Architecture
 
-auto-CWI has two modes sharing one analysis philosophy and one word-data shape.
+auto-CWI has three modes sharing one analysis philosophy and one word-data
+shape: **live** captions from a microphone, the **offline** pipeline that ends
+at `spec.json`, and **`cc`**, the closed-caption renderer that plays a finished
+spec and is the motion reference the other two are judged against.
 
 ```
 live: mic/file ─► lossless batcher ─► input gain ─┬─► 160ms draft ─► hypothesis ─┐
       (recogniser copy only; prosody reads raw)   ├─► 1120ms ─► cue/commit ───────┼─► live.html
                                                   └─► Parakeet verifier ─► final ─┘  (display.mode:
-                                                                                  │   sentence|stable|
-offline:  media ─► transcribe ─► diarize ─► prosody ─► fuse ─► spec.json          │   readahead)
+                                                                                  │   fast|stable|
+offline:  media ─► transcribe ─► diarize ─► prosody ─► fuse ─► spec.json          │   sentence|readahead)
           (audio) (asr)         (diarize)  (prosody)  (fuse)      │
-                 words.json  segments.json prosody.json           └─► future haptic module
+                 words.json  segments.json prosody.json           ├─► future haptic module
+                                                                  └─► cc ─► captions.html
+
+reference:  docs/reference/*.mov ─► derive_reference_spec ─► assets/reference_specs/*.json
+            (+ transcript)          (measures the pixels)      └─► build_demo ─► demo.json
 ```
 
 ## Modules
@@ -17,7 +24,10 @@ offline:  media ─► transcribe ─► diarize ─► prosody ─► fuse ─�
 | Module | Responsibility |
 |---|---|
 | `autocwi/live.py` | Live engine: lossless mic/file source-clock batcher → adaptive `InputGain` (recognizer copy only) → dual sherpa-onnx Nemotron 0.6B (160 ms draft + 1120 ms accuracy-first stream) → Parakeet Unified modified-beam endpoint verification and timing alignment; emits a continuous `level` event; `SpeakerTracker` live diarization (titanet-small embeddings, segment-then-cluster with centroid merging); bounded/replayable stdlib HTTP + SSE server. `--sample`/`--loop` stream the bundled clip. The old adaptive-segmented Whisper path is an explicit fallback. |
-| `autocwi/livepage.py` | Generates `live.html`: CWI caption stage (three `display.mode`s: sentence/stable/readahead) plus Attribution, Synchronization, Intonation, and Input views; embeds Roboto Flex; per-word motion is a baseline-anchored vertical lift (position + colour only, matching the AE template — no scale) isolated from line layout; syllable colour-wipe for drawn-out words (2.2.4); type axes smoothed to the speaker's running baseline (`expression`) |
+| `autocwi/livepage.py` | Generates `live.html`: CWI caption stage (four `display.mode`s: fast/stable/sentence/readahead) plus Attribution, Synchronization, Intonation, and Input views; embeds Roboto Flex; per-word motion is a baseline-anchored vertical lift (position + colour only, matching the AE template — no scale) isolated from line layout; syllable colour-wipe for drawn-out words (2.2.4); type axes smoothed to the speaker's running baseline (`expression`) |
+| `autocwi/ccpage.py` | Generates `captions.html` (and, with `--tune`, `tuner.html`): the closed-caption renderer. Text is known in advance, so read-ahead, the colour sweep through a word, and per-word motion are all exact. Motion follows the design system directly — §2.2.3's +15% size pop and 25% elevation, per word at its colour turn, one constant cue — composed with the per-word intonation envelope from measured prosody. Playback is a pure function of `t`, so scrubbing back reproduces a frame exactly |
+| `autocwi/ccprosody.py` | Python mirror of the page's own `typeOf()` prosody map, plus its inversion (measured emphasis → the `loudness`/`pitch_hz` that reproduce it). Pinned to the JavaScript by a golden grid so the two cannot drift |
+| `autocwi/refmeasure.py` | Pixel measurement shared by every caller: glyph segmentation, colour-turn timing from saturation, horizontal scroll recovery. One implementation so the recording and our own render are always measured with byte-identical code |
 | `autocwi/asr.py` | Offline ASR (faster-whisper), word timestamps + confidence |
 | `autocwi/diarize.py` | pyannote diarization (gated weights → `HF_TOKEN`); relabels to S1, S2… by first appearance |
 | `autocwi/prosody.py` | Per-word RMS dB (librosa) + median F0/voiced fraction (parselmouth cc, 75–500 Hz), restricted to ASR word spans |
@@ -26,7 +36,9 @@ offline:  media ─► transcribe ─► diarize ─► prosody ─► fuse ─�
 | `autocwi/audio.py` | ffmpeg/ffprobe: probe duration/fps, extract 16 kHz mono wav |
 | `autocwi/stubs.py` | Deterministic placeholder stages (`--stub`) — pipeline runs with zero models |
 | `autocwi/device.py` | cuda → mps → cpu selection (printed at startup), seeding |
-| `autocwi/cli.py` | Subcommands: `live`, `run`, `transcribe`, `diarize`, `prosody`, `fuse` |
+| `autocwi/cli.py` | Subcommands: `live`, `run`, `cc`, `tune`, `transcribe`, `diarize`, `prosody`, `fuse` |
+| `scripts/derive_reference_spec.py` | Recording + transcript → a validated CaptionSpec: word boxes off the pixels, a least-squares fit for per-word timings, and two independent emphasis measurements (glyph tracks, and track-free frame segmentation) because each fails where the other works |
+| `scripts/build_demo.py` | Concatenates the three derived specs onto one timeline (`demo.json`) — the united demo, nothing hand-authored |
 
 ## The contract
 

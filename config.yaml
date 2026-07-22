@@ -416,7 +416,7 @@ closed_caption:
   # .report() prints them. Off by default -- it is an instrument, not a
   # feature, and flicker is measured with it rather than eyeballed.
   debug_churn: false
-  # Horizontal tracking measured in docs/1.mov and docs/3.mov: the caption
+  # Horizontal tracking measured in docs/reference/character_identification.mov and docs/reference/intonation.mov: the caption
   # advances past a fixed playhead instead of remaining centred. Disabled for
   # ordinary CaptionSpecs; `cc --ref ...` enables it, while each derived word's
   # `tracking` flag keeps the Synchronization recording static inside demo.

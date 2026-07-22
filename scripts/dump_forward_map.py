@@ -88,9 +88,14 @@ def main() -> None:
     if payload.startswith("ERR"):
         raise SystemExit("probe failed in page: " + payload)
     data = json.loads(payload.replace("&quot;", '"').replace("&amp;", "&"))
+    # Store the MERGED expression, not the raw block. `closed_caption` may
+    # override any axis key, and storing only the raw `expression` let a
+    # changed override slip past the staleness check entirely -- the fixture
+    # then described a map nobody used while its guard still passed.
+    from autocwi.ccprosody import merged_expression      # noqa: E402
     data["config"] = {
         "mapping": cfg["mapping"],
-        "expression": cfg["expression"],
+        "expression": merged_expression(cfg),
         "closed_caption": {k: cfg["closed_caption"][k]
                            for k in ("size_pct", "quiet_deformation",
                                      "emphasis_deadband")},

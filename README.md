@@ -1,4 +1,4 @@
-# auto-CWI
+# Prosotype
 
 A local, fully offline pipeline that turns a short video/audio clip into an
 **expressive caption track** for Deaf and hard-of-hearing viewers, automating
@@ -195,10 +195,11 @@ Three things to run, in increasing fidelity.
 ```
 
 Loops a built-in line with every motion constant on a slider, plus a live plot
-of the curve the current settings produce (one letter's vertical motion against
-time, with its colour turn marked). Drag `spring_damping` and watch the
-overshoot appear. **Show config.yaml** prints your values back in a form you can
-paste into `config.yaml`. Writes `out/tuner.html`, never `out/captions.html`.
+of the curve the current settings produce (one word's vertical motion against
+time, with its colour turn marked). `sync_pop` and `sync_elevation_em` are the
+two the design system fixes (2.2.3); the `sync_*_s` sliders shape the same cue
+in time. **Show config.yaml** prints your values back in a form you can paste
+into `config.yaml`. Writes `out/tuner.html`, never `out/captions.html`.
 
 The built-in line deliberately stresses everything at once: a long word for the
 character sweep, two-letter words to check the ripple's rate against, one loud
@@ -208,8 +209,8 @@ hold still, and a speaker change.
 ### 2. The reference sentences, replayed
 
 `assets/reference_specs/` holds CaptionSpecs **derived from the recordings in
-`docs/`** — the real sentences, with per-word timings and per-word emphasis
-measured from the pixels rather than invented.
+`docs/reference/`** — the real sentences, with per-word timings and per-word
+emphasis measured from the pixels rather than invented.
 
 **The united demo** plays all three sections back to back, in the order the
 site presents them:
@@ -219,17 +220,22 @@ site presents them:
 ```
 
 ```
-Character Identification   Now, colors will distinguish characters,          (yellow)
-                           so Deaf people instantly know who's speaking.     (green)
-Synchronization            Synchronization
-                           Caption with Intention uses
-                           dynamic text animation
-                           so captions are synchronized
-                           precisely as each word is spoken.
-Intonation                 This system brings in varying
-                           types sizes, weights and animation,
-                           so you can feel when my voice gets louder or softer.
+Character Identification                                       (yellow)
+Now, colors will distinguish characters,                       (yellow)
+so Deaf people instantly know who's speaking.                  (green)
+Synchronization
+Caption with Intention uses
+dynamic text animation
+so captions are synchronized
+precisely as each word is spoken.
+Intonation
+This system brings in varying
+types sizes, weights and animation,
+so you can feel when my voice gets louder or softer.
 ```
+
+Twelve caption lines: each section title is itself a caption the site
+animates, so it is derived and played like any other.
 
 `demo.json` is built by `scripts/build_demo.py`, which concatenates the three
 derived specs onto one timeline — nothing in it is hand-authored. Rebuild it
@@ -259,7 +265,7 @@ while a closed caption plays through and is gone.
 
 ### 2b. Where the motion comes from
 
-`docs/Caption-With-Intention_Design-System_V1.0.pdf` is the source of truth.
+`docs/cwi-design-system-v1.0.pdf` is the source of truth.
 Section **2.2.3** states the whole synchronization motion: each word pops
 **+15% in type size** and rises **25%** as it changes colour, then returns.
 That cue is per WORD (2.2.4: "words will be spoken and animated fully, one by
@@ -267,7 +273,7 @@ one") and its amplitude is a CONSTANT — per-word amplitude is intonation
 (2.3.3-2.3.6), which is a different channel and comes from the measured
 prosody. `closed_caption.sync_pop` / `sync_elevation_em` hold those numbers.
 
-The three recordings in `docs/` supply what the PDF cannot: the cue's timing,
+The three recordings in `docs/reference/` supply what the PDF cannot: timing,
 and which word in each sentence is actually loud, quiet or bold. Each derived
 word also carries its own measured curves (`Word.motion`); set
 `closed_caption.motion_source: measured` to replay them verbatim instead of
@@ -275,24 +281,32 @@ the design system's model, which is useful for checking the derivation.
 
 ### 3. Re-deriving a spec from a recording
 
-```bash
-# 1. cut frames at the recording's TRUE rate (frames/duration, ~57 fps --
-#    not the 120 the container claims). Full width, so a scrolling line is
-#    still tracked as it leaves the frame.
-ffmpeg -i docs/2.mov -vf "crop=3456:210:0:1075" -vsync 0 /tmp/t2/n_%04d.png
-#    true rates: 1.mov 57.2735 | 2.mov 57.1256 | 3.mov 57.3638
-#    flags:      1 --rotate 2  | 2 --rotate 3  | 3 --scroll --cut 0.55 --rotate 3
+Each recording sits beside the transcript read off it, in `docs/reference/`.
 
-# 2. READ the transcript off the frames -- do not guess it; the recordings
-#    loop and interleave animated headings with the captions
+| stem | true fps | crop | flags |
+|---|---|---|---|
+| `character_identification` | 57.2735 | `3456:200:0:1270` | `--rotate 2` |
+| `synchronization` | 57.1256 | `3456:210:0:1075` | `--rotate 3` |
+| `intonation` | 57.3638 | `3456:200:0:1680` | `--scroll --cut 0.55 --rotate 3` |
+
+True fps is **frames / duration**, not the 120 the container claims. The crop
+is full width so a scrolling line is still tracked as it leaves the frame.
+
+```bash
+S=/tmp/sync && mkdir -p $S
+ffmpeg -i docs/reference/synchronization.mov \
+    -vf "crop=3456:210:0:1075" -vsync 0 $S/n_%04d.png
+
+# READ the transcript off the frames -- never guess it. The recordings loop and
+# interleave animated section headings with the captions, so every instance has
+# to be accounted for or the 1:1 match slips.
 .venv/bin/python scripts/derive_reference_spec.py \
-    --frames "/tmp/t2/n_*.png" --fps 57.13 \
+    --frames "$S/n_*.png" --fps 57.1256 \
     --transcript docs/reference/synchronization.txt \
     --out /tmp/spec.json --list-groups /tmp/groups.png
 
-# 3. derive (add --scroll for the two recordings whose line travels)
 .venv/bin/python scripts/derive_reference_spec.py \
-    --frames "/tmp/t2/n_*.png" --fps 57.13 --rotate 3 \
+    --frames "$S/n_*.png" --fps 57.1256 --rotate 3 \
     --transcript docs/reference/synchronization.txt \
     --out assets/reference_specs/synchronization.json
 .venv/bin/python scripts/build_demo.py        # re-stitch the united demo
@@ -300,40 +314,35 @@ ffmpeg -i docs/2.mov -vf "crop=3456:210:0:1075" -vsync 0 /tmp/t2/n_%04d.png
 
 `--rotate` exists because the transcript must stay in **recording** order for
 the 1:1 group match, while the recordings start mid-cycle — the site's own
-order is a rotation of it. Character Identification uses `--rotate 2`; both
-Synchronization and Intonation use `--rotate 3`. Add `--scroll` for `1.mov`
-and `3.mov`, whose caption lines travel horizontally; their measured change
-thresholds are `--cut 0.75` and `--cut 0.55`, respectively.
+order is a rotation of it. `--scroll` recovers the horizontal scroll before
+tracking; only `intonation` needs it, because its line moves far enough that
+nearest-centre tracking fragments without it.
 
-It prints a per-phrase fit residual; under ~35 ms is one to two frames at the
-recording's rate. `docs/reference/*.txt` are the transcripts, one caption per
-line as `SPEAKER<TAB>text`, with `-` marking instances to measure but not emit
-(section headings, loop repeats).
+Two things to read in the output:
 
-To re-fit the motion constants themselves against a recording:
+- a per-phrase **fit residual** — under ~35 ms is one to two frames at the
+  recording's rate;
+- a per-word **emphasis** line, with `F` marking words whose size came from the
+  frame measurement rather than from glyph tracks (recorded as
+  `Word.emphasis_source`). Tracking breaks on exactly the words that matter —
+  one swelling past 2x or shrinking to half loses its glyph tracks — so `F` on
+  `louder`, `sizes,` and `softer.` is expected and correct.
 
-```bash
-.venv/bin/python scripts/fit_motion_to_reference.py "/tmp/t2/n_*.png" 57.13 sync
-```
+`docs/reference/*.txt` are the transcripts: one caption per line as
+`SPEAKER<TAB>text`, with `-` marking instances to measure but not emit
+(section headings that repeat, loop repeats).
 
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest
-.venv/bin/python scripts/benchmark_streaming.py
-.venv/bin/python scripts/benchmark_streaming.py --stress
+.venv/bin/python -m pytest                                  # 73, ~3 s, offline
+.venv/bin/python scripts/benchmark_streaming.py [--stress]  # loads models
 ```
 
-Fully offline: schema validation, speaker-by-overlap assignment, per-speaker
-normalization, streaming token grouping/stability, generated-page checks,
-prosody extraction on synthetic tones with known ground truth, and a golden
-grid captured from the page's own JavaScript that pins the Python mirror of the
-prosody map (`autocwi/ccprosody.py`) to it exactly — so editing `mapping` or
-`expression` fails loudly with an instruction to re-run
-`scripts/dump_forward_map.py` rather than letting the two drift. The benchmark
-reports normalized word error rate and full three-stage real-time factor over
-the three reference clips bundled with the model; `--stress` runs the
-deterministic four-condition matrix described above.
+The suite is fully offline by design — synthetic audio, no model loads, no
+video decoding. See **[docs/TESTS.md](docs/TESTS.md)** for the layout, the
+conventions, and how to regenerate the golden prosody grid that pins
+`autocwi/ccprosody.py` to the page's own JavaScript.
 
 ## Honest limitations
 
