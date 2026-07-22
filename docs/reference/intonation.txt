@@ -1,0 +1,4 @@
+S1	This system brings in varying
+S1	types sizes, weights and animation,
+S1	so you can feel when my voice gets louder or softer.
+S1	Intonation

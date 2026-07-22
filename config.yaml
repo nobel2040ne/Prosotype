@@ -1,0 +1,571 @@
+# auto-CWI configuration. All mapping thresholds/ranges live here, not in code.
+# Values follow the official "Caption with Intention" Design System V1.0 (2025.1):
+# https://download.captionwithintention.org/Caption-With-Intention_Design-System_V1.0.pdf
+
+# Speaker -> color, assigned deterministically by order of first appearance.
+# CI Main character colors (design system 2.1.1), in wheel order #01..#06.
+palette:
+  - "#E5E517"   # CI Main Yellow
+  - "#17E517"   # CI Main Green
+  - "#17E5E5"   # CI Main Blue
+  - "#E517E5"   # CI Main Pink
+  - "#E51717"   # CI Main Red
+  - "#E58017"   # CI Main Orange
+# CI Supporting colors (2.1.2), used for speakers 7+.
+palette_support:
+  - "#E85C2E"
+  - "#EBC247"
+  - "#C2EB47"
+  - "#82ED5E"
+  - "#47EB70"
+  - "#5EEDC9"
+  - "#47C2EB"
+  - "#5E82ED"
+  - "#8C6BED"
+  - "#CC6BED"
+  - "#EB47C2"
+  - "#ED5E82"
+
+# The Captions Box (2.4.1): black at 90% opacity, hugging each caption line,
+# overlaid on the video inside the work area (lower 20% of the frame, 2.4.3).
+caption_box:
+  color: "#000000"
+  opacity: 0.9
+  bottom_margin_pct: 7.5      # bottom safety margin, % of video height
+  max_lines: 2
+
+# The Read-Ahead Type (2.2.1): each line appears whole in white at 90% opacity;
+# words flip to the speaker color at their exact spoken onset (2.2.2).
+read_ahead:
+  color: "#FFFFFF"
+  opacity: 0.9
+
+# What reaches the stage, and for how long.
+#
+# CWI read-ahead assumes the line is KNOWN before it is spoken: in film the
+# caption is authored in advance, so it never revises, and that stability is
+# what lets a viewer read ahead at their own pace. Live ASR is guessing and
+# correcting instead. Measured on one 48-word utterance, showing the 160 ms
+# draft as read-ahead rewrote the stage 55 times and deleted words 16 times.
+# Text that will not hold still is not read-ahead.
+#
+#   sentence  - turn-taking: nothing shows until a whole utterance is finalized,
+#               then the complete line appears at once, settled, no per-word
+#               motion. Highest latency to first word, but the calmest to read —
+#               each speaker's turn lands as one stable line.
+#   stable    - only words the accurate stream has committed. They appear in
+#               spoken order, one at a time, and never change afterwards.
+#               ~1.1 s behind the voice.
+#   fast      - stable's settled words PLUS the accurate stream's own
+#               not-yet-committed tail as white read-ahead (~1.2 s behind the
+#               voice, revises rarely). The follow-a-video mode.
+#   readahead - also render the 160 ms draft in white. ~0.2 s behind the voice,
+#               but the stage visibly rewrites itself.
+display:
+  mode: fast
+  # Presentation choices below deliberately deviate from CWI 2.4 (centered,
+  # max two boxes) per user preference for a transcript-like live stage:
+  align: left             # left | center
+  # overflow: lines accumulate and are pushed off the top only when the stage
+  # is full (terminal-style). linger: fade after line_linger_s, max_lines boxes.
+  retention: overflow
+  # One circle closes each caption line. On the active line it pulses with the
+  # live voice level (driven by the continuous `level` events, so it moves
+  # before words land — real-time intention); on finished lines it freezes as
+  # a record of that line's delivery. Not part of the CWI spec.
+  intent_circle: true
+  max_words: 8            # words per captions box before a new line starts
+  line_break_gap_s: 2.0   # silence that forces a new line
+  line_linger_s: 9.0      # linger retention only: how long a line stays
+  # sentence mode: gap between successive turns as they are revealed, so a
+  # finalized utterance reads as a flowing exchange rather than a block dump.
+  sentence_stagger_s: 0.7
+  # Once a word turns to its speaker colour it is SETTLED and nothing about it
+  # changes — not size, weight, colour, spacing or position. `corrections`
+  # still writes a late respelling into it (a misheard word is worth fixing);
+  # `strict` freezes the text too.
+  stability: corrections
+  # window.__cwiChurn.report() in the browser console: post-paint mutations
+  # per settled word. Should be ~0 except colour<=1 and genuine corrections.
+  debug_churn: false
+# Guiding The Eye With Motion (2.2.3), as implemented by the official After
+# Effects template (AE PROJECT/AE PROJECT/Academy_CI_Template.aep). The whole
+# animated-property inventory in that template is:
+#     16x ADBE Text Position 3D, 8x ADBE Text Fill Color
+# There is NO scale/size/tracking/rotation/opacity animator anywhere in it.
+# Motion is a vertical lift plus the color turn, nothing else.
+#
+# This matters semantically, not just for fidelity: type SIZE already means
+# LOUDNESS (2.3.3-2.3.6 below). Animating size per word would make every word
+# transiently read as louder than it was and corrupt the intonation channel,
+# so the lift carries the "guide the eye" role and size is left alone.
+#
+# The template drives color and lift from one index-unit Range Selector, one
+# word wide, with Ease High/Low set - so neighbouring words are partially
+# lifted and the effect reads as a wave travelling along the line. A second
+# "Antecipate" animator runs the same sweep shifted 1-4 frames earlier
+# (~33-133 ms at 30 fps, easeOut), so motion LEADS the color turn.
+motion:
+  elevation_em: 0.25          # -amp in the template's Position 3D expression
+  # "Antecipate" lead. The template states it exactly: the animator's own
+  # expression opens with `antecipation = framesToTime(1)` and shifts its
+  # marker window back by that — ONE frame at 30 fps, not the 110 ms guessed
+  # from "1..4 frames".
+  anticipation_ms: 33
+  # Partial lift on the NEXT, not-yet-spoken word (the template's Ease High/Low
+  # travelling wave). 0 = only the word being spoken moves.
+  #
+  # The template animates a finished line that the viewer watches play through.
+  # Live, words accumulate and stay on screen, so displacing a settled word
+  # disturbs text somebody is still reading — the opposite of what read-ahead
+  # (2.2.1) is for. Off by default; raise it to restore the wave.
+  neighbor_bleed: 0.0
+  color_turn_ms: 90           # color eases with the lift, never a hard cut
+  duration_s: 0.56
+  min_duration_s: 0.42
+  max_duration_s: 0.90
+  easing: cubic-bezier(0.22, 0.78, 0.24, 1)
+  # Syllable Variation (2.2.4): for drawn-out delivery ("un-be-lie-va-ble") the
+  # colour turn may advance THROUGH the word instead of flipping it at once.
+  # The word is already fully visible in white first — this is a colour wipe,
+  # never a typewriter reveal, because progressive *appearance* would destroy
+  # the read-ahead that 2.2.1 exists to provide.
+  #
+  # The transducer quantizes timestamps to its encoder frame, so ordinary short
+  # words emit every sub-word piece on one frame and have no internal timing to
+  # animate. Gating on duration keeps the effect where the design system puts
+  # it and where the data actually supports it.
+  syllable_fill:
+    enabled: true
+    min_duration_s: 0.32     # below this, a word is not "drawn out"
+    min_syllables: 2         # needs >=2 distinct sub-word onsets
+
+# Live caption mode (`python -m autocwi live`): microphone -> true streaming
+# Nemotron ASR -> CWI-styled captions in the browser. English first.
+live:
+  lang: en
+  port: 7337
+  # Fast model drives revisable white words; accurate model alone locks color
+  # and writes durable events. Both run faster than real time on the target M1.
+  draft_model_dir: assets/streaming-nemotron-en-160ms
+  streaming_model_dir: assets/streaming-nemotron-en-1120ms
+  verifier_model_dir: assets/parakeet-unified-en-offline
+  streaming_files:
+    tokens: tokens.txt
+    encoder: encoder.int8.onnx
+    decoder: decoder.int8.onnx
+    joiner: joiner.int8.onnx
+  num_threads: 4
+  verifier_num_threads: 4
+  verifier_decoding_method: modified_beam_search
+  verifier_max_active_paths: 4
+  # Longer verifier phrases retain linguistic context. Stable streaming words
+  # remain visible immediately; only the authoritative phrase lock waits.
+  endpoint_silence_s: 1.2
+  endpoint_max_s: 30.0
+  # Cold-start window only (first 6 words); after that the mapping uses
+  # percentiles of the speaker's own word history.
+  db_range: [-45, -15]
+  # Loudness normalization window, as percentiles of recent word dB. A fixed
+  # `median - 5 dB` floor clipped 35% of ordinary words to whisper size —
+  # real connected speech spans ~26 dB below its median. Widen the low
+  # percentile if unstressed words still look too small.
+  db_percentiles: [10, 95]  # [5,95] over-widened: loud words hit 9% and overflowed
+  db_min_span: 18.0      # never stretch a monotone passage across the range
+  # Live speaker attribution (CWI 2.1: speaker -> color). Voice-embedding
+  # windows are clustered online against running per-speaker centroids; new
+  # voices become S2, S3... in palette order. Committed words get a provisional
+  # classify-only label mid-stream; the endpoint pass re-labels the whole
+  # utterance with sliding-window majority vote and alone updates the
+  # centroids. Model is a one-time ~38 MB download (fetch_streaming_model.py);
+  # if absent, live mode degrades to single-speaker S1.
+  diarization:
+    enabled: true
+    model: assets/speaker-embedding-en/nemo_en_titanet_small.onnx
+    num_threads: 2
+    # Segment-then-cluster, tuned on the bundled sample: adjacent windows
+    # whose cosine drops below change_below mark a turn boundary; whole
+    # segments are then embedded and clustered (same voice ~0.5+, different
+    # ~0.2 on clean spans). Identities whose centroids converge past merge_at
+    # are folded together, so early phantoms self-correct.
+    similarity: 0.35       # assign a segment to a known voice at/above this
+    change_below: 0.3      # adjacent-window cosine below this = turn boundary
+    merge_at: 0.5          # centroids this similar are the same person
+    max_speakers: 6        # CI main palette size (2.1.1)
+    window_s: 1.0
+    hop_s: 0.25
+    min_span_s: 0.4
+  # Quiet speech produced no captions at all because the streaming transducer
+  # stops emitting non-blank tokens well below its training level. This gains
+  # ONLY the recognizer's copy of the audio; prosody keeps measuring the true
+  # captured level, so a whisper still renders small.
+  input_gain:
+    enabled: true
+    target_dbfs: -26.0       # RMS the recognizer is driven toward
+    min_gain_db: 0.0
+    max_gain_db: 30.0
+    initial_gain_db: 0.0
+    floor_margin_db: 8.0     # speech must clear the noise floor by this much
+    absolute_floor_db: -72.0 # below this the input counts as no signal
+    floor_window_s: 6.0
+    attack_db_per_s: 24.0    # shed gain fast so a loud passage cannot clip
+    release_db_per_s: 6.0    # add gain slowly so the level does not pump
+    acquire_db_per_s: 60.0   # first convergence, so the opening words survive
+    headroom_dbfs: -1.0
+    level_event_period_s: 0.12
+  # Settings for the optional legacy `live --whisper MODEL` pause segmenter.
+  # The streaming transducers do not use an energy gate; recognized quiet words
+  # must not be discarded.
+  silence_db: -42          # fallback threshold when adaptive is off / warming up
+  adaptive_silence: true   # track the noise floor so music beds don't block cuts
+  min_silence_s: 0.4
+  min_speech_s: 0.25
+  max_utterance_s: 4.0
+
+# Closed-caption playback (`autocwi cc spec.json`). Text is known in advance
+# here, so the FULL CWI motion system is possible — unlike live mode, which
+# must approximate it. This is the reference implementation.
+closed_caption:
+  # CWI 2.2.1: a line is legible in white this long before its first word.
+  read_ahead_s: 2.0
+  line_hold_s: 1.2
+  # How the colour turn crosses a word. `character` advances the boundary
+  # through the letters over the word's own spoken span; `word` flips the
+  # whole word at onset. The official AE template drives a WORD-index range
+  # selector but with Ease High/Low set, which smooths the hand-off across
+  # characters — word-level timing, character-level appearance.
+  sync_granularity: character
+  # The template's travelling wave. Off in live mode because displacing
+  # settled text disturbs a reader mid-transcript; safe here, because a
+  # closed caption plays through and is gone.
+  neighbor_bleed: 0.34
+  # The travelling character wave, read off the reference recordings: inside a
+  # single word the letters sit at different heights and sizes as the spoken
+  # boundary passes ("a-ni-mati-o").
+  #
+  # The wave LEADS the boundary and never trails it. In the reference a letter
+  # is raised and slightly small while it is still white, then arrives at its
+  # resting height and size exactly as the colour lands on it — and once it has
+  # turned it never moves again. A wave centred on the boundary instead lifts
+  # letters that have already turned, so each one settles and then bounces.
+  #
+  # Read straight out of `AE PROJECT/.../Academy_CI_Template.aep`, which is the
+  # ORIGINAL SOURCE of this motion. It holds exactly four text animators and
+  # between them they touch only `ADBE Text Position 3D` and
+  # `ADBE Text Fill Color`:
+  #
+  #   Words       fill = yellow                (the settled state)
+  #   Up          y = -5                       (lift)
+  #   Yellow      y = -amp, fill = COLOR_01    (lift + the colour turn)
+  #   Antecipate  y = +2, one frame earlier    (a small DOWNWARD dip)
+  #
+  # There is NO ADBE Text Scale / Tracking / Size / Rotation / Skew / Opacity
+  # animator in the file — the motion is position and colour, nothing else.
+  # Size is not a motion channel at all: it is the LOUDNESS channel, set once
+  # per word (see `mapping.loudness_to`) and never animated.
+  #
+  # "Yellow" drives the lift AND the fill from ONE range selector, so the rise
+  # and the colour turn are exactly in phase — the letter is at the top of its
+  # lift at the instant it turns, and comes back down behind the boundary.
+  # That is the bounce. A lift that merely LEADS the colour and lands at rest
+  # as it arrives is smooth but dead.
+  #
+  # The selector is Index units, Based On = Words, exactly one word wide
+  # (Index End = start + 1), Ease High 50 / Ease Low 50 — a smoothstep pass.
+  # `wave_reach` is the amplitude, 0..1; 0 is the calm film setting (colour
+  # sweep only, every letter on one baseline). `wave_window_s` is how long the
+  # pass takes over one letter, held in SECONDS so it travels at one rate
+  # through a two-letter word and a nine-letter one.
+  wave_reach: 1.0
+  # FITTED TO THE THREE REFERENCE RECORDINGS in docs/. Individual glyphs were
+  # tracked frame by frame across all three, each aligned on its OWN colour
+  # turn (found from saturation: unspoken text is unsaturated white/grey), and
+  # the curves averaged. What that shows, consistently in all three:
+  #
+  #     a letter sits ~10% of its height BELOW the baseline while still
+  #     unspoken, rises THROUGH the baseline exactly as it turns, peaks ~10%
+  #     above at +80 ms, and is settled by +240 ms -- with NO undershoot.
+  #     Size holds at rest until the turn, then blooms to ~1.13 at +110 ms and
+  #     is back by +280 ms.
+  #
+  # The crouch is the anticipation, and it is the .aep's two position animators
+  # seen from the other end: "Antecipate" (y = +2, DOWNWARD, ahead of the turn)
+  # handing off to "Up"/"Yellow" (y = -5). 10% of glyph height = 0.052 em.
+  wave_crouch_em: 0.052       # how far BELOW the baseline before the turn
+  wave_crouch_lead_s: 0.22    # when the crouch begins
+  wave_release_s: 0.18        # peak -> rest; measured fall 160-190 ms
+  # A word waits RAISED until it is spoken, however long that takes; this caps
+  # it. Measured on "is" in "precisely as each word is spoken.": the speaker
+  # pauses 1.47 s and "is" sits raised and white for ~0.75 s of that before
+  # turning. A fixed anticipation window leaves it at rest through the pause.
+  wave_hold_max_s: 0.90
+  wave_peak_s: 0.08           # peak lands this long AFTER the colour turn
+  # The template's +2 against its -(5 + amp): the dip is ~13% of the lift.
+  anticipation_dip_em: 0.04
+
+  # TWO COMPOSABLE SYSTEMS, not one generic text wave. They multiply:
+  #   word-level scale x character-level scale + character-level lift
+  #
+  # 1. INTONATION — word level, UNIFORM across the word's letters. The word
+  # begins to swell and thicken BEFORE it is spoken (it may still be white),
+  # peaks near the stressed portion, holds briefly, then decays back to the
+  # common resting typography. Size/weight are never sent through a word letter
+  # by letter — only the synchronization wave travels. Amplitude comes from
+  # prosody: a median word barely deforms, a loud one clearly swells. Nothing
+  # is baked in; after the decay a word matches its neighbours exactly.
+  emphasis_lead_s: 0.18       # 120-220 ms before the spoken onset
+  # An unemphatic word is not an event: the below-baseline side of the
+  # envelope is compressed so a quiet word barely deforms, while a loud one
+  # swells freely. 1.0 = symmetric (a quiet word shrinks as much as a loud
+  # word grows), 0 = quiet words never deform at all.
+  # 1.0 = a quiet word shrinks by as much as the mapping says. Compressing this
+  # (0.35) put the entire quiet side inside the deadband, so "softer." could
+  # never render smaller than an ordinary word however quiet it was measured.
+  quiet_deformation: 1.0
+  # CWI reads as uniform type with only OCCASIONAL emphasis. Giving every
+  # word an envelope means something is always moving, which is what reads
+  # as noise. Words within this fraction of the resting size are pinned to
+  # it exactly and never animate; only a genuine deviation swells.
+  # Below the quiet side's reachable deviation, or quiet words are swallowed
+  # whole. Safe to lower now that prosody is MEASURED rather than inferred:
+  # ordinary words sit genuinely near the median and still fall inside it.
+  emphasis_deadband: 0.05
+  # Deriving WEIGHT from the recording: how far a word's ink density must
+  # deviate from the line's median before it counts as emphasis at all, and the
+  # deviation that maps to the full weight range. Absolute, not relative to the
+  # phrase's own maximum -- normalising by that stretched the largest NOISE
+  # deviation to full bold in phrases where nothing was emphasised. Measured:
+  # "weights" +0.53, "louder" +0.19, everything else within +-0.09.
+  weight_deadband: 0.12
+  weight_full_dev: 0.55
+  emphasis_hold_s: 0.08
+  emphasis_tail_s: 0.30       # 200-400 ms after the peak
+  # 2. SYNCHRONIZATION — character level, two ASYMMETRIC phases either side of
+  # each letter's own colour turn:
+  #   approach   (still white) rises and compresses very slightly, then lands
+  #              as the colour arrives          -> wave_window_s, wave_dip
+  #   overshoot  (now coloured) pops just past resting size and settles
+  #                                             -> wave_settle_s, wave_pop
+  # The pop must happen AFTER the letter is coloured, never while still white.
+  # Only a few adjacent letters move at once.
+  # Peak rise, reached only when a word has waited `wave_hold_full_s` to be
+  # spoken. Measured: 77% of glyph height on "is" after a 1.47 s pause
+  # (0.77 x 0.529 em); ordinary fast speech reaches `wave_hold_floor` of it,
+  # ~14%, which is what the aggregate fit saw.
+  wave_lift_em: 0.41
+  wave_hold_floor: 0.18       # fraction of the rise a just-in-time word gets
+  wave_hold_full_s: 0.70      # wait at which the rise is full
+  # Per-character SCALE is off. Measured on the original, letters sit on one
+  # baseline (median spread 1px = 2% of glyph height) and move once, purely
+  # vertically, as the boundary passes. Giving each letter a lift AND a dip
+  # AND a pop is three oscillations per letter at ~15 letters/sec, which is
+  # what reads as vibrating. Size belongs to the word-level envelope; this
+  # also matches the AE template, whose only per-character property is
+  # Position 3D. Raise them to restore the spec's scale bounce.
+  wave_dip: 0.0               # scale while approaching
+  wave_pop: 0.132             # size bloom just after the turn
+  pop_release_s: 0.29
+  pop_peak_s: 0.11
+  # ---------------------------------------------------------------------
+  # 2.2.3 GUIDING THE EYE WITH MOTION. The design system states the whole
+  # synchronization motion in one sentence, and it is per WORD, at the moment
+  # that word changes colour:
+  #
+  #   "Caption with Intention adds a motion element to each word as it changes
+  #    color. Each word should undergo a 15% increase in type size before
+  #    returning to its original size, creating a 'pop' motion effect."
+  #
+  # ...with the accompanying diagram labelling the rise "25% elevation".
+  #
+  # This is a SYNCHRONIZATION cue and it is the SAME for every word, loud or
+  # quiet: its job is to point the eye at the word being spoken. Per-word
+  # amplitude belongs to the intonation channel (2.3.3-2.3.6), which is a
+  # different scope and is driven by the measured prosody. Collapsing the two
+  # is what produced motion that was large on words the reference leaves
+  # still and absent on words it moves.
+  #
+  # 2.2.4 sets the scope: "In most cases, words will be spoken and animated
+  # FULLY, ONE BY ONE" -- syllable-at-a-time is the documented exception, not
+  # the default. So the pop and the elevation are word-level, never per letter.
+  sync_pop: 0.15              # +15% type size at the turn, then back (2.2.3)
+  sync_elevation_em: 0.25     # 25% elevation at the turn, then back (2.2.3)
+  # Shape only -- the design system gives the amplitudes, the recordings give
+  # the timing of the same event (rise 70-100 ms, peak +70-100 ms past the
+  # colour turn, fall 160-190 ms).
+  sync_rise_s: 0.09
+  sync_peak_s: 0.08
+  sync_fall_s: 0.18
+  # spec     - the model above, with per-word amplitude from measured prosody.
+  # measured - replay each word's baked `motion` curves verbatim (a derived
+  #            reference spec only). Useful for checking the derivation; the
+  #            design system is what ships.
+  motion_source: spec
+  # Film reference: ONE tight centred line at a time, not a transcript.
+  max_lines: 1
+  # 0 = never break a line on WORD COUNT. A derived reference spec carries its
+  # own `line_break` flags -- the grouping the recording actually shows -- and
+  # `display.max_words: 8` was silently re-cutting it, splitting a 10-word
+  # sentence in half.
+  max_words: 0
+  # The baked `motion.lift` channel is in GLYPH HEIGHTS, the unit the
+  # recordings are measured in. This converts to em: Roboto Flex's cap height
+  # is ~0.71 em and a mixed-case word's median ink height sits just under it.
+  # Calibrate with scripts/compare_to_reference.py, never by eye.
+  glyph_height_em: 0.70
+  # Count style writes and visible-set flips per frame; window.__ccChurn
+  # .report() prints them. Off by default -- it is an instrument, not a
+  # feature, and flicker is measured with it rather than eyeballed.
+  debug_churn: false
+  # Horizontal tracking measured in docs/1.mov and docs/3.mov: the caption
+  # advances past a fixed playhead instead of remaining centred. Disabled for
+  # ordinary CaptionSpecs; `cc --ref ...` enables it, while each derived word's
+  # `tracking` flag keeps the Synchronization recording static inside demo.
+  tracking:
+    enabled: false
+    playhead_pct: 50.0
+    interp: monotone_cubic
+    coast_s: 0.18
+    handoff_s: 0.36
+    catch_up_s: 0.20
+    enter_offset_pct: 32.0
+    exit_offset_pct: -32.0
+  # Resting type size, % of frame height. CWI 2.3.5 baseline is 5%; the film
+  # stills sit nearer 4% because the box hugs a single short line.
+  # Axis overrides for `cc` only; live keeps `expression`'s calmer values,
+  # because live accumulates words and a settled word must never restyle.
+  # Measured on the reference recordings, "sizes," swells to 1.43x its own
+  # resting height and "weights" thickens by 1.49x in ink density -- neither
+  # fits through live's compression: `size_response: 0.42` caps the reachable
+  # swell at 1.43 (so the measured value clamped) and `wght_range: [280,500]`
+  # leaves only +70 weight units above the anchor, which is imperceptible.
+  # Measured off the intonation recording at "louder": the word reaches 3.10x
+  # the line's median glyph height and 2.54x its ink density. Live's
+  # compression cannot express that -- `size_response: 0.42` caps the swell at
+  # 1.43 and `wght_range: [280,500]` at 1.16x the anchor -- so `cc` runs the
+  # axes uncompressed over the full CWI range.
+  size_response: 1.0          # no compression; the reference uses the full range
+  # 2.3.9 maps the whole Roboto Flex weight axis over the human vocal range:
+  # 80 Hz -> 1000, 160-200 Hz -> Regular 400, 250 Hz and above -> 100. A
+  # closed caption plays through and is gone, so `cc` can carry that range;
+  # live cannot, because words accumulate and a settled word must not restyle.
+  wght_range: [100, 1000]
+  anchor_wght: [380, 420]     # 2.3.8: Regular 400 for a 160-200 Hz voice
+  # 2.3.5: "The baseline type size for normal speaking volume is 5% of the
+  # overall screen height." Earlier this sat at 2.8 to match the film stills;
+  # the design system is explicit, so it wins.
+  size_pct: 5.0
+
+mapping:
+  # Volume -> type size (2.3.3-2.3.6). Unit = % of video height.
+  # Baseline (normal speech) 5%; whisper 3%; shout 12%. Driven by the
+  # per-speaker-normalized loudness so each voice uses its own dynamic range.
+  # 2.3.5 baseline 5%, 2.3.6 range 3% (whisper) .. 12% (shout). Stated
+  # outright in the design system, so the reachable envelope is exactly
+  # 0.6x .. 2.4x the resting size.
+  loudness_to: { axis: size, min: 3, max: 12, baseline: 5, unit: pct_video_height }
+  # Pitch -> weight (2.3.7-2.3.10). CWI maps ABSOLUTE Hz: 80 Hz -> heavy,
+  # 160-200 Hz -> Regular 400, 250 Hz -> thin. domain_hz makes the renderer
+  # use raw pitch_hz over this domain instead of the normalized value.
+  # invert: true = higher pitch, lighter type (the CWI convention).
+  pitch_to: { axis: wght, min: 100, max: 1000, invert: true, domain_hz: [80, 250] }
+  # CWI 2.3.7-2.3.10 pairs the weight response with the Roboto Flex width
+  # axis: lower/fuller voices expand; higher/thinner voices condense. In live
+  # mode pitch is the available local proxy for harmonic distribution.
+  harmonics_to: { axis: wdth, min: 25, max: 150, invert: true, domain_hz: [80, 250] }
+  speaker_to: color
+
+# How much of each measured per-word deviation actually reaches the type.
+#
+# CWI's absolute anchors (3/5/12%, wght 1000..100) describe DELIBERATE dynamics
+# — a whisper, a shout, one character against another. Applied raw to per-word
+# acoustics of a single speaker they mistake the natural amplitude envelope of
+# connected speech for intent: measured on one calm sentence, type size swung
+# 3.2x (unstressed "would"/"and" rendered as whispers at 3%, "early" near a
+# shout at 9.7%) and unvoiced words snapped from wght 958 to 400 mid-line.
+#
+# `response` is the fraction of each deviation from the speaker's own baseline
+# that survives. 1.0 restores the raw absolute mapping; lower values keep the
+# direction of the expression while removing the fabricated dynamics.
+expression:
+  # The film reference reads as a normal-weight sans with uniform colour and
+  # only occasional emphasis. Weight/width deviations are compressed hard so
+  # ordinary speech rests at one weight; a genuinely extreme voice still
+  # reaches the ends of the CWI range.
+  size_response: 0.42
+  weight_response: 0.16
+  width_response: 0.16
+  # Running window of recent voiced words defining "normal for this speaker".
+  baseline_words: 12
+  # Typography eases between words instead of snapping (2.2.3 is continuous
+  # motion; nothing in CWI cuts).
+  transition_ms: 190
+
+  # The axes are CUMULATIVE. Resolving each word from its own measurement alone
+  # made the type re-decide on every word and never settle, which reads as
+  # flicker no matter how far the deviations are compressed.
+  #
+  # `smoothing_words` is the running MEDIAN window. A median, not an average:
+  # an average lets one emphatic word drag the value up and then decay slowly,
+  # so a single loud word resized the following half-dozen. A median ignores an
+  # isolated outlier outright and still follows a sustained change.
+  #
+  # The steps then hold that running value at a discrete level until it crosses
+  # a boundary by more than `hysteresis` of the gap — without that margin a
+  # value resting near a boundary oscillates between two levels on consecutive
+  # words. Levels move one at a time, so change is always gradual.
+  #
+  # Hand-authored CWI sits at a level through a passage and moves when the
+  # delivery moves; it does not modulate continuously word by word.
+  smoothing_words: 5
+  # Live legibility clamp on the speaker's RESTING anchors (a documented
+  # deviation from CWI's absolute Hz anchors): a deep film voice anchored the
+  # entire transcript at wght ~900 / wdth ~137 — a wall of black extended
+  # type (verified by screenshot). Deviations still reach the full range.
+  anchor_wght: [340, 430]
+  # Hard bounds on the RENDERED axes. Without these a voice at the edge of the
+  # pitch domain rendered at wght 100 (hairline) or 1000 (black) next to
+  # ordinary text — legible in a poster, not in a live caption.
+  wght_range: [280, 500]
+  wdth_range: [85, 115]
+  anchor_wdth: [88, 112]
+  hysteresis: 0.35
+  # Live ladder. CWI's 9%/12% are cinematic shout sizes; on a live transcript
+  # stage they overflowed the frame and read as chaos (verified by
+  # screenshot), so ordinary speech resolves in a tight 4-6.5% band and 9% is
+  # reserved as the genuine-shout extreme.
+  size_steps: [2.6, 3.1, 3.6, 4.4, 6]
+  weight_step: 100
+  width_step: 25
+
+normalization:
+  # Per-speaker percentile range mapped to 0..1 (robust to outliers).
+  low_percentile: 5
+  high_percentile: 95
+  # Words below this hold the speaker's baseline weight rather than snapping to
+  # Regular 400: for a deep voice whose baseline is already heavy, dropping an
+  # unvoiced word to 400 reads as a different speaker, not a quieter one.
+  min_voiced_frac: 0.2
+
+# Haptic salience, grounded in DHH haptics research (Haptic-Captioning
+# CHI'23; Tactile Emotions CHI'25): continuous vibration is distracting, so
+# durable word events flag only what is worth actuating — speaker changes and
+# strongly emphasized words — with the threshold exposed for per-user tuning.
+haptics:
+  emphasis_db: 6.0    # word this far above the speaker's median dB = emphatic
+
+asr:
+  model: small          # base | small | medium
+  beam_size: 5
+  temperature: 0.0      # deterministic decoding
+
+diarization:
+  model: pyannote/speaker-diarization-3.1
+
+prosody:
+  pitch_floor_hz: 75
+  pitch_ceiling_hz: 500
+
+render:
+  font_path: assets/RobotoFlex.ttf   # fetched by scripts/fetch_font.py
+
+seed: 42

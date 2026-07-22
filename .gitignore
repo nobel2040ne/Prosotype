@@ -1,0 +1,44 @@
+# --- Python -----------------------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# --- macOS ------------------------------------------------------------------
+.DS_Store
+
+# --- Local tool state -------------------------------------------------------
+.claude/settings.local.json
+
+# --- Downloaded model weights (~1.9 GB) -------------------------------------
+# One-time fetches, not source. Re-create with:
+#   .venv/bin/python scripts/fetch_streaming_model.py
+# titanet (speaker embedding) downloads itself on first live run.
+assets/streaming-nemotron-en-160ms/
+assets/streaming-nemotron-en-1120ms/
+assets/parakeet-unified-en-offline/
+assets/speaker-embedding-en/
+
+# Roboto Flex, fetched by scripts/fetch_font.py. The design system names it
+# (2.3.1) but the file itself is a download, not something we author.
+assets/RobotoFlex.ttf
+
+# --- Generated output -------------------------------------------------------
+# `autocwi cc` / `live` / `tune` write here. captions.html and tuner.html are
+# ~2.4 MB each because the variable font is base64-embedded in every one.
+out/
+
+# Deliberately NOT ignored, because the tests and the derivation depend on them:
+#   assets/reference_specs/*.json   derived reference specs (checked in; the
+#                                   offline suite loads them and never decodes
+#                                   a video)
+#   assets/sample.mp4               bundled clip a test resolves and loads
+#   tests/fixtures/*.json           golden grid captured from the page's own JS
+#   docs/reference/*.txt            transcripts, read off the frames by hand
+#   docs/*.mov                      the three reference recordings — the only
+#                                   copy of the source measurements are taken
+#                                   from
+#   docs/Caption-With-Intention_Design-System_V1.0.pdf   the authority for the
+#                                   whole motion system (also downloadable from
+#                                   captionwithintention.org)

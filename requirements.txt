@@ -1,0 +1,29 @@
+# auto-CWI — pinned for Python 3.11 (macOS arm64 / Linux). All inference is local.
+numpy==1.26.4
+PyYAML==6.0.2
+pydantic==2.9.2
+
+# ASR (CTranslate2 backend; CPU int8 on Apple Silicon, CUDA where available)
+faster-whisper==1.1.1
+ctranslate2==4.5.0
+# Dual true-streaming live ASR (local Nemotron; prebuilt platform wheels)
+sherpa-onnx==1.13.4
+
+# Diarization (weights are gated on Hugging Face -> HF_TOKEN, see README)
+torch==2.5.1
+torchaudio==2.5.1
+pyannote.audio==3.3.2
+
+# Prosody
+librosa==0.10.2.post1
+soundfile==0.12.1
+praat-parselmouth==0.4.5
+
+# Burn-in renderer (optional path, still local)
+Pillow==11.0.0
+
+# Live caption mode (microphone capture)
+sounddevice==0.5.1
+
+# Tests
+pytest==8.3.4
