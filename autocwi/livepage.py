@@ -17,6 +17,20 @@ from string import Template
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _live_sync_cfg(ls: dict) -> dict:
+    """Resolve the live CWI-motion knobs with defaults (see config.yaml)."""
+    return {
+        "enabled": ls.get("enabled", True),
+        "sync_pop": ls.get("sync_pop", 0.15),
+        "sync_elevation_em": ls.get("sync_elevation_em", 0.25),
+        "rise_s": ls.get("rise_s", 0.09),
+        "peak_s": ls.get("peak_s", 0.08),
+        "fall_s": ls.get("fall_s", 0.18),
+        "swell_gain": ls.get("swell_gain", 0.6),
+        "neighbor_push": ls.get("neighbor_push", True),
+    }
+
+
 def render_live(config: dict, out_dir: str | Path) -> str:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -47,6 +61,7 @@ def render_live(config: dict, out_dir: str | Path) -> str:
         "motion_min_duration_ms": round(motion.get("min_duration_s", 0.42) * 1000),
         "motion_max_duration_ms": round(motion.get("max_duration_s", 0.90) * 1000),
         "motion_easing": motion.get("easing", "ease-in-out"),
+        "live_sync": _live_sync_cfg(motion.get("live_sync", {}) or {}),
         "expression": config["expression"],
         "min_voiced_frac": config["normalization"]["min_voiced_frac"],
         "display_mode": display.get("mode", "stable"),
@@ -169,6 +184,14 @@ _TEMPLATE = Template(r'''<!DOCTYPE html>
     line-height: 1.05; display: inline-block;
     font-optical-sizing: none; font-synthesis: none; text-rendering: geometricPrecision;
     font-kerning: normal; font-variant-ligatures: none;
+    /* The live CWI-motion loop (below) writes `transform` here per frame while
+       a word is in its active window: scale = the 2.2.3 pop, translateY = the
+       elevation, translateX = the neighbour-push shift. Growing from the
+       baseline centre (not the box centre) keeps letters sitting on the line,
+       and transform is off the layout path, so the pop never reflows the row.
+       No transform TRANSITION: the loop owns each frame; a transition would lag
+       it. */
+    transform-origin: 50% 100%;
     /* The AE template eases fill color through the same range selector that
        drives the lift, so the read-ahead turn is a fast blend, not a hard cut.
        Size and the variable-font axes ease for the same reason: nothing in CWI
@@ -179,6 +202,7 @@ _TEMPLATE = Template(r'''<!DOCTYPE html>
       font-variation-settings var(--type-ms, 190ms) cubic-bezier(.4, 0, .2, 1);
   }
   .cwi-word.partial { color: rgba(255,255,255,.9); }
+  .cwi-word[data-moving="true"] { will-change: transform; }
   .cwi-glyph {
     display: inline-block; color: inherit; transform: translate3d(0,0,0);
     transform-origin: 50% 100%; will-change: transform; backface-visibility: hidden;
@@ -205,6 +229,38 @@ _TEMPLATE = Template(r'''<!DOCTYPE html>
     -webkit-background-clip: text; background-clip: text;
     color: transparent; -webkit-text-fill-color: transparent;
   }
+
+  /* NON-SPEECH LANE (paralinguistic descriptors: laughter, applause, music,
+     environmental). A DISTINCT band at the top of the stage — never inline in
+     the speech flow, so a sound descriptor cannot enter the flex row, the
+     smoothing median, or the settled-word churn accounting. Category is coded
+     by the border/dot colour (a neutral, non-speaker hue so it never reads as
+     a voice) and the bracketed label follows captioning convention. */
+  #nonspeechLane {
+    position: absolute; top: 12px; left: 0; right: 0; z-index: 3;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    pointer-events: none;
+  }
+  .ns-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 13px; border-radius: 999px; font-size: 13px; font-style: italic;
+    color: #e2e2e8; background: rgba(16,16,20,.86);
+    border: 1px solid var(--ns-c, #6a6a72);
+    box-shadow: 0 0 20px -8px var(--ns-c, #6a6a72);
+    opacity: 0; transform: translateY(-7px);
+    transition: opacity .28s ease, transform .28s ease;
+  }
+  .ns-chip.on { opacity: 1; transform: translateY(0); }
+  .ns-chip .ns-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--ns-c);
+    box-shadow: 0 0 8px var(--ns-c);
+  }
+  .ns-chip.live .ns-dot { animation: nsPulse 1.05s ease-in-out infinite; }
+  .ns-chip .ns-cat {
+    font-style: normal; font-size: 8px; letter-spacing: .13em; text-transform: uppercase;
+    color: #9a9aa2;
+  }
+  @keyframes nsPulse { 0%,100%{opacity:.45;transform:scale(.78)} 50%{opacity:1;transform:scale(1.15)} }
 
   aside {
     min-height: 0; border-left: 1px solid var(--line); background: #0b0b0e;
@@ -326,6 +382,7 @@ _TEMPLATE = Template(r'''<!DOCTYPE html>
       <div id="stage">
         <div class="stage-label">Live frame · lower work area</div>
         <div id="hint"><strong>Speak naturally.</strong><span>Words will appear while you talk</span></div>
+        <div id="nonspeechLane" aria-live="polite" aria-label="Non-speech sounds"></div>
         <div id="captionRack" aria-live="polite" aria-atomic="false"></div>
       </div>
     </section>
@@ -384,6 +441,45 @@ const syncTokens = document.getElementById("syncTokens");
 const revisionState = document.getElementById("revisionState");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const cuedSlots = new Set();
+
+// Non-speech lane. Category -> a NEUTRAL, non-speaker hue (the CWI palette is
+// reserved for voices, so a descriptor must never borrow a speaker colour).
+const nsLane = document.getElementById("nonspeechLane");
+const NS_COLORS = { vocal: "#E8A23C", reaction: "#5AD1A0",
+                    music: "#9A7BE8", environmental: "#8A9BB0" };
+const nsChips = new Map();           // category -> {el, timer}
+const NS_LINGER_MS = 2600;           // a finalized descriptor stays this long
+function soundChip(ev) {
+  if (!nsLane || !ev.category) return;
+  const label = "[ " + ev.label + " ]";
+  let entry = nsChips.get(ev.category);
+  if (ev.state === "start") {
+    if (!entry) {
+      const el = document.createElement("span");
+      el.className = "ns-chip";
+      el.style.setProperty("--ns-c", NS_COLORS[ev.category] || "#8a8a92");
+      el.innerHTML = '<i class="ns-dot"></i><span class="ns-cat"></span><span class="ns-label"></span>';
+      nsLane.appendChild(el);
+      entry = { el: el, timer: null };
+      nsChips.set(ev.category, entry);
+      requestAnimationFrame(() => el.classList.add("on"));
+    }
+    if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+    entry.el.classList.add("live");                // pulsing dot while ongoing
+    entry.el.querySelector(".ns-cat").textContent = ev.category;
+    entry.el.querySelector(".ns-label").textContent = label;
+  } else {                                          // "end": finalize + linger
+    if (!entry) return;
+    entry.el.classList.remove("live");
+    entry.el.querySelector(".ns-label").textContent = label;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = window.setTimeout(() => {
+      entry.el.classList.remove("on");
+      window.setTimeout(() => entry.el.remove(), 320);
+      nsChips.delete(ev.category);
+    }, NS_LINGER_MS);
+  }
+}
 
 document.documentElement.style.setProperty("--turn", CFG.motion_color_turn_ms + "ms");
 document.documentElement.style.setProperty("--type-ms", CFG.expression.transition_ms + "ms");
@@ -784,6 +880,109 @@ function applySpokenColor(el, ev, animate) {
   if (el.dataset.turned !== "true") el.style.color = colorFor(ev.speaker);
   el.dataset.turned = "true";
 }
+// ---------------------------------------------------------------------------
+// Live CWI motion (2.2.3), ported from `cc`. A single rAF loop animates ONLY
+// the active-word window, and ONLY with transform (scale = the pop, translateY
+// = the elevation, translateX = the neighbour-push shift). Transform is off the
+// layout path, so font-size stays the frozen loudness channel, nothing reflows,
+// and every word is written back to its resting transform exactly once when its
+// window passes — a settled word is never restyled. A swelling word displaces
+// its row-mates analytically and they return (the one position-only relaxation
+// of THE CAPTION INVARIANT the design asked for).
+const LS = CFG.live_sync || {enabled: false};
+const LIVE_MOTION = !!LS.enabled;
+const SIZE_BASE = (EX.size_steps && EX.size_steps.length)
+  ? EX.size_steps[Math.floor(EX.size_steps.length / 2)]
+  : ((M.loudness_to && M.loudness_to.baseline) || 5);
+const motionRecs = new Set();       // {el, line} for words in their active window
+const motionLines = new Set();
+let motionRAF = 0;
+function smooth01(x) { x = clamp01(x); return x * x * (3 - 2 * x); }
+// One universal envelope, 0..1, centred on the colour turn (tau = 0): rises
+// from just before the turn to a peak `peak_s` after it, then settles. Zero
+// slope at both ends (smoothstep), so it never starts or stops with a kick.
+function syncEnv(tau) {
+  const r = LS.rise_s, p = LS.peak_s, f = LS.fall_s;
+  if (tau <= -r) return 0;
+  if (tau < p) return smooth01((tau + r) / (r + p));
+  if (tau < p + f) return 1 - smooth01((tau - p) / f);
+  return 0;
+}
+// The constant 2.2.3 pop + an intonation swell scaled by how far above the
+// baseline size this word RESTS (i.e. how loud it was), bounded by swell_gain
+// so a loud word — already large at rest — does not stack a full cc swell.
+function popAmp(el) {
+  const pct = (el._type && el._type.pct) || SIZE_BASE;
+  const extra = Math.max(0, (pct - SIZE_BASE) / SIZE_BASE) * (LS.swell_gain || 0);
+  return LS.sync_pop + extra;
+}
+function setTf(el, s) { if (el._mt !== s) { el._mt = s; el.style.transform = s; } }
+function motionDecay() { return LS.peak_s + LS.fall_s + 0.06; }
+function registerMotion(el) {
+  const line = el.closest(".cwi-line");
+  if (!line) return;
+  // Measure resting width ONCE, before any transform (getBoundingClientRect is
+  // fractional; the loop is then pure arithmetic on it, like cc's layout()).
+  el._m = {restW: el.getBoundingClientRect().width, amp: popAmp(el)};
+  el._mStart = performance.now();
+  el.dataset.moving = "true";
+  const rec = {el: el, line: line};
+  motionRecs.add(rec);
+  motionLines.add(line);
+  if (!motionRAF) motionRAF = requestAnimationFrame(motionTick);
+}
+// Resolve one line analytically: dW = restW*(scale-1) per word, and
+// shift_i = SUM(dW_j, j<i) + dW_i/2 - SUM(all dW)/2 recentres the line, so a
+// swelling word pushes its neighbours symmetrically aside and the line stays
+// put. The whole line is one row: unlike cc (every word rests at the common
+// baseline size, so offsetTop is shared), live bakes loudness into the resting
+// SIZE, so row-mates have different tops — and live moves an overflowing word
+// to a NEW line rather than wrapping within one, so a line IS a single row.
+function resolveLine(line, now, decay) {
+  const words = line.querySelectorAll(":scope > .cwi-word");
+  if (!words.length) return;
+  let dWsum = 0;
+  const info = [];
+  words.forEach(el => {
+    if (!el._m) el._m = {restW: el.offsetWidth, amp: 0};
+    let s = 1, lift = 0;
+    if (el._mStart !== undefined && (now - el._mStart) / 1000 <= decay) {
+      const env = syncEnv((now - el._mStart) / 1000);
+      s = 1 + el._m.amp * env;
+      lift = LS.sync_elevation_em * env;
+    }
+    const dW = el._m.restW * (s - 1);
+    dWsum += dW;
+    info.push({el: el, s: s, lift: lift, dW: dW});
+  });
+  let acc = 0;
+  info.forEach(o => {
+    const shift = LS.neighbor_push ? (acc + o.dW / 2 - dWsum / 2) : 0;
+    acc += o.dW;
+    if (o.s === 1 && o.lift === 0 && Math.abs(shift) < 0.01) setTf(o.el, "");
+    else setTf(o.el, "translate(" + shift.toFixed(2) + "px," +
+                     (-o.lift).toFixed(4) + "em) scale(" + o.s.toFixed(4) + ")");
+  });
+}
+function motionTick(now) {
+  motionRAF = 0;
+  const decay = motionDecay();
+  motionLines.forEach(line => { if (line.isConnected) resolveLine(line, now, decay); });
+  // Retire finished words AFTER resolveLine wrote their resting transform (that
+  // rest write lands while dataset.moving is still "true", so it is excluded
+  // from the settled-word churn count).
+  const liveLines = new Set();
+  motionRecs.forEach(rec => {
+    if ((now - rec.el._mStart) / 1000 > decay) {
+      rec.el.dataset.moving = "";
+      motionRecs.delete(rec);
+    } else {
+      liveLines.add(rec.line);
+    }
+  });
+  motionLines.forEach(line => { if (!liveLines.has(line)) motionLines.delete(line); });
+  if (motionRecs.size) motionRAF = requestAnimationFrame(motionTick);
+}
 function playWordMotion(el, ev) {
   // Only the word being spoken moves. A word that is already on screen is
   // finished: it must not be disturbed by its neighbours turning, because a
@@ -791,6 +990,8 @@ function playWordMotion(el, ev) {
   // what CWI's read-ahead is for.
   if (el.dataset.moved === "true" || SENTENCE) return;
   el.dataset.moved = "true";
+  if (LIVE_MOTION && !reducedMotion.matches) { registerMotion(el); return; }
+  // Fallback (live_sync disabled, or reduced motion): the calm one-shot lift.
   playLift(el, ev, 1, 1);
   if (!current || !(CFG.motion_neighbor_bleed > 0)) return;
   // The template sweeps a one-word-wide Range Selector with Ease High/Low set,
@@ -1359,7 +1560,11 @@ if (CFG.debug_churn) {
   const settledWord = node => {
     const el = node && (node.nodeType === 1 ? node : node.parentElement);
     const word = el && el.closest && el.closest(".cwi-word");
-    return word && word.dataset.turned === "true" ? word : null;
+    // Settled = turned AND past its motion window. The live CWI-motion loop
+    // writes transform every frame while a word is active; those writes are
+    // expected, so a word only counts as settled once dataset.moving clears.
+    return word && word.dataset.turned === "true" &&
+           word.dataset.moving !== "true" ? word : null;
   };
   new MutationObserver(records => {
     for (const r of records) {
@@ -1428,6 +1633,8 @@ es.onmessage = message => {
     else showHypothesis(ev);
   } else if (ev.type === "cue") {
     cueWord(ev);
+  } else if (ev.type === "sound") {
+    soundChip(ev);
   } else if (ev.type === "verification") {
     // Replay can deliver many commits faster than the animation drain. Once an
     // authoritative phrase arrives, discard queued provisional words from the

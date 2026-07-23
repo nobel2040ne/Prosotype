@@ -20,6 +20,9 @@ assets/streaming-nemotron-en-1120ms/
 assets/parakeet-unified-en-offline/
 assets/speaker-embedding-en/
 
+# Audio-tagging model weights, fetched by scripts/fetch_streaming_model.py.
+assets/audio-tagging-en/*.onnx
+
 # Roboto Flex, fetched by scripts/fetch_font.py. The design system names it
 # (2.3.1) but the file itself is a download, not something we author.
 assets/RobotoFlex.ttf

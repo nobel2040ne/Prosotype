@@ -213,12 +213,47 @@ class Word(BaseModel):
         return self
 
 
+class SoundEvent(BaseModel):
+    """A non-speech / paralinguistic sound detected in the audio.
+
+    Additive to the contract (CaptionSpec.events): a renderer or the future
+    haptic module that does not know the field simply ignores it, so no version
+    bump — the same mechanism `Word.line_break`/`Word.motion` use.
+
+    This is deliberately NOT a `Word`. A non-speech burst (laughter, applause,
+    a door) has no speaker, no pitch and no loudness-to-size normalization, so
+    overloading `Word` would force meaningless prosody onto it. It carries only
+    what a non-speech descriptor needs: a human display `label`, the coarse
+    `category` a renderer styles/lanes it by, timing, and confidence.
+    """
+
+    label: str                                      # display name, e.g. "Laughter"
+    category: Literal["vocal", "reaction", "music", "environmental"]
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    conf: float = Field(ge=0, le=1)
+    source: str = "audio-tagging"                   # provenance, informational
+
+    @model_validator(mode="after")
+    def _end_after_start(self) -> "SoundEvent":
+        # A near-instantaneous burst may report end == start; only a reversed
+        # span is malformed.
+        if self.end < self.start:
+            raise ValueError(
+                f"sound event {self.label!r}: end ({self.end}) must be >= start ({self.start})")
+        return self
+
+
 class CaptionSpec(BaseModel):
     version: str = SPEC_VERSION
     media: Media
     speakers: dict[str, Speaker]
     words: list[Word]
     mapping: Mapping
+    # Optional, additive: non-speech sounds detected alongside the words. Empty
+    # for specs produced before sound tagging existed; renderers ignore it if
+    # they don't implement a non-speech lane. Not part of the speaker check.
+    events: list[SoundEvent] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _speakers_known(self) -> "CaptionSpec":

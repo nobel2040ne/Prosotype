@@ -45,17 +45,37 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   (see `docs/cwi-design-system-notes.md` for the extracted values;
   `docs/research-notes.md` maps prior DHH-captioning research onto design
   decisions here).
-- **In LIVE mode, motion is position + color only — never animate type size.**
-  (`cc` follows 2.2.3 and DOES pop the type size +15%; live still must not,
-  because words accumulate there and a settled word must never restyle.)
-  Size is the loudness channel and a settled word must stop changing (see THE
-  CAPTION INVARIANT). The official AE template
-  (`AE PROJECT/AE PROJECT/Academy_CI_Template.aep`) contains zero scale/size
-  animators, which is the strictest reading. **`cc` is the exception**: the
-  reference recordings it is matched against animate the ACTIVE word's
-  size/weight, and it reproduces that — see "THE ACTIVE WORD CARRIES THE
-  PROSODY". Safe there because a closed caption plays through and is gone;
-  never port it to live, where words accumulate and stay on screen.
+- **In LIVE mode, size may be animated ONLY as a TRANSFORM on the active-word
+  window, never as `font-size`, and it must return to rest.** (Updated
+  2026-07-23: live now runs the full CWI 2.2.3 motion, ported from `cc` — the
+  +15% pop, 25% elevation, an intonation swell scaled by loudness, and the
+  analytic neighbour-push. See `motion.live_sync` in config.yaml and the motion
+  loop in `livepage.py` — `registerMotion`/`resolveLine`/`motionTick`.) The old
+  rule ("position + colour only, never size") is superseded, but its REASON is
+  preserved by HOW the port is done, and that constraint still binds:
+  * **Transform only.** The loop writes `transform` (scale = pop, translateY =
+    elevation, translateX = neighbour shift) — never `font-size`. So `font-size`
+    stays the frozen LOUDNESS channel (a shouted word stays large for life), the
+    pop is a transient that returns to the word's frozen resting typography, and
+    nothing touches the layout path (no reflow, no frozen-width dance cc needs
+    because cc animates `font-variation-settings`; live does NOT animate weight).
+  * **Active window only.** A per-frame `rAF` loop touches ONLY words within
+    their ~0.3 s motion window (`dataset.moving="true"`), and writes each word to
+    its resting transform exactly ONCE when the window passes — a settled word
+    is never restyled (THE CAPTION INVARIANT holds; the churn instrument's
+    "settled" now means turned AND `moving!=="true"`).
+  * **Neighbours move in POSITION only, transiently.** The swelling word pushes
+    row-mates aside via `transform` translate and they return; their size,
+    weight, colour are never touched. This is the one relaxation the design
+    asked for (`AskUserQuestion`, 2026-07-23: "full port + neighbour push").
+  * Set `motion.live_sync.enabled: false` to fall back to the old calm lift.
+  The AE template (`Academy_CI_Template.aep`) has zero scale animators — the
+  stricter reading — but the WEBSITE reference animates the active word's size,
+  and live now matches that within the transform-only/return-to-rest envelope.
+  Because the whole `.cwi-line` is treated as ONE push row (live moves an
+  overflowing word to a new line rather than wrapping), do not key live's push
+  on `offsetTop` the way cc does: cc words all rest at the common baseline size
+  so they share a top; live bakes loudness into resting SIZE, so they do not.
 - **Input gain applies only to the recognizer's copy of the audio.**
   `AudioChunk.samples` must stay at the true captured level because prosody
   measures `loudness_db` from it; the gained copy is `asr_samples`. Gaining
@@ -669,18 +689,26 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
   but with Ease High/Low set, which smooths the hand-off across characters. So
   "alphabet-level motion" and "word-level sync" are the same thing seen from
   two ends; `closed_caption.sync_granularity` switches between them.
-- **THE CAPTION INVARIANT: a word that has been shown must stop changing.**
-  Once a word turns its speaker colour it is settled — size, weight, colour,
-  spacing and position are frozen for life. Verification may add/remove words
-  and (under `display.stability: corrections`) respell one; it may never
-  restyle one. Enforced by: server freezes `loudness`/prosody per time SLOT in
-  `prosody_cache` (key `("§slot", utterance, round(start*20))` — text-keyed
-  missed exactly when the verifier respelled); page's `typeCache` is
-  first-write-wins and geometry is frozen on the node as `el._type`; tentative
-  words and the sidebar `project()` instead of `fold()` so they never vote in
-  the running median. Verify with the two instruments in the plan: slot
-  determinism (server) and `window.__cwiChurn.report()` (page,
-  `display.debug_churn: true`).
+- **THE CAPTION INVARIANT: a word that has been shown must stop changing —
+  once its MOTION WINDOW passes.** (Refined 2026-07-23 for `motion.live_sync`.)
+  A word turns its speaker colour, then animates through a ~0.3 s transient (the
+  2.2.3 pop/elevation/swell) and comes to rest; from that point its size,
+  weight, colour and RESTING position are frozen for life. What the transient is
+  allowed to touch is bounded: `transform` only (so `font-size`/weight are never
+  re-resolved), on the word itself and — POSITION only — on its row-mates, and
+  every transform returns to rest and is written exactly once when the window
+  ends. Verification may add/remove words and (under `display.stability:
+  corrections`) respell one; it may never restyle one. Enforced by: server
+  freezes `loudness`/prosody per time SLOT in `prosody_cache` (key
+  `("§slot", utterance, round(start*20))` — text-keyed missed exactly when the
+  verifier respelled); page's `typeCache` is first-write-wins and geometry is
+  frozen on the node as `el._type`; the motion loop marks `dataset.moving` for
+  the window and writes rest once at its end; tentative words and the sidebar
+  `project()` instead of `fold()` so they never vote in the running median.
+  Verify with slot determinism (server) and `window.__cwiChurn.report()` (page,
+  `display.debug_churn: true`) — whose "settled" now means turned AND
+  `dataset.moving !== "true"`, so bounded transform writes during the window are
+  expected and a settled word must still show ~0 mutations.
 - **Typography bugs are visual — screenshot before theorising.** Four real
   ones were invisible to metrics and only found by looking (see the recipe
   above): (a) live loudness used a `median - 5 dB` floor while real speech

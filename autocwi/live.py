@@ -1457,7 +1457,8 @@ class DualStreamingCaptioner:
 def streaming_events(blocks, recognizer, cfg: dict, draft_recognizer=None,
                      verifier: EndpointVerifier | None = None,
                      gain: "InputGain | None" = None,
-                     speaker_tracker: "SpeakerTracker | None" = None):
+                     speaker_tracker: "SpeakerTracker | None" = None,
+                     sound_detector=None):
     captioner = (DualStreamingCaptioner(
         draft_recognizer, recognizer, cfg, verifier=verifier,
         speaker_tracker=speaker_tracker,
@@ -1475,8 +1476,14 @@ def streaming_events(blocks, recognizer, cfg: dict, draft_recognizer=None,
                 if block.source_start >= next_level_at:
                     next_level_at = block.source_start + level_period_s
                     yield gain.level_event(block.source_start)
+                if sound_detector is not None:
+                    # TRUE captured level (block.samples), never the gained ASR
+                    # copy — the acoustic scene must not be speech-normalized.
+                    yield from sound_detector.feed(block.samples, block.source_end)
             yield from captioner.accept(block)
         yield from captioner.finish()
+        if sound_detector is not None:
+            yield from sound_detector.finish()
     finally:
         if isinstance(captioner, DualStreamingCaptioner):
             captioner.close()
@@ -1566,6 +1573,78 @@ def load_speaker_tracker(cfg: dict) -> SpeakerTracker | None:
     )
 
 
+def load_sound_event_detector(cfg: dict):
+    """Build the non-speech sound tagger, or None if disabled/missing.
+
+    Like speaker attribution, absence is non-fatal: the non-speech lane is an
+    enhancement, and live mode must still run before the one-time audio-tagging
+    model download has happened.
+    """
+
+    from .soundevents import SoundEventDetector
+
+    se = dict(cfg.get("live", {}).get("sound_events", {}) or {})
+    if not se.get("enabled", False):
+        return None
+    root = Path(__file__).resolve().parent.parent
+    model = Path(se.get("model", "assets/audio-tagging-en/model.int8.onnx"))
+    labels = Path(se.get("labels", "assets/audio-tagging-en/class_labels_indices.csv"))
+    model = model if model.is_absolute() else root / model
+    labels = labels if labels.is_absolute() else root / labels
+    if not model.is_file() or not labels.is_file():
+        print("[live] audio-tagging model missing — run scripts/fetch_streaming_model.py"
+              " (continuing without the non-speech lane)")
+        return None
+
+    import sherpa_onnx
+
+    tagger = sherpa_onnx.AudioTagging(
+        sherpa_onnx.AudioTaggingConfig(
+            model=sherpa_onnx.AudioTaggingModelConfig(
+                zipformer=sherpa_onnx.OfflineZipformerAudioTaggingModelConfig(
+                    model=str(model)),
+                num_threads=se.get("num_threads", 2),
+                provider="cpu",
+            ),
+            labels=str(labels),
+            top_k=int(se.get("top_k", 5)),
+        )
+    )
+
+    def classify(samples: np.ndarray) -> list[tuple[str, float]]:
+        stream = tagger.create_stream()
+        stream.accept_waveform(SR, samples)
+        return [(r.name, float(r.prob)) for r in tagger.compute(stream)]
+
+    return SoundEventDetector(
+        classify,
+        categories=se.get("categories", {}) or {},
+        suppress=se.get("suppress", []) or [],
+        window_s=se.get("window_s", 2.0),
+        hop_s=se.get("hop_s", 0.5),
+        min_conf=se.get("min_conf", 0.35),
+        end_conf=se.get("end_conf", 0.20),
+        hold_s=se.get("hold_s", 0.6),
+        min_gap_s=se.get("min_gap_s", 0.8),
+    )
+
+
+def _is_durable_record(ev: dict) -> bool:
+    """Which events are written to live_events.jsonl (durable text + haptics).
+
+    Durable speech words, and each finalized non-speech sound (its `end` event,
+    which carries the settled duration). Provisional/hypothesis/level/cue and a
+    sound's transient `start` are display-only.
+    """
+
+    kind = ev.get("type", "word")
+    if kind == "word":
+        return ev.get("final", True)
+    if kind == "sound":
+        return ev.get("state") == "end"
+    return False
+
+
 def load_endpoint_verifier(cfg: dict) -> EndpointVerifier:
     """Load the configured offline phrase verifier with no network fallback."""
 
@@ -1648,7 +1727,7 @@ class Broadcaster:
             event_type = obj.get("type", "word")
             durable = event_type in {"commit", "verification"} or (
                 event_type == "word" and obj.get("final", True)
-            )
+            ) or (event_type == "sound" and obj.get("state") == "end")
             if durable:
                 self._history.append((event_id, data))
             elif event_type == "hypothesis":
@@ -1744,15 +1823,17 @@ def _load_live_stack(cfg: dict):
     """
 
     live_cfg = cfg["live"]
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="load") as pool:
+    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="load") as pool:
         accurate = pool.submit(load_streaming_recognizer, cfg)
         draft = pool.submit(
             load_streaming_recognizer, cfg,
             live_cfg.get("draft_model_dir", live_cfg["streaming_model_dir"]))
         verifier = pool.submit(load_endpoint_verifier, cfg)
         tracker = pool.submit(load_speaker_tracker, cfg)
+        detector = pool.submit(load_sound_event_detector, cfg)
         accurate, draft = accurate.result(), draft.result()
         verifier, tracker = verifier.result(), tracker.result()
+        detector = detector.result()
     warm = np.zeros(SR // 2, dtype=np.float32)
     for recognizer in (accurate, draft):
         stream = recognizer.create_stream()
@@ -1762,7 +1843,12 @@ def _load_live_stack(cfg: dict):
     verifier.transcribe(warm)
     if tracker is not None:
         tracker.embed(np.zeros(SR, dtype=np.float32))
-    return accurate, draft, verifier, tracker
+    if detector is not None:
+        # Pay first-inference init here on silence; then drop the warm buffer so
+        # the real stream is not classified against 2 s of leading zeros.
+        detector.feed(np.zeros(2 * SR, dtype=np.float32), 0.0)
+        detector.reset()
+    return accurate, draft, verifier, tracker, detector
 
 
 def _start_server(page: Path, port: int, open_browser: bool):
@@ -1852,16 +1938,17 @@ def run_live(args, cfg: dict, device: str) -> None:
                 page, port, not getattr(args, "no_open", False))
             broadcaster.publish({"type": "boot", "stage": "loading models"})
         t_load = time.perf_counter()
-        model, draft_model, verifier, tracker = _load_live_stack(cfg)
+        model, draft_model, verifier, tracker, detector = _load_live_stack(cfg)
         print(f"[live] local ASR ready in {time.perf_counter() - t_load:.1f}s: "
               "160ms draft + 1120ms accurate stream + Parakeet endpoint "
               "verifier (lang=en, CPU)"
-              + (" + speaker attribution" if tracker else ""))
+              + (" + speaker attribution" if tracker else "")
+              + (" + non-speech sound lane" if detector else ""))
         if broadcaster is not None:
             broadcaster.publish({"type": "boot", "stage": "listening"})
         events = streaming_events(
             blocks, model, cfg, draft_model, verifier=verifier,
-            speaker_tracker=tracker,
+            speaker_tracker=tracker, sound_detector=detector,
         )
     events_path = out / "live_events.jsonl"
 
@@ -1869,10 +1956,10 @@ def run_live(args, cfg: dict, device: str) -> None:
         with open(events_path, "w", encoding="utf-8") as f:
             n = 0
             for ev in events:
-                if ev.get("type", "word") == "word" and ev.get("final", True):
+                if _is_durable_record(ev):
                     f.write(json.dumps(ev, ensure_ascii=False) + "\n")
                     n += 1
-        print(f"[live] {n} word events -> {events_path}")
+        print(f"[live] {n} durable events -> {events_path}")
         return
 
     if server is None:  # legacy whisper path still starts its server here
@@ -1883,7 +1970,7 @@ def run_live(args, cfg: dict, device: str) -> None:
         with open(events_path, "w", encoding="utf-8") as f:
             for ev in events:
                 broadcaster.publish(ev)
-                if ev.get("type", "word") == "word" and ev.get("final", True):
+                if _is_durable_record(ev):
                     f.write(json.dumps(ev, ensure_ascii=False) + "\n")
                     f.flush()
         print("[live] audio source finished — server still running (Ctrl-C to quit)")

@@ -140,6 +140,33 @@ motion:
     min_duration_s: 0.32     # below this, a word is not "drawn out"
     min_syllables: 2         # needs >=2 distinct sub-word onsets
 
+  # --- Live now runs the FULL CWI 2.2.3 synchronization motion (ported from
+  # `cc`), not just the calm lift. A per-frame loop animates ONLY the active
+  # word window with TRANSFORM (position + scale), never font-size — so:
+  #   * font-size stays the frozen loudness channel (a settled word keeps its
+  #     size for life; the pop is a transient scale that returns to rest);
+  #   * nothing touches the layout path, so no reflow and no frozen-width dance;
+  #   * a swelling word PUSHES its neighbours aside analytically (transform
+  #     translate) and they return — the only relaxation of THE CAPTION
+  #     INVARIANT the design asked for (position moves transiently, everything
+  #     else stays frozen). Motion is confined to the active window and a word
+  #     is written to rest exactly once when its window passes, so a settled
+  #     word is never restyled. Set enabled:false to fall back to the old
+  #     calm lift.
+  live_sync:
+    enabled: true
+    sync_pop: 0.15            # +15% transient type size at the turn (2.2.3)
+    sync_elevation_em: 0.25   # 25% elevation at the turn (2.2.3)
+    rise_s: 0.09             # pop rise to peak (recordings: 70-100 ms)
+    peak_s: 0.08             # peak lands this long after the colour turn
+    fall_s: 0.18             # settle back to rest (measured 160-190 ms)
+    # Extra pop scaled by how far above the speaker's baseline size this word
+    # rests (i.e. how loud it was) — the intonation swell, bounded so a loud
+    # word does not stack an uncompressed cc swell on its already-large rest.
+    # 0 = the constant 2.2.3 pop only, identical for every word.
+    swell_gain: 0.6
+    neighbor_push: true      # a swelling word displaces row-mates and they return
+
 # Live caption mode (`python -m autocwi live`): microphone -> true streaming
 # Nemotron ASR -> CWI-styled captions in the browser. English first.
 live:
@@ -195,6 +222,84 @@ live:
     window_s: 1.0
     hop_s: 0.25
     min_span_s: 0.4
+  # Non-speech / paralinguistic sound tagging (CWI 2.x descriptors). A local
+  # Zipformer AudioSet model tags the true-level audio; results are de-bounced
+  # into one caption event per real sound and shown in a distinct non-speech
+  # lane, never inline in the speech text. Model is a one-time ~50 MB download
+  # (fetch_streaming_model.py); if absent, live mode continues without it.
+  # AudioSet has 527 leaf classes — `categories` maps the ones that matter onto
+  # four coarse buckets by case-insensitive substring; `suppress` drops the
+  # Speech classes the recognizer already owns.
+  sound_events:
+    enabled: true
+    model: assets/audio-tagging-en/model.int8.onnx
+    labels: assets/audio-tagging-en/class_labels_indices.csv
+    num_threads: 2
+    top_k: 5
+    window_s: 2.0            # trailing audio classified each hop
+    hop_s: 0.5               # how often the tagger runs
+    min_conf: 0.35           # prob needed to OPEN a segment (chip appears)
+    end_conf: 0.20           # prob needed to sustain it (hysteresis < min_conf)
+    hold_s: 0.6              # keep open this long after it drops (no strobing)
+    min_gap_s: 0.8           # re-trigger guard per category
+    suppress:                # AudioSet classes the ASR owns — never a chip
+      - Speech
+      - Conversation
+      - Narration, monologue
+      - Babbling
+    categories:
+      vocal:
+        - Laughter
+        - Giggle
+        - Snicker
+        - Chuckle, chortle
+        - Baby laughter
+        - Belly laugh
+        - Sigh
+        - Gasp
+        - Cough
+        - Throat clearing
+        - Sneeze
+        - Sniff
+        - Breathing
+        - Crying, sobbing
+        - Whimper
+        - Groan
+        - Screaming
+        - Whistling
+      reaction:
+        - Applause
+        - Clapping
+        - Cheering
+        - Crowd
+        - Booing
+        - Chatter
+        - Hubbub
+      music:
+        - Music
+        - Musical instrument
+        - Singing
+        - Choir
+        - Guitar
+        - Piano
+        - Drum
+        - Trumpet
+        - Violin
+        - Song
+      environmental:
+        - Door
+        - Knock
+        - Doorbell
+        - Telephone
+        - Ringtone
+        - Telephone bell ringing
+        - Alarm
+        - Siren
+        - Vehicle horn
+        - Car alarm
+        - Dog
+        - Bark
+        - Bell
   # Quiet speech produced no captions at all because the streaming transducer
   # stops emitting non-blank tokens well below its training level. This gains
   # ONLY the recognizer's copy of the audio; prosody keeps measuring the true

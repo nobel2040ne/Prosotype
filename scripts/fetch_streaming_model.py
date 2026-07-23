@@ -2,8 +2,10 @@
 
 Downloads NVIDIA's int8 English Nemotron 0.6B exports: 160 ms for immediate
 draft words and 1120 ms for the accuracy-first stream, plus the int8 Parakeet
-Unified endpoint verifier that owns durable text. The active stack is about
-1.9 GB; inference is fully local afterwards.
+Unified endpoint verifier that owns durable text, plus a Zipformer AudioSet
+audio-tagging model that detects non-speech / paralinguistic sounds (laughter,
+applause, music, environmental) for the non-speech caption lane. The active
+stack is about 2.0 GB; inference is fully local afterwards.
 """
 
 import tarfile
@@ -21,6 +23,14 @@ CORE_MODELS = (
 OFFLINE_VERIFIERS = (
     ("sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming",
      "parakeet-unified-en-offline"),
+)
+
+# Non-speech sound tagging (AudioSet 527-class). Zipformer, not CED: this
+# sherpa-onnx build's AudioTaggingModelConfig exposes only the `zipformer`
+# field. Different release TAG than the ASR models (`audio-tagging-models`);
+# the archive layout (tarball -> onnx + class_labels_indices.csv) is the same.
+AUDIO_TAGGING = (
+    ("sherpa-onnx-zipformer-audio-tagging-2024-04-09", "audio-tagging-en"),
 )
 
 # Single-file speaker-embedding model for live diarization (speaker -> color).
@@ -44,12 +54,7 @@ def fetch_speaker_models(assets: Path) -> None:
         print(f"wrote {dest}")
 
 
-def main() -> None:
-    argparse.ArgumentParser().parse_args()
-    assets = Path(__file__).resolve().parent.parent / "assets"
-    assets.mkdir(exist_ok=True)
-    fetch_speaker_models(assets)
-    models = CORE_MODELS + OFFLINE_VERIFIERS
+def fetch_tarball_models(assets: Path, models, release_tag: str) -> None:
     for name, dest_name in models:
         dest = assets / dest_name
         if dest.exists() and any(dest.glob("*.onnx")):
@@ -59,7 +64,8 @@ def main() -> None:
         if tmp.exists():
             print(f"using existing archive: {tmp}")
         else:
-            url = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/{name}.tar.bz2"
+            url = (f"https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+                   f"{release_tag}/{name}.tar.bz2")
             print(f"downloading {name} ...")
             urllib.request.urlretrieve(url, tmp)
         print("extracting ...")
@@ -68,6 +74,15 @@ def main() -> None:
         (assets / name).rename(dest)
         tmp.unlink()
         print(f"wrote {dest}")
+
+
+def main() -> None:
+    argparse.ArgumentParser().parse_args()
+    assets = Path(__file__).resolve().parent.parent / "assets"
+    assets.mkdir(exist_ok=True)
+    fetch_speaker_models(assets)
+    fetch_tarball_models(assets, CORE_MODELS + OFFLINE_VERIFIERS, "asr-models")
+    fetch_tarball_models(assets, AUDIO_TAGGING, "audio-tagging-models")
 
 
 if __name__ == "__main__":
