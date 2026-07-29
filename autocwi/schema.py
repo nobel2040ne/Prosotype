@@ -9,6 +9,7 @@ stage can be run and inspected independently.
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Literal, Optional
@@ -185,6 +186,16 @@ class Word(BaseModel):
     pitch_hz: float = Field(ge=0)        # raw; 0.0 = unvoiced
     voiced_frac: Optional[float] = Field(default=None, ge=0, le=1)
     conf: float = Field(ge=0, le=1)
+    # Live speaker attribution is revision-capable. These fields are additive:
+    # a legacy spec that omits them is interpreted as a stable assignment to
+    # ``speaker`` with unspecified confidence and revision metadata.
+    speaker_status: Optional[
+        Literal["unknown", "provisional", "stable", "corrected"]
+    ] = None
+    speaker_confidence: Optional[float] = None
+    speaker_change_probability: Optional[float] = None
+    speaker_revision_id: Optional[int] = Field(default=None, ge=0)
+    overlap: Optional[bool] = None
     # Optional, additive: force a caption-line break before this word, so an
     # authored spec keeps the grouping it was derived with. Renderers that do
     # not know the field simply ignore it, so no version bump.
@@ -205,6 +216,19 @@ class Word(BaseModel):
     # envelopes for this word — see `Motion`. Absent for live and synthetic
     # specs, which keep the model.
     motion: Optional[Motion] = None
+
+    @field_validator("speaker_confidence", "speaker_change_probability",
+                     mode="before")
+    @classmethod
+    def _clamp_probability(cls, value):
+        """Tolerate small model/calibration overshoots, but never NaN/inf."""
+
+        if value is None:
+            return None
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("speaker probability values must be finite")
+        return min(1.0, max(0.0, number))
 
     @model_validator(mode="after")
     def _end_after_start(self) -> "Word":

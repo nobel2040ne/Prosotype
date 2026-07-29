@@ -53,9 +53,12 @@ at listed hue angles (0°, 7°, 24°, 40°, 58°, 73°, 87°, 102°, 120°, 133�
 
   Three things follow, and all three were got wrong here before the PDF was
   read directly:
-  1. The cue is **per WORD**, not per character (2.2.4 confirms: "In most
-     cases, words will be spoken and animated **fully, one by one**" —
-     syllable-at-a-time is the documented exception).
+  1. The cue is **triggered per WORD** (2.2.4: words are normally animated
+     fully, one by one), but the website recording eases that word event
+     through its character spans. In other words, event ownership is
+     word-level while the visible synchronization hand-off can be
+     alphabet-level. This does not make the caption a typewriter reveal:
+     every letter is already present.
   2. Its amplitude is a **constant**. It is a synchronization cue whose job is
      to point the eye; it is not prosody. Per-word amplitude belongs to
      intonation (2.3.3–2.3.6), a different scope. Collapsing the two is what
@@ -131,13 +134,13 @@ The complete inventory of animated text properties in that project is:
 ```
 
 `ADBE Text Scale|Tracking|Size|Rotation|Blur|Opacity` appears **zero** times.
-**CWI motion is vertical position plus the color turn. Nothing scales.**
-
-This is not only a fidelity point. Type size *is* the loudness channel
-(2.3.3–2.3.6). A per-word size pop would make every word transiently read as
-louder than it was spoken, so the free channel — vertical position — carries
-the "guide the eye" role instead. We removed our earlier 15% scale pop on this
-evidence.
+That describes the downloadable template's calmer implementation, not the
+whole design-system contract. The PDF is authoritative and §2.2.3 explicitly
+requires the 15% temporary pop as well as the diagram's 25% elevation. Live and
+`cc` therefore implement both as a transient transform that returns to rest;
+they never rewrite settled `font-size`. Loudness remains the separate settled
+intonation channel (§§2.3.3–2.3.6), and it never changes synchronization
+amplitude.
 
 Per caption line the template has three animators:
 
@@ -160,17 +163,83 @@ Because the selector has Ease High/Low set, neighbouring words are *partially*
 displaced as it passes — the line reads as one travelling wave, not a row of
 isolated twitches.
 
-Live-mode adaptation: we keep the color turn exactly on the spoken onset
-(2.2.2 is explicit about onset).
+Live-mode adaptation: authored CWI can place read-ahead type before speech,
+but an open-caption word cannot exist until ASR supplies it. `stable`, `fast`,
+and `readahead` therefore treat the node's first paint as its visual activation.
+The base §2.2.3 cue is then shaped by the word's measured delivery: loudness
+sets the temporary size excursion, pitch sets temporary weight, and the
+available spectral proxy sets temporary width. These axes do **not** share one
+temporal envelope: pitch/weight has the earliest attack and release,
+loudness/size breathes through the middle, and resonance/width arrives later.
+All three use smoothstep at both ends. A separate character-local curve follows
+the website recording, but adjacent samples are blended into a continuous
+upward ribbon before paint. Each already-visible letter lifts/pops gently near
+its own turn and settles before the wave reaches the end of the word. There is
+no below-baseline anticipation: the earlier crouch made alternating letters
+look like a zipper rather than one travelling boundary. The ranges are
+deliberately compressed for a stacked transcript. Every wrapper and character
+returns to the same normal-font rest (`scale(1)`, no character transform,
+weight 400, width 100).
 
-**The neighbour bleed is off by default (`motion.neighbor_bleed: 0`).** The
-template animates a finished line that the viewer watches play through, so a
-wave passing along it disturbs nothing. Live, words accumulate and stay on
-screen: displacing a settled word moves text somebody is still reading, which
-is the opposite of what read-ahead exists for. Only the word being spoken
-moves, and each word moves exactly once — `dataset.moved` guards re-entry, and
-an endpoint verification re-states the phrase without replaying any motion.
-Raise `neighbor_bleed` above 0 to restore the template's travelling wave.
+The [Quickstart Guide](Caption%20with%20Intention%20%E2%80%93%20Quickstart%20Guide.pdf)
+confirms that animation timing belongs to the `[START]`/`[END]` markers rather
+than to the layer's `IN`/`OUT` lifetime. Live preserves that separation:
+first-paint geometry has one monotonic 520–720 ms clock, while the later
+speaker-colour decision owns only the white→speaker-colour sweep. Verification
+can revise text or attribution during that clock without restarting or
+settling it early; after the clock finishes, no later event can move the word.
+Replayed history never moves. The live base cue is 10% scale / 0.20 em lift;
+the alphabet hand-off adds at most 0.085 em lift and 3% local pop, with zero
+pre-turn crouch. A `0.72` neighbour blend turns the sampled character phases
+into one smooth ribbon. Its separate virtual clock spaces character turns by
+0.18 s (capped at 2.20 s) before mapping them into the same bounded 520–720 ms
+display window. The word wrapper keeps its own compact clock, so spelling
+length cannot compress its attack.
+
+Fast live speech is handled without delaying text. Acoustic word span maps the
+complete motion continuously from 520 to 720 ms, while
+`fast_speech_motion_gain` eases its travel from 0.58 to 1.0. Slow delivery also
+delays the independent axis peaks by up to 6% of that longer window; this makes
+a sustained word develop more languidly instead of replaying one generic curve.
+Reveal/onset scheduling stays unchanged. In the standard sample this produces
+roughly 53–110 ms between character turns. The measured fast-word
+weight/size/width attacks are about 156/218/260 ms, compared with
+244/346/397 ms for a drawn word. Bounded loudness and pitch response still
+makes quiet, grounded, bright, strong, and neutral deliveries perceptibly
+different. These are diagnostic descriptions of continuous motion, not canned
+effects.
+
+The 2026-07-24 browser sample check captured the distinction directly from
+painted styles. On “Are,” weight had reached 69% while size was at 41% and
+width at 33%; later, width remained at 100% while weight had released to 64%.
+Across the captured phrase, temporary size targets ranged from 0.78× to 1.34×
+and weight excursions ranged from 56 units lighter to 79 units heavier. The
+completed page reported zero animation restarts, zero moving words, zero active
+character transforms, and zero non-normal variable-font axes.
+
+Words reveal sequentially using their acoustic onset gaps, with at most two
+active together. Before the spelling is known, the phone sidecar may advance
+one confidence-gated prefix on the same first-word node (`H → He → Hel`) and
+send duration-only updates while the current sound is held. The letters
+themselves remain stable; a short paint-on trail after the last known letter
+represents continuing duration. Once the authoritative spelling is known, a
+drawn-out word keeps that full spelling visible and advances colour through
+measured syllable/phoneme stops. This is the closest honest live equivalent of
+§2.2.1/2.2.4 when future text is unavailable.
+The sweep interpolates the colour of each existing character span; applying
+`background-clip:text` to a parent containing those spans is unsafe in Chromium
+and can visually stack all glyphs at one origin.
+
+The PDF does not prescribe attack/hold/release durations or easing;
+`motion.live_sync.rise_s`, `peak_s`, and `fall_s` are tunable implementation
+defaults.
+
+The legacy Web Animations neighbour lift and analytic neighbour push are both
+off in stacked live mode (`motion.neighbor_bleed: 0`,
+`motion.live_sync.neighbor_push: false`). Only the active word and its own
+character spans move. Each word's activation still runs once —
+`dataset.moved` guards re-entry, and endpoint or speaker verification never
+restarts motion.
 
 ## Closed captions vs live — what each can actually do
 
@@ -181,10 +250,11 @@ and the reference the live renderer is measured against:
 | behaviour | `cc` (authored) | `live` (ASR) |
 |---|---|---|
 | read-ahead (2.2.1) | real — line legible in white first | impossible; ASR has no future |
-| colour turn (2.2.2) | sweeps through the word's letters over its span | flip at commit |
-| anticipation lead | exact (template's 1-4 frames) | approximated by lifting the next word |
-| travelling wave | on — a caption plays through | off — would displace settled transcript |
-| determinism | pure function of `t`; scrub back = same frame | monotonic, best-effort |
+| colour turn (2.2.2) | sweeps through the word's letters over its span | onset-aligned when the cue arrives in time; late events settle |
+| alphabet synchronization | character lift/pop around each known turn | same curve rebased onto the one-time first-paint clock |
+| timing clock | exact media clock | source-to-browser clock map; early schedule / late seek |
+| neighbour displacement | authored line | analytic transform-only push when `neighbor_push` is enabled |
+| determinism | pure function of `t`; scrub back = same frame | monotonic revision order; deterministic reducer |
 
 ### Read off the reference captures (docs/*.mov, docs/*.png)
 
@@ -193,7 +263,7 @@ the free AE template could not:
 
 1. **The colour boundary lands INSIDE a word.** "Roya|le with Cheese!" — orange
    through `Roya`, white from `le`. Character-level, not word-level.
-2. **There is a travelling wave at CHARACTER level.** In the intonation demo a
+2. **There is a travelling wave at CHARACTER level.** In the synchronization demo a
    single word renders with its letters at different heights and sizes —
    `a`(base) `ni`(raised, larger) `mati`(lowered, smaller) — and the diagram
    frame shows `con`+`sec`+`tet`+`ur` stepping up around the playhead. The
@@ -219,19 +289,26 @@ the free AE template could not:
 
 Implemented in `autocwi/ccpage.py` as one span per character:
 `closed_caption.wave_reach` (how far either side of the boundary the ripple
-extends, as a fraction of the word) and `wave_scale` (peak letter scale, CWI
-2.2.3's 15%). Setting `wave_reach: 0` gives the film-still behaviour.
+extends), `wave_lift_em`, and `wave_pop` (peak local character scale). The
+wrapper's separate `sync_pop` retains CWI 2.2.3's 15% word cue. Setting
+`wave_reach: 0` gives the film-still behaviour.
 
-Film-still layout also differs from our live stage: centred, ONE line, a tight
-box hugging the text, and type noticeably smaller than ours. Our live stage is
-left-aligned and accumulates by explicit user preference — a deliberate
-divergence, recorded here so it is not mistaken for a bug.
+The authored film stills use one tight centred line. The live product is a
+stacked adaptation: left-aligned, text-hugging boxes grow upward so recent
+speech remains readable in context, and the oldest box leaves when the stage
+fills. Each attributed speaker gets a separate paragraph. A late stable
+attribution partitions the already-rendered nodes without replaying motion;
+adjacent fragments attributed to the same speaker merge again when they fit.
+Unknown speech stays neutral. `display.retention: linger` retains the bounded
+two-box alternative.
 
 **On "alphabet-level" motion:** the AE template drives a *word*-index Range
 Selector (`textLenWords`; the animator is literally named `Words`) — but with
-Ease High/Low set, so the hand-off between consecutive words is smoothed
-*across characters*. Word-level timing produces character-level appearance.
-`closed_caption.sync_granularity: character|word` exposes both readings.
+Ease High/Low set, so the website-style hand-off is visibly resolved across
+character spans. Word-level ownership and character-level appearance are
+composable, not contradictory. `closed_caption.sync_granularity:
+character|word` exposes both readings; live always uses character appearance
+inside the active word.
 
 ## Syllable variation (2.2.4) — what the timing actually supports
 
@@ -299,7 +376,7 @@ The speculative hypothesis still drives the sidebar timeline and status line in
 stable mode, so what the recognizer is working on stays visible without
 rewriting the captions.
 
-### Three display modes
+### Four display modes
 
 `display.mode` in config.yaml:
 
@@ -319,8 +396,64 @@ rewriting the captions.
   is also how a lone word becomes visible without waiting for the endpoint:
   the trailing word is deliberately never committed early (measured: an early
   release saves no time and commits truncations), it shows white instead.
-- **`stable`** — committed words one at a time, ~1.1 s behind, never revised.
-- **`readahead`** — also shows the 160 ms draft; lowest latency, visible churn.
+- **`stable`** — committed words one at a time and the least revisable view.
+- **`readahead`** — also loads and shows the 160 ms draft; lowest latency,
+  visible churn. The draft is not loaded by the normal fast path because hidden
+  draft inference delayed the more accurate words it was supposed to support.
+
+All revisable modes now share one ordering/reduction path: text, timing,
+speaker, source authority, finality, and SSE id are compared before a DOM
+change. Updates coalesce once per word per animation frame, settled words never
+roll back to provisional, and tentative-tail reconciliation moves or edits
+stable nodes instead of rebuilding earlier lines.
+
+## Continuous voice circle (live-only extension)
+
+The design-system type axes remain the semantic caption channels. Live also
+has measurements before any word exists, so a small indicator immediately
+after the active speaker line exposes them without guessing text or emotion.
+A larger radar/minimap-style Voice Compass in the side grid mirrors the same
+signals:
+
+- outer radius = true captured RMS volume (`-60…-15 dBFS`);
+- bead height = block-level autocorrelation F0 (`80…250 Hz`);
+- inner oval width = spectral centroid (brightness);
+- inner opacity/halo = periodicity (tonal/voiced strength).
+
+The analyzer runs on each ~64 ms input block, and the browser smooths the
+indicators separately from caption motion. They are never embedded in a glyph,
+never change line geometry, and never revise a settled word. Unvoiced audio
+centres/fades the bead instead of inventing a pitch. The large compass accepts
+future `direction_deg`/`azimuth_deg` events, but reports `awaiting array` on the
+current mono path. This is a live-only accessibility cue, not a claim that the
+CWI V1.0 PDF specifies either circle.
+
+The 2026-07-25 delivery extension adds only observable acoustic dimensions:
+force, attack, F0 contour, voiced flow, and texture. The line orb gently tilts
+with contour, stretches with flow/force, and changes its inner resonance with
+texture; the large compass mirrors those channels without fabricating a mono
+direction. The labels (`rising`, `falling`, `sustained`, `forceful`, `gentle`,
+`textured`, `steady`) describe delivery, not emotion.
+
+For caption words, the same values choose distinct *temporary paths*: a rising
+word reaches its crest late, a falling word crests early and resolves, a
+sustained word holds, forceful and gentle words use different travel/attack,
+and texture appears as a non-jittering halo. This is a live adaptation, not a
+new CWI V1.0 semantic channel. Speaker colour remains identity-only,
+loudness→scale and pitch→weight stay interpretable, and every path finishes at
+the exact common rest state. The backend freezes the dimensions before first
+paint; a later colour, spelling, or attribution update cannot select a new
+path.
+
+These paths are deliberately sparse. Durable contour uses a 10 ms Praat track,
+not the noisier two-frame orb estimate, and needs five voiced frames, 30%
+coverage, octave filtering, and a ±0.45 deadband. This reduced expressive
+profiles from 86–93% of ordinary standard-sample words to 22–29%. `steady`
+words keep only 30% of the additional voice-shaped deviation, but still receive
+the whole live synchronization cue: at least 10% scale and 0.20 em lift. A
+quiet-word intonation value cannot cancel that floor. All CSS paths begin near
+the baseline and use a zero-slope curve; falling/forceful do not teleport into
+their crest on the first frame.
 
 ## Expression response — why the raw mapping looked wrong
 
@@ -380,10 +513,45 @@ scale.
 ## Implementation status here
 
 Implemented: main+supporting palettes, streaming-hypothesis read-ahead,
-accurate-profile provisional color cues, stable final words, baseline-anchored
-vertical lift with the template's anticipation and neighbour bleed, eased color
-turn, syllable variation for drawn-out words, synchronization timeline,
-%-of-height sizing (3/5/12), absolute-Hz weight + width mapping, live intonation meters, 90% captions
-box, bottom margin, and max-two-boxes (live page).
+accurate-profile provisional color cues, stable final words, PDF §2.2.3's
+constant per-word 15% pop plus 25% elevation in authored `cc`, and a separate
+live first-display adaptation (10% / 0.20 em base cue plus compressed transient
+voice axes). The base cue and 0.085 em / 3% upward character ribbon are
+independent of the delivery-profile deadband, so an active word remains
+perceptible even when classified `steady`. Live words reveal in acoustic order
+with at most two active,
+return to scale 1 / weight 400 / width 100, and keep colour on an independent
+clock that cannot restart geometry. Also implemented: speaker-specific stacked
+paragraphs with in-place late partitioning, source-clock diagnostics, span-safe
+eased colour turn, syllable/phoneme variation for drawn-out words,
+synchronization timeline, %-of-height sizing (3/5/12), absolute-Hz weight +
+width mapping, live intonation meters, 90% captions box, bottom margin, and
+max-two-boxes (live page). English and Korean now share those renderer
+semantics: language selection happens before capture, Korean 어절 are reconstructed
+from the streaming model's leading-space tokens, and Hangul syllable pieces
+retain their recognizer timestamps. Korean uses a locally served Noto Sans KR
+variable `wght` axis because the design-system Roboto Flex file has no Hangul
+outlines; a static system fallback did not express the pitch-driven weight
+motion continuously.
+The product Transcript treats a speaker/ASR utterance as one semantic paragraph.
+Audience Stage derives fixed eight-word rows from immutable semantic word order
+and retains six rows,
+so already read words do not compete with an ever-growing wall of boxes. The
+current accurate hypothesis remains visible in the active block while the
+reveal scheduler limits simultaneous word motions to two; concurrency is not a
+visibility filter. Settled words keep their semantic nodes and never replay
+motion when a ninth word opens the next block. Diarization and provisional
+utterance segmentation may relabel
+a word but never partition Stage geometry; this prevents pending attribution
+or unstable segmentation from producing one-word rows. The row stack is lively
+without reanimating typography: existing
+rows glide to the next slot over 540 ms and a new row settles upward over
+620 ms from opacity 0, `translateY(0.58em)`, and `scale(.985)`, using a calm
+`(0.18, 0.72, 0.22, 1)` curve. The initial caption block enters the same way;
+an initial multi-row replay stays settled. Only a first-seen bottom
+row can trigger that FLIP pass; late text, color, speaker, removal, and
+reappearance updates cannot. Smaller 2.65-vh
+resting type and 1.14 leading keep the stack readable without a duplicate
+sentence panel.
 Not implemented: minor-character pastels, off-camera italics, dedicated
 harmonic-spectrum analysis, box breakout, sound-effect/music captions.

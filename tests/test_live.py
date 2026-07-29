@@ -1,7 +1,10 @@
 import json
+import http.server
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,19 +18,30 @@ from autocwi.live import (
     AudioChunk,
     Broadcaster,
     DualStreamingCaptioner,
+    EndpointVerifier,
     HypothesisWord,
     StreamingCaptioner,
     coalesce_audio_chunks,
     InputGain,
+    LiveLanguageSession,
+    SR,
+    _configure_live_language,
+    _normalized_token,
+    _realtime_voice_features,
     _rms_db,
+    _studio_runtime_config,
+    _word_delivery_features,
     common_prefix_len,
     conservative_verified_words,
+    repair_verified_tail_timing,
     file_blocks,
     sample_clip_path,
     hypothesis_words,
+    make_handler,
     mic_blocks,
 )
 from autocwi.livepage import render_live
+from autocwi.onset import PhoneCandidate, PhonemeOnsetDetector
 
 
 def result(tokens, timestamps, probs=None, text=""):
@@ -49,6 +63,76 @@ def test_transducer_pieces_collapse_to_timestamped_words():
     assert [round(w.start, 1) for w in words] == [0.2, 0.5, 1.0]
     assert words[0].end == 0.5
     assert words[-1].end == 1.4
+
+
+def test_korean_transducer_pieces_preserve_eojeol_boundaries_and_syllables():
+    words = hypothesis_words(
+        result(
+            [" 걔는", " 괜찮은", " 척", "하", "려", "구", " 애", " 쓰는"],
+            [0.52, 0.96, 1.28, 1.44, 1.52, 1.84, 2.28, 2.48],
+        ),
+        audio_duration=3.0,
+    )
+    assert [word.text for word in words] == [
+        "걔는", "괜찮은", "척하려구", "애", "쓰는",
+    ]
+    assert words[2].syllables() == [
+        ("척", 1.28), ("하", 1.44), ("려", 1.52), ("구", 1.84),
+    ]
+
+
+def test_verifier_normalization_preserves_hangul_and_removes_punctuation():
+    assert _normalized_token("괜찮은!") == "괜찮은"
+    assert _normalized_token("보여 주시겠어요?") == "보여주시겠어요"
+    assert _normalized_token("Hello, 2026.") == "hello2026"
+
+
+def test_endpoint_verifier_restores_korean_spaces_from_piece_boundaries():
+    result_value = SimpleNamespace(
+        text="그는괜찮은척하려고애쓰는것같았다.",
+        tokens=[
+            " 그", "는", " 괜찮은", " 척", "하", "려고",
+            " 애", "쓰", "는", " 것", " 같", "았", "다", ".",
+        ],
+    )
+
+    class Stream:
+        result = result_value
+
+        def accept_waveform(self, sample_rate, audio):
+            pass
+
+    recognizer = SimpleNamespace(
+        create_stream=Stream,
+        decode_stream=lambda stream: None,
+    )
+    verifier = EndpointVerifier(recognizer)
+    assert verifier.transcribe(np.zeros(160, dtype=np.float32)) == (
+        "그는 괜찮은 척하려고 애쓰는 것 같았다."
+    )
+
+
+def test_korean_live_profile_uses_korean_models_only():
+    cfg = _configure_live_language(load_config(), "ko")
+    live = cfg["live"]
+    assert live["lang"] == "ko"
+    assert live["streaming_model_dir"].endswith("streaming-zipformer-ko-174m")
+    assert live["streaming_files"]["encoder"].endswith(".int8.onnx")
+    assert "chunk-16" in live["streaming_files"]["encoder"]
+    assert live["draft_enabled"] is False
+    assert live["verifier_enabled"] is False
+    assert live["decoding_method"] == "greedy_search"
+    assert live["streaming_max_active_paths"] == 8
+    assert live["onset_prefix"]["enabled"] is False
+    assert live["diarization"]["backend"] == "auto"
+    assert live["diarization"]["model"].endswith(
+        "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+    )
+    assert live["diarization"]["segmentation_model"].endswith(
+        "speaker-segmentation-en/model.int8.onnx"
+    )
+    assert live["speaker_attribution"]["assignment_threshold"] == 0.42
+    assert live["speaker_attribution"]["min_enrollment_duration_s"] == 0.8
 
 
 def test_missing_model_confidence_is_marked_unavailable():
@@ -155,6 +239,47 @@ def test_endpoint_verifier_retimes_insertions_and_deletes_extra_words():
 
     deleted = conservative_verified_words(streaming, "we talk")
     assert [word.text for word in deleted] == ["we", "talk"]
+
+
+def test_endpoint_verifier_anchors_trailing_insertions_to_active_audio():
+    streaming = [HypothesisWord("okay?", 0.6, 1.0, 0.9)]
+    audio = np.zeros(round(2.8 * SR), dtype=np.float32)
+    audio[round(1.30 * SR):round(1.85 * SR)] = 0.08
+    # A later non-speech event must not stretch the verified words.
+    audio[round(2.40 * SR):round(2.62 * SR)] = 0.10
+
+    verified = conservative_verified_words(
+        streaming,
+        "okay? something without sugar",
+        audio=audio,
+    )
+
+    tail = verified[1:]
+    assert [word.text for word in tail] == ["something", "without", "sugar"]
+    assert 1.20 <= tail[0].start <= 1.35
+    assert 1.80 <= tail[-1].end <= 1.95
+    assert all(left.end <= right.start for left, right in zip(tail, tail[1:]))
+
+
+def test_endpoint_verifier_repairs_equal_but_silence_aligned_tail():
+    words = [
+        HypothesisWord("okay?", 0.7, 1.0, 0.9),
+        HypothesisWord("something", 1.0, 1.15, 0.8),
+        HypothesisWord("without", 1.15, 1.30, 0.8),
+        HypothesisWord("sugar.", 1.30, 1.45, 0.8),
+    ]
+    audio = np.zeros(round(2.8 * SR), dtype=np.float32)
+    audio[round(1.75 * SR):round(2.55 * SR)] = 0.08
+
+    repaired = repair_verified_tail_timing(words, audio)
+
+    assert repaired[0] == words[0]
+    assert repaired[1].start >= 1.65
+    assert repaired[-1].end >= 2.50
+    assert all(
+        left.end <= right.start
+        for left, right in zip(repaired[1:], repaired[2:])
+    )
 
 
 def test_adaptive_gate_counts_speech_but_not_quiet_blocks():
@@ -305,9 +430,115 @@ def test_level_event_survives_sse_serialization():
             event = gain.level_event(1.0)
             json.dumps(event)
             assert isinstance(event["speech"], bool)
+            assert isinstance(event["pitch_hz"], float)
+            assert isinstance(event["pitch_confidence"], float)
+            assert isinstance(event["spectral_centroid_hz"], float)
+            assert isinstance(event["delivery_contour"], float)
+            assert isinstance(event["delivery_profile"], str)
             assert event["status"] in {
                 "no-signal", "idle", "good", "too-quiet", "clipping",
             }
+
+
+def test_realtime_voice_features_track_frequency_without_a_model():
+    t = np.arange(BLOCK := 1024) / SR
+    signal = (0.35 * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32)
+    pitch, confidence, centroid = _realtime_voice_features(signal)
+    assert abs(pitch - 180.0) < 4.0
+    assert confidence > 0.8
+    assert 100.0 < centroid < 300.0
+    assert _realtime_voice_features(np.zeros(BLOCK, dtype=np.float32)) == (
+        0.0, 0.0, 0.0
+    )
+
+
+def test_word_delivery_distinguishes_rising_and_falling_contours():
+    cfg = load_config()
+    duration = 0.6
+    t = np.arange(int(SR * duration)) / SR
+
+    def chirp(start_hz, end_hz):
+        rate = (end_hz - start_hz) / duration
+        phase = 2 * np.pi * (start_hz * t + 0.5 * rate * t**2)
+        voiced = (0.20 * np.sin(phase)).astype(np.float32)
+        return np.concatenate([
+            np.zeros(int(0.1 * SR), dtype=np.float32),
+            voiced,
+            np.zeros(int(0.1 * SR), dtype=np.float32),
+        ])
+
+    word = HypothesisWord("voice", 0.1, 0.7, 0.9)
+    rising = _word_delivery_features(word, chirp(120, 240), cfg)
+    falling = _word_delivery_features(word, chirp(240, 120), cfg)
+    assert rising["delivery_profile"] == "rising"
+    assert rising["delivery_contour"] > 0.7
+    assert falling["delivery_profile"] == "falling"
+    assert falling["delivery_contour"] < -0.7
+
+
+def test_word_delivery_deadband_rejects_shallow_or_under_evidenced_contour():
+    cfg = load_config()
+
+    def chirp(duration, start_hz, end_hz, amplitude=0.08):
+        t = np.arange(int(SR * duration)) / SR
+        rate = (end_hz - start_hz) / duration
+        phase = 2 * np.pi * (start_hz * t + 0.5 * rate * t**2)
+        return (amplitude * np.sin(phase)).astype(np.float32)
+
+    shallow = chirp(0.4, 170, 185)
+    shallow_result = _word_delivery_features(
+        HypothesisWord("ordinary", 0.0, 0.4, 0.9),
+        shallow,
+        cfg,
+    )
+    assert abs(shallow_result["delivery_contour"]) < 0.45
+    assert shallow_result["delivery_profile"] == "steady"
+
+    short = chirp(0.06, 120, 240)
+    short_result = _word_delivery_features(
+        HypothesisWord("a", 0.0, 0.06, 0.9),
+        short,
+        cfg,
+    )
+    assert short_result["delivery_contour"] == 0
+    assert short_result["delivery_contour_confidence"] == 0
+
+
+def test_onset_prefix_advances_one_stable_phone_at_a_time():
+    # Exercise the state machine without loading Torch/model weights. A decoder
+    # already seeing /hh eh l/ must still paint H -> He -> Hel sequentially.
+    detector = PhonemeOnsetDetector.__new__(PhonemeOnsetDetector)
+    detector.hop_samples = 1024
+    detector.min_audio_samples = 1024
+    detector.right_context_samples = 0
+    detector.max_audio_samples = SR * 3
+    detector.activation_db = -60.0
+    detector.silence_db = -70.0
+    detector.reset_samples = SR
+    detector.min_confidence = 0.6
+    detector.max_prefix_chars = 8
+    detector.prefix_stability_updates = 2
+    detector.sustain_update_samples = 2048
+    detector._decode_candidates = lambda _samples: [
+        PhoneCandidate("hh", "H", 0.96),
+        PhoneCandidate("eh", "E", 0.94),
+        PhoneCandidate("l", "L", 0.92),
+    ]
+    detector.reset()
+    block = np.full(1024, 0.1, dtype=np.float32)
+    events = []
+    for index in range(5):
+        events.extend(detector.feed(block, index * 1024 / SR, 7))
+    words = [message["words"][0] for message in events]
+    assert [word["text"] for word in words] == ["H", "He", "Hel"]
+    changed = []
+    for word in words:
+        if not changed or word["text"] != changed[-1]:
+            changed.append(word["text"])
+    assert changed == ["H", "He", "Hel"]
+    assert {word["word_id"] for word in words} == {"u7:w0"}
+    assert all(word["sustain_active"] for word in words)
+    assert words[-1]["sustain_s"] > words[0]["sustain_s"]
 
 
 def test_disabled_gain_passes_audio_through_untouched():
@@ -353,7 +584,7 @@ def test_quiet_recognized_phrase_is_committed_at_endpoint():
 
     captioner = StreamingCaptioner(Recognizer(), load_config())
     captioner.audio_blocks = [np.zeros(16_000, dtype=np.float32)]
-    captioner._word_event = lambda word, audio, final, speaker=None: {
+    captioner._word_event = lambda word, audio, final, speaker=None, word_id=None: {
         "type": "word", "text": word.text, "final": final,
         "start": word.start, "end": word.end,
     }
@@ -372,6 +603,58 @@ def test_quiet_recognized_phrase_is_committed_at_endpoint():
     ]
 
 
+def test_no_text_verifier_still_finalizes_speakers_at_endpoint():
+    decoded = result([" 안녕", " 하세요"], [0.1, 0.5])
+
+    class Recognizer:
+        def create_stream(self):
+            return object()
+
+        def get_result_all(self, stream):
+            return decoded
+
+    class Tracker:
+        def __init__(self):
+            self.label_calls = 0
+
+        def label_words(self, audio, words, **kwargs):
+            self.label_calls += 1
+            return [
+                SimpleNamespace(speaker_id="S1", status="stable")
+                for _ in words
+            ]
+
+    tracker = Tracker()
+    captioner = StreamingCaptioner(
+        Recognizer(),
+        load_config(),
+        speaker_tracker=tracker,
+    )
+    captioner.audio_blocks = [np.zeros(16_000, dtype=np.float32)]
+    captioner._word_event = (
+        lambda word, audio, final, speaker=None, word_id=None: {
+            "type": "word",
+            "word_id": word_id,
+            "text": word.text,
+            "final": final,
+            "speaker": speaker.speaker_id,
+            "speaker_status": speaker.status,
+        }
+    )
+
+    events = list(captioner._process_result(endpoint=True))
+
+    assert tracker.label_calls == 1
+    assert [
+        (event["text"], event["speaker"], event["speaker_status"])
+        for event in events
+        if event["type"] == "word"
+    ] == [
+        ("안녕", "S1", "stable"),
+        ("하세요", "S1", "stable"),
+    ]
+
+
 def test_endpoint_verifier_owns_durable_words():
     decoded = result([" APPREHENS"], [0.1])
 
@@ -387,7 +670,7 @@ def test_endpoint_verifier_owns_durable_words():
         Recognizer(), load_config(), verifier=verifier
     )
     captioner.audio_blocks = [np.zeros(16_000, dtype=np.float32)]
-    captioner._word_event = lambda word, audio, final, speaker=None: {
+    captioner._word_event = lambda word, audio, final, speaker=None, word_id=None: {
         "type": "word", "text": word.text, "final": final,
         "start": word.start, "end": word.end,
     }
@@ -420,17 +703,17 @@ def test_dual_merge_prefers_accurate_words_and_keeps_fast_tail():
     assert [word["text"] for word in merged["words"]] == ["accurate", "tail"]
 
 
-def test_accurate_partial_cues_each_slot_once_without_becoming_final():
+def test_accurate_partial_cues_each_word_once_even_on_same_encoder_frame():
     dual = DualStreamingCaptioner.__new__(DualStreamingCaptioner)
     dual.cued_slots = set()
     words = [
         {
             "type": "word", "final": False, "text": "steady", "speaker": "S1",
-            "t": 0.4, "start": 0.4, "end": 0.7,
+            "word_id": "u0:w0", "t": 0.4, "start": 0.4, "end": 0.7,
         },
         {
             "type": "word", "final": False, "text": "tail", "speaker": "S1",
-            "t": 0.8, "start": 0.8, "end": 1.0,
+            "word_id": "u0:w1", "t": 0.4, "start": 0.4, "end": 1.0,
         },
     ]
 
@@ -462,6 +745,9 @@ def test_accurate_snapshot_and_cue_precede_its_durable_word():
 
     output = list(dual._handle_accurate_events([durable, snapshot]))
     assert [event["type"] for event in output] == ["hypothesis", "cue", "word"]
+    assert output[0]["words"][0]["src"] == "accurate"
+    assert output[1]["src"] == "accurate"
+    assert output[2]["src"] == "accurate"
 
 
 def test_streaming_captioner_resets_on_source_discontinuity():
@@ -521,7 +807,191 @@ def test_browser_queue_replays_durable_events_after_last_event_id():
     chunks = [replay.get_nowait(), replay.get_nowait()]
     assert chunks[0].startswith(b"id: 3\n")
     assert chunks[1].startswith(b"id: 4\n")
+    assert all(b'"_replay": true' in chunk for chunk in chunks)
+    assert all(b'"_first_presentation": false' in chunk for chunk in chunks)
     assert replay.empty()
+
+
+def test_first_browser_presents_startup_backlog_once():
+    broadcaster = Broadcaster()
+    broadcaster.publish({
+        "type": "commit",
+        "word_id": "u0:w0",
+        "text": "hello",
+    })
+
+    opening = broadcaster.register(last_event_id=0)
+    opening_chunk = opening.get_nowait()
+    assert b'"_replay": true' in opening_chunk
+    assert b'"_first_presentation": true' in opening_chunk
+    broadcaster.unregister(opening)
+
+    reconnect = broadcaster.register(last_event_id=0)
+    reconnect_chunk = reconnect.get_nowait()
+    assert b'"_replay": true' in reconnect_chunk
+    assert b'"_first_presentation": false' in reconnect_chunk
+
+
+def test_live_page_accepts_local_diagnostics_query(tmp_path):
+    page = tmp_path / "live.html"
+    page.write_text("<title>live diagnostics</title>", encoding="utf-8")
+    handler = make_handler(page, Broadcaster())
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/?renderdiag=1", timeout=2
+        ) as response:
+            assert response.status == 200
+            assert b"live diagnostics" in response.read()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_live_handler_serves_next_export_runtime_and_legacy(tmp_path):
+    static_root = tmp_path / "studio"
+    asset = static_root / "_next" / "static" / "app.js"
+    asset.parent.mkdir(parents=True)
+    page = static_root / "index.html"
+    page.write_text("<title>Next studio</title>", encoding="utf-8")
+    asset.write_text("window.STUDIO=true", encoding="utf-8")
+    legacy = tmp_path / "legacy.html"
+    legacy.write_text("<title>Legacy</title>", encoding="utf-8")
+    font = tmp_path / "RobotoFlex.ttf"
+    font.write_bytes(b"font")
+    korean_font = tmp_path / "NotoSansKR.ttf"
+    korean_font.write_bytes(b"korean-font")
+    runtime = {"displayMode": "fast", "maxWords": 8}
+    handler = make_handler(
+        page,
+        Broadcaster(),
+        static_root=static_root,
+        legacy_page_path=legacy,
+        font_path=font,
+        korean_font_path=korean_font,
+        runtime_config=runtime,
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        assert b"Next studio" in urllib.request.urlopen(root + "/", timeout=2).read()
+        assert b"Legacy" in urllib.request.urlopen(root + "/legacy", timeout=2).read()
+        assert json.loads(
+            urllib.request.urlopen(root + "/runtime-config.json", timeout=2).read()
+        ) == runtime
+        with urllib.request.urlopen(root + "/_next/static/app.js", timeout=2) as response:
+            assert response.headers["Cache-Control"].endswith("immutable")
+            assert b"STUDIO" in response.read()
+        assert urllib.request.urlopen(root + "/RobotoFlex.ttf", timeout=2).read() == b"font"
+        assert (
+            urllib.request.urlopen(root + "/NotoSansKR.ttf", timeout=2).read()
+            == b"korean-font"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_live_handler_accepts_one_language_choice_before_capture(tmp_path):
+    page = tmp_path / "live.html"
+    page.write_text("<title>language picker</title>", encoding="utf-8")
+    languages = [
+        {"id": "en", "label": "English", "nativeLabel": "English"},
+        {"id": "ko", "label": "Korean", "nativeLabel": "한국어"},
+    ]
+    session = LiveLanguageSession(languages)
+    handler = make_handler(page, Broadcaster(), language_session=session)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        before = json.loads(
+            urllib.request.urlopen(root + "/session", timeout=2).read()
+        )
+        assert before["state"] == "selecting"
+        assert before["language"] is None
+
+        preflight = urllib.request.Request(
+            root + "/session/language",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+            },
+            method="OPTIONS",
+        )
+        with urllib.request.urlopen(preflight, timeout=2) as response:
+            assert response.status == 204
+            assert response.headers["Access-Control-Allow-Methods"] == "POST, OPTIONS"
+
+        request = urllib.request.Request(
+            root + "/session/language",
+            data=json.dumps({"language": "ko"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            selected = json.loads(response.read())
+            assert response.status == 202
+        assert selected["state"] == "loading"
+        assert session.wait_for_language() == "ko"
+
+        conflict = urllib.request.Request(
+            root + "/session/language",
+            data=json.dumps({"language": "en"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(conflict, timeout=2)
+            assert False, "changing a live session language must be rejected"
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 409
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_next_runtime_config_reuses_caption_scheduler_values():
+    cfg = load_config()
+    runtime = _studio_runtime_config(cfg)
+    assert runtime["displayMode"] == cfg["display"]["mode"]
+    assert runtime["maxWords"] == cfg["display"]["max_words"]
+    assert runtime["paragraphWordLimit"] == 0
+    assert runtime["stageParagraphHistory"] == 6
+    assert runtime["stageWordsPerBlock"] == 8
+    assert runtime["revealGapMs"] == 140
+    assert runtime["maxActiveMotions"] == 2
+    assert runtime["wordMotionBaseMs"] == 520
+    assert runtime["wordMotionMaxMs"] == 720
+    assert runtime["wordMotionMinMs"] == 320
+    assert runtime["wordMotionBacklogTargetMs"] == 600
+    assert runtime["wordMotionRateHeadroom"] == 0.90
+    assert runtime["wordMotionCatchupScale"] == 0.82
+    assert runtime["syncPop"] == 0.10
+    assert runtime["syncElevationEm"] == 0.20
+    assert runtime["characterWaveLiftEm"] == 0.085
+    assert runtime["characterWavePop"] == 0.030
+    assert runtime["deliveryMotionEnabled"] is True
+    assert runtime["deliveryContourLiftEm"] > 0
+    assert runtime["deliveryTextureGlowPx"] > 0
+    assert runtime["deliveryIntonationLiftGain"] == 0.35
+    assert runtime["deliveryAxisGainFloor"] == 0.50
+    assert runtime["deliveryMinConfidence"] == 0.38
+    assert runtime["deliveryProfileGains"]["steady"] < 0.5
+    assert (
+        runtime["deliveryProfileGains"]["steady"]
+        < runtime["deliveryProfileGains"]["rising"]
+    )
+    assert [item["id"] for item in runtime["languages"]] == ["en", "ko"]
 
 
 def test_stalled_browser_is_disconnected_for_lossless_replay():
@@ -536,120 +1006,15 @@ def test_stalled_browser_is_disconnected_for_lossless_replay():
     assert b'"n": 2' in replay.get_nowait()
     assert b'"n": 3' in replay.get_nowait()
 
-
-def test_live_page_contains_all_three_cwi_visualizations(tmp_path):
-    page = render_live(load_config(), tmp_path)
-    html = open(page, encoding="utf-8").read()
-    assert "ATTRIBUTION" in html
-    assert "SYNCHRONIZATION" in html
-    assert "INTONATION" in html
-    assert 'ev.type === "hypothesis"' in html
-    assert 'ev.type === "cue"' in html
-    assert 'ev.type === "verification"' in html
-    assert 'ev.type === "commit"' in html
-    assert "applyVerification" in html
-    # Verification reconciles per word: correct in place, insert the endpoint-
-    # held tail, drop deletions — never tear the utterance down and re-render
-    # it, which made a word-by-word sentence flash into a discrete block.
-    assert "sameSlot(live[i], word)" in html
-    assert "addFinalWord(word)" in html
-    # Mismatched verification rebuilds only its own utterance's lines; the
-    # transcript-wide wipe is asserted absent in the transcript test below.
-    assert 'node.closest(".cwi-line")' in html
-    assert "pendingFinals[i].utterance === ev.utterance" in html
-    assert "!verifiedUtterances.has(ev.utterance)" in html
-    assert "read-ahead" in html
-    assert "promotePartial" in html
-    assert "sameSlot" in html
-    assert "Math.abs(old.t - ev.t)" in html
-    assert "stablePrefix" in html
-    assert "normalizeWordSpacing" in html
-    assert "tail.forEach(node => partialHost.appendChild(node))" in html
-    assert "incoming.slice(0, capacity)" in html
-    assert "requestAnimationFrame(drain)" in html
-    assert "glyph.animate([" in html
-    # The official AE template (Academy_CI_Template.aep) animates Position and
-    # Fill Color only. Type size is the loudness channel, so nothing may scale
-    # a word on its own turn.
-    assert 'CFG.motion_elevation_em * amplitude' in html
-    assert "scale(" not in html.split("function playLift")[1].split("}")[0]
-    assert '"motion_elevation_em": 0.25' in html
-    assert '"motion_duration_ms": 560' in html
-    assert '"motion_min_duration_ms": 420' in html
-    assert '"motion_max_duration_ms": 900' in html
-    # Motion leads the color turn, and neighbours are partially displaced, as
-    # the template's "Antecipate" animator and eased range selector do.
-    assert "playWordMotion" in html
-    assert "motion_neighbor_bleed" in html
-    assert "motion_anticipation_ms" in html
-    assert "color var(--turn" in html
-    # Typography eases between words; CWI never cuts.
-    assert "font-size var(--type-ms" in html
-    assert "font-variation-settings var(--type-ms" in html
-    assert '"wdth"' in html
-    # Per-word acoustics are pulled toward the speaker's own baseline, or
-    # ordinary speech renders as fabricated whispers and shouts.
-    assert "towardBaseline" in html
-    assert "baselinePitch" in html
-    assert "size_response" in html
-    # The axes are cumulative: a running median (outlier-immune) held on
-    # discrete levels with hysteresis, so ordinary speech does not re-decide
-    # the type on every word.
-    assert "runningMedian" in html
-    assert "snapIndex" in html
-    assert "smoothing_words" in html
-    assert "hysteresis" in html
-    # The stage is a barely-lighter flat tone than the 90% black boxes:
-    # on pure #000 the boxes disappeared entirely (verified by screenshot).
-    assert "background: #101014;" in html
-    # Caption boxes wrap: verification can enlarge a word after placement, so
-    # no insertion-time width check suffices — words ran off the stage.
-    assert "flex-wrap: wrap" in html
-    # A stalled fill must never leave a word white forever (self-heal sweep).
-    assert '.cwi-glyph.syllabic' in html
-    assert "setInterval" in html
-    # A word animates once, when it is spoken. Anything already on screen is
-    # settled: an endpoint verification re-states the whole phrase and must not
-    # replay motion on words the reader is already reading.
-    assert 'el.dataset.moved === "true"' in html
-    assert "applySpokenColor(node, word, false)" in html
-    assert 'el.dataset.turned = "true"' in html
-    # No motion is applied to the trailing (already-read) word.
-    assert "playLift(words[i - 1]" not in html
-
-
-    # A microphone too quiet to produce words must still be visible as one.
-    assert 'ev.type === "level"' in html
-    assert "updateInputLevel" in html
-    assert "too-quiet" in html
-    # CWI 2.2.4 is a colour wipe over already-visible text, never a typewriter
-    # reveal — progressive appearance would destroy the 2.2.1 read-ahead.
-    assert "startSyllableFill" in html
-    assert "background-clip: text" in html
-    assert "applySpokenColor" in html
-    assert "hypothesisIn" not in html
-    assert "input recovered · " in html
-    assert "pendingFinals.length = 0" in html
-
-
-def test_display_modes_are_all_present_in_the_page():
-    # Showing the 160 ms draft as read-ahead rewrote the stage 55 times and
-    # deleted words 16 times across one 48-word utterance, so the speculative
-    # layer never reaches the stage in stable/sentence modes.
+def test_display_mode_config_values_are_valid():
+    # Display mode and its layout constants live in config (they were once
+    # hardcoded in livepage.py). The rendered wiring for each mode is exercised
+    # behaviourally by scripts/live_render_probe.py and the render-core suite.
     cfg = load_config()
-    # fast is the default: settled committed words plus the ACCURATE stream's
-    # own tail as white read-ahead (~1.2 s behind the voice). The 160 ms draft
-    # (the churn source) stays off the stage; measured on the sample, the
-    # accurate-only tail produces ~35% less revision.
+    # Fast is the public default: accurate read-ahead stays close to speech.
+    # The 160 ms draft is reserved for explicit readahead mode.
     assert cfg["display"]["mode"] == "fast"
-    html = render_live(cfg, tempfile.mkdtemp())
-    page = open(html, encoding="utf-8").read()
-    for symbol in ('CFG.display_mode === "readahead"',
-                   'CFG.display_mode === "sentence"',
-                   'CFG.display_mode === "fast"',
-                   'w.src !== "draft"',
-                   "renderReadAhead", "enqueueSentences", "splitSentences"):
-        assert symbol in page
+    assert cfg["display"]["mode"] in {"stable", "fast", "sentence", "readahead"}
     # These were hardcoded in livepage.py; mapping values belong in config.
     assert cfg["display"]["line_linger_s"] == 9.0
     assert cfg["display"]["max_words"] == 8
@@ -717,39 +1082,65 @@ def test_a_slot_reports_identical_styling_on_every_re_emission():
     assert second["loudness"] == first["loudness"]
     assert second["pitch_hz"] == first["pitch_hz"]
     assert second["loudness_db"] == first["loudness_db"]
+    for field in (
+        "delivery_force",
+        "delivery_attack",
+        "delivery_contour",
+        "delivery_contour_confidence",
+        "delivery_flow",
+        "delivery_texture",
+        "delivery_profile",
+    ):
+        assert second[field] == first[field]
 
 
-def test_settled_words_are_never_restyled_by_the_page():
-    html = render_live(load_config(), tempfile.mkdtemp())
-    page = open(html, encoding="utf-8").read()
-    # Verification must not re-apply typography — that was the single largest
-    # source of on-screen churn (resize + re-feeding the smoothing median).
-    assert "applyTypography(node, word)" not in page
-    # The type cache is first-write-wins, not graded.
-    assert "if (cached) return cached;" in page
-    assert "cached.grade" not in page   # the graded upgrade is gone
-    # Geometry is frozen on the node and resize only rescales it.
-    assert "el._type = type;" in page
-    # Tentative words and the sidebar project without advancing the median.
-    assert "function project(" in page
-    assert "expressionFor(ev, false)" in page
-    # Spacing must not depend on index, or dropping a word shifts the line.
-    assert "el.style.marginRight" in page
-    assert "el.style.marginLeft = i ?" not in page
-    # CWI 2.2.2: colour arrives at the spoken ONSET. Gating that on an
-    # authoritative speaker label suppressed it almost entirely (48/48 cues
-    # and 39/46 commits blocked), so words only turned at the endpoint —
-    # seconds late. Colour turns on time; the no-flip rule below is what keeps
-    # it from being re-hued afterwards.
-    assert 'if (el.dataset.turned !== "true") el.style.color' in page
-    # Rendered axes are bounded, or a voice at the edge of the pitch domain
-    # renders hairline/black beside ordinary text.
-    assert "EX.wght_range" in page
-    # Assert the PROPERTY (a readable band well inside Roboto Flex's 100-1000)
-    # rather than the exact numbers, which are a tuning choice.
-    lo, hi = load_config()["expression"]["wght_range"]
-    assert 200 <= lo < hi <= 600
+def test_word_text_and_timing_revisions_are_monotonic():
+    """One stable word id has independent comparable revision channels."""
 
+    captioner = StreamingCaptioner.__new__(StreamingCaptioner)
+    captioner.cfg = load_config()
+    captioner.prosody_cache = {}
+    captioner.speaker = "S1"
+    captioner.utterance = 0
+    captioner.stream_base = 0.0
+    captioner._last_final_speaker = None
+    captioner.db_history = deque([-40.0] * 8, maxlen=120)
+    captioner._word_slots = []
+    captioner._word_revisions = {}
+    captioner._final_word_events = {}
+    captioner._prosody = lambda *_args: (-40.0, 180.0, 0.9)
+
+    original = captioner._word_event(
+        HypothesisWord("helo", 0.5, 0.9, 0.8),
+        np.zeros(16_000, dtype=np.float32),
+        final=False,
+        word_id="u0:w0",
+    )
+    unchanged = captioner._word_event(
+        HypothesisWord("helo", 0.5, 0.9, 0.8),
+        np.zeros(16_000, dtype=np.float32),
+        final=False,
+        word_id="u0:w0",
+    )
+    respelled = captioner._word_event(
+        HypothesisWord("hello", 0.5, 0.9, 0.8),
+        np.zeros(16_000, dtype=np.float32),
+        final=True,
+        word_id="u0:w0",
+    )
+    retimed = captioner._word_event(
+        HypothesisWord("hello", 0.54, 0.94, 0.8),
+        np.zeros(16_000, dtype=np.float32),
+        final=True,
+        word_id="u0:w0",
+    )
+
+    assert unchanged["text_revision_id"] == original["text_revision_id"] == 1
+    assert unchanged["timing_revision_id"] == original["timing_revision_id"] == 1
+    assert respelled["text_revision_id"] == 2
+    assert respelled["timing_revision_id"] == 1
+    assert retimed["text_revision_id"] == 2
+    assert retimed["timing_revision_id"] == 2
 
 def test_closed_caption_renderer_implements_full_cwi_motion():
     """The CC renderer is the reference: text is known in advance, so every
@@ -802,10 +1193,10 @@ def test_closed_caption_renderer_implements_full_cwi_motion():
     #    before returning to its original size, creating a 'pop' motion
     #    effect."
     #
-    # ...with the diagram labelling the rise "25% elevation". 2.2.4 fixes the
-    # scope: "In most cases, words will be spoken and animated FULLY, ONE BY
-    # ONE" -- syllable-at-a-time is the documented exception, so neither the
-    # pop nor the elevation is ever sent through a word letter by letter.
+    # ...with the diagram labelling the rise "25% elevation". That primary cue
+    # remains on the word wrapper. The website synchronization recording adds
+    # an eased alphabet-level hand-off inside it, so wrapper and character
+    # transforms compose.
     assert "function syncAt(" in page
     assert "CFG.sync_pop" in page and "CFG.sync_elevation_em" in page
     cc = cfg["closed_caption"]
@@ -822,8 +1213,9 @@ def test_closed_caption_renderer_implements_full_cwi_motion():
     # 2.2.2: the word turns colour "as soon as the sound of the word begins to
     # be pronounced, not after", so the cue is anchored on the spoken onset.
     assert "function turnOf(node) { return node.w.start; }" in page
-    # Characters carry no vertical offset at all -- the word moves as one unit.
-    assert "translate3d(0," not in body
+    # synchronization.mov visibly lands baseline motion between letters;
+    # intonation remains uniform on the wrapper.
+    assert "translate3d(0," in body
     # The measured per-word curves stay available for checking the derivation
     # against the recordings, but the design system is what ships.
     assert cc["motion_source"] == "spec"
@@ -935,25 +1327,28 @@ def test_closed_caption_renderer_implements_full_cwi_motion():
     assert cfg["closed_caption"]["sync_granularity"] == "character"
 
 
-def test_transcript_presentation_and_intent_circle():
+def test_live_stage_defaults_to_stacked_captioning():
     cfg = load_config()
-    # Deliberate deviations from CWI 2.4, per user preference: left-aligned,
-    # lines retained until the stage overflows (not a fade timer).
     assert cfg["display"]["align"] == "left"
     assert cfg["display"]["retention"] == "overflow"
     assert cfg["display"]["intent_circle"] is True
     html = render_live(cfg, tempfile.mkdtemp())
     page = open(html, encoding="utf-8").read()
-    # Overflow eviction pushes the oldest line off the top when full.
+    # One visual row per text-hugging box; boxes stack upward and the oldest is
+    # evicted only when the live stage fills.
+    assert "max-height: 20%" not in page
+    assert "flex-wrap: nowrap; white-space: nowrap" in page
     assert "rack.scrollHeight > stage.clientHeight" in page
-    # Every line ends with the intention circle; the active one is driven by
-    # continuous level events (real-time — moves before words land) and reads
-    # the TRUE captured level, never the gained recognizer copy.
+    # The separate voice circle keeps volume/pitch/timbre out of settled glyphs.
     assert "intent-circle" in page
     assert "updateIntentCircle(ev)" in page
-    assert "ev.rms_db + 60" in page
-    # Timed retirement is guarded off in overflow mode.
-    assert "!OVERFLOW_RETAIN" in page
+    assert "spectral_centroid_hz" in page
+    assert "--pitch-y" in page
+    # Live shares the motion equations with closed captions, but must retain
+    # its compressed expression range. The cc reference range made ordinary
+    # words in the supplied sample expand to shout scale.
+    assert "expression: Object.assign({}, CFG.expression" in page
+    assert "CFG.cc_expression" not in page
     # A structurally-mismatched endpoint verification must rebuild only its own
     # utterance's lines. It used to clear the whole rack — and since the newest
     # word is held back from committing until the endpoint, that mismatch fired
@@ -1035,11 +1430,13 @@ def test_speaker_tracker_discovers_and_reuses_speakers():
     voice_b = np.full(16_000, -0.1, dtype=np.float32)
     words_a = [HypothesisWord("hi", 0.0, 1.0, 0.9)]
     words_b = [HypothesisWord("yo", 0.0, 1.0, 0.9)]
-    assert tracker.label_words(voice_a, words_a) == ["S1"]
-    assert tracker.label_words(voice_b, words_b) == ["S2"]
+    first_a = tracker.label_words(voice_a, words_a)
+    first_b = tracker.label_words(voice_b, words_b)
+    assert [(r.speaker_id, r.status) for r in first_a] == [("S1", "provisional")]
+    assert [(r.speaker_id, r.status) for r in first_b] == [("S2", "provisional")]
     # The same voices keep their labels on later utterances.
-    assert tracker.label_words(voice_a, words_a) == ["S1"]
-    assert tracker.label_words(voice_b, words_b) == ["S2"]
+    assert [r.speaker_id for r in tracker.label_words(voice_a, words_a)] == ["S1"]
+    assert [r.speaker_id for r in tracker.label_words(voice_b, words_b)] == ["S2"]
 
 
 def test_speaker_tracker_votes_per_word_across_a_turn_change():
@@ -1051,7 +1448,9 @@ def test_speaker_tracker_votes_per_word_across_a_turn_change():
              HypothesisWord("ab", 1.1, 1.9, 0.9),
              HypothesisWord("ba", 2.1, 2.9, 0.9),
              HypothesisWord("bb", 3.0, 3.8, 0.9)]
-    assert tracker.label_words(audio, words) == ["S1", "S1", "S2", "S2"]
+    results = tracker.label_words(audio, words)
+    assert [result.speaker_id for result in results] == ["S1", "S1", "S2", "S2"]
+    assert all(result.status in {"stable", "corrected"} for result in results)
 
 
 def test_speaker_tracker_classify_never_invents_a_speaker():
@@ -1059,9 +1458,10 @@ def test_speaker_tracker_classify_never_invents_a_speaker():
     voice = np.full(32_000, 0.1, dtype=np.float32)
     # Before any endpoint has established centroids, commits stay unlabeled
     # (captioner falls back to its default speaker).
-    assert tracker.classify_span(voice, 0.5, 1.5) is None
+    assert tracker.classify_span(voice, 0.5, 1.5).status == "unknown"
     tracker.label_words(voice, [HypothesisWord("hi", 0.0, 2.0, 0.9)])
-    assert tracker.classify_span(voice, 0.5, 1.5) == "S1"
+    classified = tracker.classify_span(voice, 0.5, 1.5)
+    assert (classified.speaker_id, classified.status) == ("S1", "provisional")
     # A known voice classifies; classify never updates the centroids.
     counts = list(tracker.counts)
     tracker.classify_span(voice, 0.5, 1.5)
@@ -1079,10 +1479,12 @@ def test_speaker_tracker_caps_at_max_speakers():
                              min_span_s=0.1)
     word = [HypothesisWord("w", 0.0, 1.0, 0.9)]
     audio = np.zeros(16_000, dtype=np.float32)
-    assert tracker.label_words(audio, word) == ["S1"]
-    assert tracker.label_words(audio, word) == ["S2"]
-    # A third distinct voice reuses the nearest existing label, never S3.
-    assert tracker.label_words(audio, word)[0] in {"S1", "S2"}
+    assert tracker.label_words(audio, word)[0].speaker_id == "S1"
+    assert tracker.label_words(audio, word)[0].speaker_id == "S2"
+    # At the cap, a low-confidence third voice stays unknown rather than being
+    # forced onto an unrelated existing profile.
+    third = tracker.label_words(audio, word)[0]
+    assert (third.speaker_id, third.status) == (None, "unknown")
 
 
 def test_durable_words_carry_haptic_salience_flags():
@@ -1126,7 +1528,7 @@ def test_classify_span_skips_embedding_before_first_endpoint():
                              window_s=1.0, hop_s=0.5, min_span_s=0.3,
                              change_below=0.3, merge_at=0.5)
     audio = np.zeros(32_000, dtype=np.float32)
-    assert tracker.classify_span(audio, 0.5, 1.5) is None
+    assert tracker.classify_span(audio, 0.5, 1.5).status == "unknown"
     assert calls == []   # no centroids yet -> the embedding is never computed
 
 
@@ -1137,6 +1539,15 @@ def test_bundled_sample_clip_resolves_and_loads():
     assert Path(path).exists()
     audio, sr = librosa.load(path, sr=16_000, mono=True)
     assert sr == 16_000 and len(audio) > 16_000  # more than a second of audio
+
+
+def test_bundled_korean_sample_is_language_specific():
+    import librosa
+
+    path = Path(sample_clip_path("ko"))
+    assert path.name == "sample-ko.wav"
+    audio, sr = librosa.load(path, sr=16_000, mono=True)
+    assert sr == 16_000 and len(audio) > 16_000
 
 
 def test_neighbour_motion_is_off_by_default():

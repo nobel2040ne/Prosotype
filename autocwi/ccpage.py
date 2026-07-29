@@ -51,8 +51,8 @@ not be collapsed into one generic text wave; each is on a different scope:
    loud one clearly swells. Size/weight are NEVER sent through a word letter by
    letter.
 2. **Synchronization**, on each CHARACTER span. A travelling two-phase bounce
-   around that letter's own colour turn: approaching, it lifts and compresses
-   very slightly while still white; on turning it lands, pops just past its
+   around that letter's own colour turn: approaching, it crouches very
+   slightly while still white; after turning it rises, pops just past its
    resting size, and settles. Only a few adjacent letters move at once.
 3. **Speaker identity**, colour only — never a reason to swell or lift.
 
@@ -94,8 +94,15 @@ def _lines(words: list[dict], max_words: int, gap_s: float) -> list[list[dict]]:
     for word in words:
         if current:
             previous = current[-1]
+            word_status = word.get("speaker_status") or "stable"
+            previous_status = previous.get("speaker_status") or "stable"
+            stable_change = (
+                word_status in {"stable", "corrected"}
+                and previous_status in {"stable", "corrected"}
+                and word["speaker"] != previous["speaker"]
+            )
             if (word.get("line_break")
-                    or word["speaker"] != previous["speaker"]
+                    or stable_change
                     or (gap_s is not None and word["start"] - previous["end"] > gap_s)
                     or (max_words > 0 and len(current) >= max_words)):
                 lines.append(current)
@@ -133,6 +140,7 @@ def render_cc(config: dict, spec: dict, out_dir: str | Path,
     display = config.get("display", {})
     cc = config.get("closed_caption", {})
     tracking = cc.get("tracking", {}) or {}
+    speaker_attribution = config.get("live", {}).get("speaker_attribution", {}) or {}
 
     words = list(spec["words"])
     # `closed_caption` wins where it says anything: a spec derived from a
@@ -226,6 +234,9 @@ def render_cc(config: dict, spec: dict, out_dir: str | Path,
         "sync_fall_s": cc.get("sync_fall_s", 0.18),
         "motion_source": cc.get("motion_source", "spec"),
         "debug_churn": bool(cc.get("debug_churn", False)),
+        "provisional_color_strength": speaker_attribution.get(
+            "provisional_color_strength", 0.55
+        ),
         "tracking": {
             "enabled": bool(tracking.get("enabled", False)),
             "playhead_pct": tracking.get("playhead_pct", 50.0),
@@ -237,7 +248,9 @@ def render_cc(config: dict, spec: dict, out_dir: str | Path,
             "exit_offset_pct": tracking.get("exit_offset_pct", -32.0),
         },
         "lines": [[{k: w[k] for k in
-                    ("text", "start", "end", "speaker", "loudness",
+                    ("text", "start", "end", "speaker", "speaker_status",
+                     "speaker_confidence", "speaker_change_probability",
+                     "speaker_revision_id", "overlap", "loudness",
                      "pitch_hz", "voiced_frac", "motion", "tracking") if k in w}
                    for w in line]
                   for line in lines],
@@ -651,6 +664,13 @@ function mixColor(speaker, f) {
   _mixCache.set(key, hit);
   return hit;
 }
+function speakerStatus(w) { return w.speaker_status || "stable"; }
+function wordColor(w, f) {
+  const status = speakerStatus(w);
+  const strength = status === "unknown" ? 0 :
+    (status === "provisional" ? CFG.provisional_color_strength : 1);
+  return mixColor(w.speaker, f * strength);
+}
 
 // ---------------------------------------------------------------------------
 // Typography — same CWI mapping as live mode, but resolved ONCE for the whole
@@ -777,6 +797,10 @@ const built = CFG.lines.map(words => {
   const nodes = words.map(w => {
     const el = document.createElement("span");
     el.className = "cc-word";
+    el.dataset.speakerStatus = speakerStatus(w);
+    el.classList.add("speaker-" + speakerStatus(w));
+    el.setAttribute("aria-label", w.text + " · speaker attribution " +
+                    speakerStatus(w));
     const chars = Array.from(w.text).map(c => {
       const span = document.createElement("span");
       span.className = "cc-ch";
@@ -1133,9 +1157,8 @@ function varSettings(ty, wght) {
   return '"opsz" 14, "wght" ' + wght + ', "wdth" ' + ty.wdth;
 }
 function charColorAt(node, c, t) {
-  return mixColor(node.w.speaker,
-                  ease((t - turnAt(node, c))
-                       / Math.max(1e-3, CFG.color_turn_ms / 1000)));
+  return wordColor(node.w, ease((t - turnAt(node, c))
+                   / Math.max(1e-3, CFG.color_turn_ms / 1000)));
 }
 function settle(line, t) {
   for (const node of line.nodes) {
@@ -1301,18 +1324,11 @@ function frame(t) {
       const env = intonationAt(t, w);
       const wordScale = scaleOf(t, node);
 
-      // --- 2. ANTICIPATION LIFT: also WORD level -----------------------------
-      // The whole word rises as one rigid unit. Measured on "is" in
-      // "precisely as each word is spoken.": its two glyphs dip, rise, hold and
-      // land in lockstep -- -21/-26%, then 59/78%, peaking 77/102%, back to
-      // 1.5/4%. (The i/s difference is only the normaliser: "i" has a taller
-      // ink box because of its dot, so an identical PIXEL lift reads as a
-      // smaller percentage.)
-      //
-      // Doing this per character was wrong twice over: a word's first letter
-      // got the long inter-word gap and every other letter a tiny intra-word
-      // one, so each word led with a lifted first letter -- a visible stutter
-      // -- and a held word like "is" raised only its "i".
+      // --- 2. BASE SYNCHRONIZATION LIFT: WORD level --------------------------
+      // The design-system +25% cue moves the wrapper. The website recording
+      // adds a character-local hand-off below; keeping the two scopes separate
+      // is what lets a word rise coherently while its alphabet still reads as
+      // synchronized with the sound.
       const lift = live ? liftOf(t, node) : 0;
       // ONE format, always written. Branching to "none" below a threshold
       // promoted and demoted a compositor layer at frame rate for any word
@@ -1339,19 +1355,39 @@ function frame(t) {
         // Soft turn: the letter crossfades over `color_turn_ms` instead of
         // flipping in a single frame.
         setStyle(chars[c], "color", "_c",
-                 mixColor(w.speaker, ease((t - tTurn) / turnS)));
-        // The letter itself does not MOVE any more: the anticipation lift is
-        // the WORD's, applied on the wrapper above, because the reference
-        // moves a word as one rigid unit. `wave_pop` is the only per-character
-        // channel left and is off by default.
-        let chScale = 1;
-        if (live && CFG.wave_pop > 0) {
-          chScale = 1 + CFG.wave_reach * CFG.wave_pop *
-                    pulse(t - tTurn, CFG.pop_release_s, CFG.pop_peak_s);
+                 wordColor(w, ease((t - tTurn) / turnS)));
+        // WEBSITE SYNCHRONIZATION: unlike the word-wide intonation envelope,
+        // the baseline/pop hand-off visibly lands between letters in
+        // synchronization.mov. The first letter may have waited through an
+        // inter-word pause; later letters inherit their local turn spacing.
+        // This preserves the large split visible on a held two-letter word
+        // without forcing that amplitude onto every fast character.
+        const wait = Math.min(
+          CFG.wave_hold_max_s,
+          Math.max(0.04, tTurn - tPrev)
+        );
+        const waitGain = CFG.wave_hold_floor +
+          (1 - CFG.wave_hold_floor) *
+          Math.min(1, wait / Math.max(1e-3, CFG.wave_hold_full_s));
+        const d = t - tTurn;
+        let chLift = 0, chScale = 1;
+        if (live) {
+          chLift = CFG.wave_reach * (
+            CFG.wave_lift_em * waitGain *
+              pulse(d, CFG.wave_release_s, CFG.wave_peak_s) -
+            CFG.wave_crouch_em *
+              crouch(d, CFG.wave_crouch_lead_s)
+          );
+          chScale = 1 + CFG.wave_reach * (
+            CFG.wave_pop * pulse(d, CFG.pop_release_s, CFG.pop_peak_s) -
+            CFG.wave_dip * crouch(d, CFG.wave_crouch_lead_s)
+          );
         }
         setStyle(chars[c], "transform", "_tf",
-                 Math.abs(chScale - 1) > 0.0005
-                   ? "scale(" + chScale.toFixed(4) + ")"
+                 Math.abs(chLift) > 0.00005 ||
+                 Math.abs(chScale - 1) > 0.00005
+                   ? "translate3d(0," + (-chLift).toFixed(4) +
+                     "em,0) scale(" + chScale.toFixed(4) + ")"
                    : "none");                       // matches settle()
       }
     }

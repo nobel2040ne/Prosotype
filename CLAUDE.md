@@ -3,16 +3,22 @@
 auto-CWI ("Prosotype"): a local, offline pipeline that automates the
 **Caption with Intention** (CWI) design system for Deaf/HoH viewers.
 **Primary mode = live captions** (mic → CWI-styled captions in the browser,
-English). The offline video pipeline is kept as the source of the
+English or Korean, selected before capture). The offline video pipeline is kept as the source of the
 **CaptionSpec contract** that a future haptic device module will consume. See
-`ARCHITECTURE.md` and `docs/cwi-design-system-notes.md`.
+`ARCHITECTURE.md` and `docs/DESIGN.md`.
 
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest                       # 56 offline tests, no downloads
+.venv/bin/python -m pytest                       # offline tests, no downloads
+npm --prefix web install                         # one-time Next.js dependencies
+npm --prefix web run check                       # lint + TS reducer tests + static build
 .venv/bin/python -m autocwi live                 # live captions from mic (opens browser)
+.venv/bin/python -m autocwi live --lang ko       # bypass picker, Korean
+.venv/bin/python -m autocwi live --lang en       # bypass picker, English
 .venv/bin/python -m autocwi live --sample        # stream the bundled clip, no mic
+.venv/bin/python -m autocwi live --sample --lang ko # Korean model + Korean sample
+.venv/bin/python -m autocwi live --sample --lang en # English model + English sample
 .venv/bin/python -m autocwi live --sample --loop # repeat the clip continuously
 .venv/bin/python -m autocwi live --file x.wav    # stream a file as if live
 AUTOCWI_FAST=1 .venv/bin/python -m autocwi live --file x.wav --once  # headless test
@@ -22,8 +28,12 @@ AUTOCWI_FAST=1 .venv/bin/python -m autocwi live --file x.wav --once  # headless 
 .venv/bin/python -m autocwi tune                 # live motion tuner, built-in line
 .venv/bin/python -m autocwi tune out/spec.json   # ...against a real spec
 .venv/bin/python -m autocwi cc out/spec.json --tune   # same, from the cc command
-.venv/bin/python scripts/fetch_font.py           # one-time Roboto Flex download
+.venv/bin/python scripts/fetch_font.py           # one-time Roboto Flex + Noto Sans KR
 .venv/bin/python scripts/fetch_streaming_model.py # one-time 3-stage live ASR download
+.venv/bin/python scripts/fetch_streaming_model.py --korean-only # Korean streaming ASR
+.venv/bin/python scripts/fetch_streaming_model.py --speaker-only # ONNX speaker + native Sortformer
+.venv/bin/python scripts/fetch_streaming_model.py --sortformer-only # rebuild/prepare Core ML path
+.venv/bin/python -m autocwi live --sample --diarizer embedding # fallback comparison
 .venv/bin/python scripts/benchmark_streaming.py --stress # WER + full-stack RTF matrix
 .venv/bin/python scripts/benchmark_streaming.py --quiet-sweep  # recall vs input level
 .venv/bin/python -m autocwi live --list-devices   # pick a mic if the default is wrong
@@ -35,6 +45,76 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
 
 - **Everything local and offline.** No cloud inference, no telemetry. Only
   permitted network: one-time model-weight/font downloads.
+- **`web/` is the product frontend; Python remains the runtime.** Build it with
+  `npm --prefix web run build`. `output: "export"` emits `web/out`, and
+  `autocwi.live` serves it, `/runtime-config.json`, `/session`,
+  `/session/language`, `/RobotoFlex.ttf`, `/NotoSansKR.ttf`, and `/events` from
+  one origin. Do not
+  add a required Node server, Next route
+  handler, Server Action, cookie, rewrite, or other feature incompatible with
+  static export. If the export is absent, live intentionally falls back to the
+  generated diagnostics page; a built studio keeps it at `/legacy`.
+- **The Next studio and legacy renderer consume the same SSE contract.**
+  `web/src/lib/caption-store.ts` owns the product UI's pure revision reducer;
+  `web/src/hooks/use-caption-stream.ts` owns EventSource/reveal scheduling.
+  Keep their finality/source/revision rules and 140/80–260/60 ms queue
+  policy pinned by TypeScript tests alongside `live_render_core.js`. React
+  keys are semantic `word_id`s. Speaker repartitioning, text correction, and
+  reconnect replay must not remount a word into a second motion.
+  Freeze live/replay eligibility when an ID first enters the reveal queue, and
+  freeze its acoustic word snapshot when the scheduler reserves a first-paint
+  slot. Do not start the clock in that scheduler callback: `MotionWord` calls
+  `confirmMotionPaint()` during its layout commit and anchors
+  `performance.now()` immediately before the first browser paint. A later
+  text/timing/speaker/replay revision must neither
+  cancel nor reshape that first motion, and its negative CSS phase delay must
+  resume the original clock after any render/remount. It may never start a
+  second clock. Character keys are indices so respelling reuses existing
+  spans; extra characters on an older revision stay normal, while the newest
+  onset prefix may grow `H → He → Hel` inside the original clock.
+  Maintain a monotonic acoustic discovery frontier. A newly discovered ID more
+  than 40 ms behind it is verifier/onset backfill: reveal it settled and never
+  reserve a motion slot for a word outside the current Stage window. Every
+  pre-paint slot reservation also has a 250 ms watchdog. If its component
+  cannot mount and confirm paint, atomically settle it and release the slot;
+  `abortedUnpaintedMotions` diagnoses this fallback.
+- **Stage is a stable caption stack, not a second live-text panel.**
+  `selectStableCaptionStack()` flattens revisable speaker and utterance
+  partitions into fixed eight-word rows and retains the newest six without
+  hiding recognized provisional words. Transcript keeps complete turns and
+  speaker/utterance partitions. The reveal scheduler may run at most two
+  simultaneous word motions; never implement that concurrency cap by filtering
+  words from Stage.
+  Row keys derive from the first semantic word ID, so adding word nine or
+  correcting attribution/segmentation cannot remount the first eight words or
+  replay their motion. `unknown`/`Attribution pending` must obey the same fixed
+  row capacity and never create one-word rows. Only the first appearance of a
+  genuinely new bottom row runs the Stage FLIP transition: retained rows
+  glide upward for 540 ms, new rows enter for 620 ms from opacity 0,
+  `translateY(0.58em)`, and `scale(.985)`, and reduced-motion mode bypasses
+  both. The initial block gets the same entry; an initial replay containing
+  multiple rows does not. Text/color/speaker updates with identical row IDs must return
+  no stack motion; removal or reappearance of a seen row must also return none.
+  Keep the selector tests whenever changing
+  reducer order, finality, or paragraph identity.
+- **Language is a pre-capture model decision.** With no `--lang`, the Next
+  studio POSTs exactly one `en`/`ko` choice before Python loads ASR or iterates
+  the mic/file source. `LiveLanguageSession` then locks it for the capture.
+  `--lang en|ko` is the deterministic/headless bypass. Never make the selector
+  cosmetic or hot-swap a recognizer under retained decoder/audio state.
+- **Keep live diarization hybrid and language-complete.** On Apple Silicon,
+  `live.diarization.backend: auto` prefers the native Streaming Sortformer v2.1
+  helper, while endpoint segmentation/embeddings verify durable identity and
+  recover quiet speech or >4-speaker sessions. English uses ERes2Net; Korean
+  uses multilingual CAM++ and must receive the same endpoint speaker pass even
+  though its weaker text verifier is disabled. Never replace final identity
+  with an unverified transient Sortformer slot. Keep S1/S2 immediate, but do
+  not expose an unmapped native slot above that frontier. A third-or-later
+  embedding profile needs repeated clean endpoint observations before its
+  `S3…S6` label becomes public; confirmation revises earlier neutral words.
+  This is not a two-speaker hard cap. Never make
+  `Attribution pending` gate the Stage stack. `--diarizer embedding` is the
+  deterministic A/B and unsupported-platform fallback.
 - **Pinned versions** in `requirements.txt`. Seed anything stochastic.
 - **The CaptionSpec (`autocwi/schema.py`) is a versioned contract.** Renderers
   and the future haptic module consume ONLY `spec.json` / the SSE word events
@@ -42,44 +122,222 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   changes require a version bump.
 - **All mapping values live in `config.yaml`**, never hardcoded. They follow
   the official CWI Design System V1.0 — cite section numbers in comments
-  (see `docs/cwi-design-system-notes.md` for the extracted values;
-  `docs/research-notes.md` maps prior DHH-captioning research onto design
+  (see `docs/DESIGN.md` for the extracted values;
+  `docs/RESEARCH.md` maps prior DHH-captioning research onto design
   decisions here).
-- **In LIVE mode, size may be animated ONLY as a TRANSFORM on the active-word
-  window, never as `font-size`, and it must return to rest.** (Updated
-  2026-07-23: live now runs the full CWI 2.2.3 motion, ported from `cc` — the
-  +15% pop, 25% elevation, an intonation swell scaled by loudness, and the
-  analytic neighbour-push. See `motion.live_sync` in config.yaml and the motion
-  loop in `livepage.py` — `registerMotion`/`resolveLine`/`motionTick`.) The old
-  rule ("position + colour only, never size") is superseded, but its REASON is
-  preserved by HOW the port is done, and that constraint still binds:
-  * **Transform only.** The loop writes `transform` (scale = pop, translateY =
-    elevation, translateX = neighbour shift) — never `font-size`. So `font-size`
-    stays the frozen LOUDNESS channel (a shouted word stays large for life), the
-    pop is a transient that returns to the word's frozen resting typography, and
-    nothing touches the layout path (no reflow, no frozen-width dance cc needs
-    because cc animates `font-variation-settings`; live does NOT animate weight).
-  * **Active window only.** A per-frame `rAF` loop touches ONLY words within
-    their ~0.3 s motion window (`dataset.moving="true"`), and writes each word to
-    its resting transform exactly ONCE when the window passes — a settled word
-    is never restyled (THE CAPTION INVARIANT holds; the churn instrument's
-    "settled" now means turned AND `moving!=="true"`).
-  * **Neighbours move in POSITION only, transiently.** The swelling word pushes
-    row-mates aside via `transform` translate and they return; their size,
-    weight, colour are never touched. This is the one relaxation the design
-    asked for (`AskUserQuestion`, 2026-07-23: "full port + neighbour push").
-  * Set `motion.live_sync.enabled: false` to fall back to the old calm lift.
-  The AE template (`Academy_CI_Template.aep`) has zero scale animators — the
-  stricter reading — but the WEBSITE reference animates the active word's size,
-  and live now matches that within the transform-only/return-to-rest envelope.
-  Because the whole `.cwi-line` is treated as ONE push row (live moves an
-  overflowing word to a new line rather than wrapping), do not key live's push
-  on `offsetTop` the way cc does: cc words all rest at the common baseline size
-  so they share a top; live bakes loudness into resting SIZE, so they do not.
+- **ALL PRESENTATIONS SHARE THE CWI MOTION SEMANTICS.** (Current live contract
+  updated 2026-07-24.) The legacy live diagnostics consume
+  `autocwi/cwi_motion_core.js`; the Next product UI expresses the same
+  first-paint/rest/reveal invariants with typed event state and independent CSS
+  envelopes. The shared JavaScript module holds `typeOf`,
+  `intonationAt`, `scaleOf`/`liftOf`/`wghtOf`, `charColorAt`,
+  `charLiftOf`/`charScaleOf`, and optional `resolveNeighborPush`. The
+  presentations intentionally do not share tuning:
+  authored `cc` can use the full reference wave against known text, while a
+  stacked live transcript uses calmer `motion.live_sync` amplitudes and never
+  moves settled neighbors.
+  * **`cc`** drives the same curve family off the global media clock `t` (pure
+    function of `t`; read-ahead is real). *(NOTE: `livepage.py` consumes the
+    module; `ccpage.py` still has an inline authored-clock implementation. Its
+    character amplitude is additionally wait-aware through
+    `wave_hold_floor`/`wave_hold_full_s`, so the two are contract-equivalent,
+    not byte-identical. Migrating those authored-clock inputs into
+    `cwi_motion_core.js` is a future structural cleanup, not a visual change.)*
+  * **legacy live** runs the shared synchronization/character primitives plus its
+    independent variable-font envelopes on a PER-WORD first-paint clock.
+    `virtualT()` maps the full synchronization rise/peak/return onto 520–720 ms
+    according to the acoustic word span (680 ms for a first-phone onset hint).
+    Raw decoder spans are not played directly; doing so compressed long-word
+    attacks into a few frames. A separate `displayCharacterMotionWord()` gives
+    internal character turns 0.18 s of virtual spacing (capped at 2.20 s)
+    before mapping the curve into that window. `smoothCharacterChannel()` then
+    blends neighbouring samples by 0.72, so long spelling never compresses the
+    wrapper and the alphabet hand-off reads as one ribbon. The independent
+    cue/commit clock owns colour and never starts or restarts geometry.
+    See `resolveCCLine`/`motionTick`/`settleWord`/`playWordMotion` in
+    `livepage.py`. Verify with `scratchpad`-style sweep probes and
+    `scripts/live_render_probe.py`.
+  * **Prosody is transient, but it is not one generic pulse.** Loudness controls
+    the temporary scale excursion; it also scales vertical lift continuously.
+    Pitch controls temporary weight; the available pitch/harmonics proxy
+    controls temporary width. `liveChannelEnvelopes()` gives those axes
+    independent zero-velocity trajectories over the first-paint clock: weight
+    articulates first (30% attack), size breathes through the middle (42%),
+    and width follows later (50%). Weight also releases before size/width, so
+    a frame cannot mistake three different acoustic values for one canned
+    animation. Live clamps and compresses the axes around a 10% / 0.20 em base
+    cue, then returns every word to `scale(1)`, Regular 400, width 100. The
+    quiet/grounded/bright/strong/neutral labels are diagnostics for these
+    continuous values, not five discrete animations. Nothing is baked into
+    settled `font-size` or font axes.
+  * **Delivery dynamics are observable acoustics, not emotion labels.**
+    `_word_delivery_features()` measures force, attack, first-to-last F0
+    contour, voiced flow, texture, and confidence from the true word span for
+    both English and Korean. Durable contour MUST use Praat's 10 ms track, not
+    the immediate 64 ms orb estimator: require at least five voiced frames and
+    30% coverage, reject values outside 1.6× of the word median, use seven
+    semitones as full scale, and keep the ±0.45 profile deadband. The former
+    two-frame estimator octave-jumped and marked 86–93% of ordinary sample
+    words expressive. A quiet source level alone also cannot mean `gentle`;
+    force/attack and texture must all pass their config gates.
+    `delivery_cache` freezes that complete signature
+    by `("§slot", utterance, round(start*20))` on its first event; endpoint
+    audio, respelling, speaker colour, and verification may never remeasure or
+    replace it. The primary diagnostic profile selects a distinct temporary
+    path: rising crests late, falling crests early and resolves, sustained holds,
+    forceful travels farther, gentle eases through a smaller arc, and textured
+    uses the base geometry plus a soft resonance halo. Continuous dimensions
+    still modify each path. These words describe delivery only—never display
+    them as claims that the person is angry/happy/sad. Every family returns to
+    exact identity/Regular 400/width 100/zero halo, and reduced/replay
+    words settle directly. `delivery_profile_gains` is a second presentation
+    deadband for the **voice-shaped deviation only**: `steady` keeps 30% of that
+    extra excursion. It must never attenuate the constant first-paint
+    synchronization cue (`sync_pop: 0.10`, `sync_elevation_em: 0.20`), and the
+    final active scale may not fall below that 10% pop. Do not restore full
+    pitch/scale deviation on every ordinary word.
+  * **Synchronization also has a character-local website layer.**
+    `intonation.mov` is word-wide; `synchronization.mov` visibly places
+    different letters of one word at different lift/pop phases. Live therefore
+    composes the wrapper cue with `charLiftOf`/`charScaleOf`, clamps the
+    character lift upward, and spatially blends adjacent phases: zero pre-turn
+    crouch, up to 0.085 em lift and 3% pop, then exact `none`. Do not restore
+    alternating above/below-baseline phases; that was the visible zipper/ziggle
+    failure. All characters are visible before this starts. Do not confuse it
+    with `character_entry_enabled`, the separate opacity/slide typewriter
+    experiment that remains off.
+  * **Speech rate must not reduce caption throughput.** A fixed 520–720 ms
+    duration gives the two-slot Next reveal queue a hard ceiling of roughly
+    3.8 words/s and creates an ever-growing presentation buffer above it.
+    `motion-timing.ts` measures median acoustic onset spacing—not decoder
+    arrival spacing—and selects only the shorter clock needed to sustain that
+    rate. Ordinary speech retains 520–720 ms. Faster speech and decoder-batch
+    debt can reduce toward a 320 ms smoothness floor; the backlog target is
+    600 ms, rate headroom is 0.90, and catch-up scale is 0.82. Pending count
+    also supplies a batch-drain budget, so sparse Korean endpoint batches catch
+    up even when their individual acoustic gaps are slow. Freeze that selected
+    duration in `MotionSnapshot`; a later revision may not change it.
+    Scale the character step so the last letter begins by 42% of the selected
+    clock; a shortened long word must not lose its alphabet hand-off.
+    In the legacy renderer, acoustic span continuously maps the complete
+    motion to 520–720 ms; `_motionPaceGain` also eases from
+    0.58 on a minimum-duration word to 1.0 on a slow/drawn-out word. A
+    `slow_delivery_curve_delay` of 0.06 shifts the independent axis peaks later
+    inside a slow word's already-longer clock, so it feels languid rather than
+    like the fast shape played at a lower frame rate. Caption reveal/onset
+    spacing is unchanged. In the bundled browser sample, fast words attacked
+    weight/size/width at about 156/218/260 ms; drawn words at about
+    244/346/397 ms. Character turns remained roughly 53–110 ms apart.
+  * **Weight and width animate per frame.** The word box is frozen at its
+    resting width (`el.style.width`, measured once in `resolveCCLine`; CSS
+    `text-align:center; white-space:nowrap`), so the variable axes cannot reflow
+    or overlap the row. `live_sync.neighbor_push` is false: no earlier caption
+    moves because a new word is active.
+  * **Colour has a separate clock.** An ordinary moving word receives a
+    150–280 ms white→speaker-colour sweep; a drawn-out word uses measured
+    syllable/phoneme stops over 180–900 ms. Colour may begin while geometry is
+    active. A late colour decision on a settled word is a direct colour write,
+    never a delayed motion trigger. Paint `.cwi-ch` spans individually; do not
+    restore `background-clip:text` on their parent. Chromium can collapse the
+    inline children onto one origin while compositing that effect, producing
+    the piled-up glyph corruption seen in the 2026-07-24 sample.
+  * **The caption invariant is visual-first-paint, once only.** Decoder batches
+    reveal in acoustic order (140 ms base blended with 80–260 ms measured
+    onset gaps), with at most two active words. Deadlines stay anchored to the
+    planned sequence; never replace them with `performance.now() + gap`, which
+    compounds latency after every late frame. Keep the 60 ms catch-up floor.
+    If both motion slots are occupied, a fresh word stays hidden until a slot
+    opens; never paint it motionless and never pop an already-visible word.
+    `_type` is first-write-wins per
+    acoustic slot and `dataset.moved` plus the semantic motion-history set guard
+    re-entry. Verification preserves an unseen node's queue eligibility and an
+    active node's clock; an already visible correction never replays motion.
+    Replay/reduced-motion/historical correction records settle directly.
+    This includes a newly inserted word whose acoustic start is behind the
+    monotonic discovery frontier. It may update readable history but must not
+    animate late or reserve one of the two Stage slots.
+    Never settle an active first-paint clock merely because its word was
+    corrected: that truncated a few words before their visible peak. The Next
+    studio renders motion from the frozen `MotionSnapshot`, phase-locks CSS
+    with `--motion-phase-delay`, and lets the selected 320–720 ms clock finish.
+    Its concurrency slot is reserved before React renders, but the clock and
+    expiry begin only when `confirmMotionPaint()` runs in the word's layout
+    effect. A busy render therefore cannot consume the attack off-screen.
+    Slot timeout and settled state are committed together so a fast burst
+    cannot expose a third active word for one frame.
+    Corrections do not change its family/axes/duration. Once settled, all later
+    same-ID revisions remain Regular 400/100% with `animation-name: none`.
+    The broadcaster marks retained records on the first audience connection
+    `_first_presentation`; those unseen startup words remain motion-eligible.
+    Actual reconnect/page-refresh history stays `_replay` and settles directly.
+  * **Next studio motion is independently phased, never one canned keyframe.**
+    `.word-glyph` owns size/lift, `.word-ink` owns separate weight and width
+    envelopes, and `.caption-character` owns the local
+    hand-off. The conservative semantic `delivery_profile` remains diagnostic;
+    a separate `data-motion` family lets trustworthy continuous contour, flow,
+    force/attack, or texture choose rising, falling, sustained, forceful,
+    gentle, or textured timing without making an emotion claim. Each family
+    owns both a glyph path and its own weight/width intonation clock. Every CSS
+    family starts near the baseline
+    (`opacity >= .66`, scale >= .975), uses the zero-slope
+    `cubic-bezier(.42,0,.22,1)`, and rises to its own early/middle/late crest;
+    falling/forceful must never start already at peak displacement. Character
+    handoff uses a still-subordinate 0.085 em / 3% ribbon;
+    keep its upward-only, zero-slope path so it cannot become a second ziggle.
+    The word wrapper freezes its normal `offsetWidth` before paint.
+    All four channels return to identity/Regular 400/100% width, and only the
+    wrapper animation calls `completeMotion()` to release the reveal queue.
+    The stage resting size is intentionally `clamp(18px, 2.65vh, 34px)` with
+    1.14 line-height so six retained caption blocks remain readable.
+  * **Diarization must consume speech, not synthetic verifier slots.** A
+    verifier-confirmed post-punctuation suffix whose claimed slots are quiet
+    while stronger speech follows is moved onto the first substantial activity
+    cluster by `repair_verified_tail_timing`; later sound-effect islands are
+    excluded. Short turns below the normal ERes2Net cosine threshold may match
+    only an already-stable profile and only above
+    `short_stable_min_margin`. Do not “fix” this by lowering enrollment
+    thresholds globally.
+  * `motion.live_sync.enabled: false` still settles words directly. Do not feed
+    the full authored `closed_caption` response into live: accumulated live
+    words require the compressed range documented in `config.yaml`.
 - **Input gain applies only to the recognizer's copy of the audio.**
   `AudioChunk.samples` must stay at the true captured level because prosody
   measures `loudness_db` from it; the gained copy is `asr_samples`. Gaining
   before that measurement would flatten whisper and shout to one size.
+- **The voice circle is continuous audio state, not another caption effect.**
+  `_realtime_voice_features()` estimates F0, autocorrelation periodicity, and
+  spectral centroid from each true ~64 ms capture block. `level_event()` sends
+  those with RMS. The line-edge `.intent-circle` (legacy) /
+  `.line-voice-orb` (Next) sits immediately after the active caption and maps
+  radius=volume, bead height=F0, oval width=brightness,
+  opacity/halo=periodicity. Rolling delivery force/attack/contour/flow/texture
+  also tilt/stretch the line orb and shape the compass's inner resonance;
+  `delivery_profile` is a descriptive acoustic readout, not an emotion
+  classifier. The side-grid `.voice-compass` mirrors them at a
+  larger scale and reserves direction for `direction_deg`/`azimuth_deg`.
+  Current mono input must say `awaiting array`; never fabricate direction.
+  Keep these signals outside glyphs; completed captions must never shake
+  because a later audio block arrived. Do not infer or label emotion.
+- **Korean caption motion requires the local variable font.** Roboto Flex has
+  no Hangul outlines. `scripts/fetch_font.py` downloads the OFL
+  `assets/NotoSansKR.ttf`; Python serves it at `/NotoSansKR.ttf`, and
+  `[data-language="ko"]` uses its real `wght` 100–900 axis. A static system
+  fallback is only degradation for a missing download, not the intended Korean
+  rendering. Pitch-driven weight must still return to 400 after the one motion.
+- **Speech emotion/intention is research-only.** SenseVoiceSmall is the first
+  Korean-capable rolling-window candidate and emotion2vec+ base is its
+  benchmark challenger; neither is installed or loaded now. Before adding one,
+  benchmark Korean macro F1/confusion on KEMDy20 + booth audio, local RTF, and
+  its model license. Freeze a smoothed estimate only onto future/unseen words.
+  Never use an utterance-end result to animate or reweight historical words;
+  that recreates the late-motion defect. See `docs/RESEARCH.md`.
+- **The onset sidecar owns a provisional prefix, not durable spelling.**
+  `PhonemeOnsetDetector` advances one confidence-gated phone at a time on the
+  authoritative first slot (`H → He → Hel`, always `uN:w0`). Extensions require
+  repeated compatible observations. Timing keepalives set `sustain_active` and
+  grow only the bounded paint-on trail after the final known character.
+  Nemotron/Parakeet replace that same node; no onset event enters
+  `live_events.jsonl`, and no prefix revision may replay motion.
 - Offline stages must stay independently runnable via their subcommands,
   reading/writing JSON intermediates in `--out`.
 
@@ -89,17 +347,35 @@ Headless Chrome can screenshot the live stage — never tune motion/typography
 blind again:
 
 ```bash
-.venv/bin/python -m autocwi live --sample --no-open &   # wait ~45s for replay
+.venv/bin/python -m autocwi live --sample --no-open &
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
   --disable-gpu --window-size=1440,900 --timeout=15000 \
   --screenshot=/tmp/cwi.png http://127.0.0.1:7337/
 ```
+
+For motion acceptance, attach the browser immediately—before sample words
+arrive—then wait for `audio source finished` and for the sequential queue to
+drain. Inspect `window.__cwiRenderDiag.report()` plus computed DOM styles; a
+single screenshot taken afterward proves resting layout, not the animation.
+The 2026-07-24 standard-sample run recorded 51 first-paint motions, 56
+sequential reveals, maximum 2 simultaneous motions, zero restarts/overlaps,
+and no queued, moving, or non-normal-font words at the end. See
+`docs/TESTS.md` for the observed expressive ranges.
 
 Use `--timeout`, NOT `--virtual-time-budget` (SSE never idles — it hangs).
 `--dump-dom` exposes per-word classes/inline styles for debugging. Note rAF
 does not run reliably in headless: time-based animations may appear frozen
 mid-flight in screenshots (the 1.5 s self-heal sweep exists because a stalled
 rAF chain froze syllable fills at --fill 0% = solid white words).
+
+The default root is the Next studio when `web/out` exists. Use `/?demo=1` for
+a deterministic UI-only two-speaker/voice-signal preview and
+`window.__cwiStudio.report()` for its queue summary. Use `/legacy` plus
+`window.__cwiRenderDiag.report()` when diagnosing the original frame-level
+motion engine. Review both 1440×900 and a narrow 390×844 viewport; mobile may
+wrap at word boundaries, and desktop paragraphs must wrap too. One ASR
+utterance/speaker turn is one semantic paragraph; viewport width—not an
+eight-word constant—chooses its visual lines.
 
 ## Gotchas
 
@@ -109,11 +385,29 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
 - Whisper models auto-download on first use (`small` ~460 MB, `base.en`
   ~145 MB). CTranslate2/faster-whisper runs CPU-only on Apple Silicon
   (int8); MPS is used by pyannote/torch only.
-- Live mode uses two local English Nemotron 0.6B profiles: 160 ms under
-  `assets/streaming-nemotron-en-160ms/` for tentative drafts and 1120 ms under
-  `assets/streaming-nemotron-en-1120ms/` for cues/commits, plus Parakeet Unified
-  under `assets/parakeet-unified-en-offline/` for durable endpoint text. Use
-  `--whisper MODEL` only for the legacy pause-segmented comparison path.
+- Live `fast` mode uses the local 1120 ms English Nemotron 0.6B profile under
+  `assets/streaming-nemotron-en-1120ms/` for accurate read-ahead/cues/commits,
+  plus Parakeet Unified for durable endpoint text. The 160 ms profile is loaded
+  only by explicit `display.mode: readahead`; running it behind fast mode while
+  hiding all its output caused avoidable decoder backlog. Use `--whisper MODEL`
+  only for the legacy pause-segmented comparison path.
+- Korean uses `assets/streaming-zipformer-ko-174m/`, the 2026 174M causal
+  Zipformer chunk-16 int8 export (320 ms model chunk; KsponSpeech + AIHub,
+  ~6,500 h). Its leading-space tokens preserve 어절 boundaries and timed
+  pieces. `verifier_enabled`, `draft_enabled`, and the English TIMIT
+  `onset_prefix` are false in the `ko` overlay. The older online model measured
+  11/76 character errors on the bundled Korean set; this model measured 0/76.
+  Do not pass Korean through English sidecars or overwrite it with the weaker
+  2024 Korean endpoint model. Korean typography is
+  `assets/NotoSansKR.ttf`, not the previous static system-font stack.
+- Apple-Silicon live diarization uses
+  `native/sortformer/.build/release/autocwi-sortformer` plus
+  `assets/sortformer-coreml/`. The Swift package is pinned to FluidAudio
+  0.15.5; `scripts/fetch_streaming_model.py --sortformer-only` builds it and
+  precompiles/downloads the palettized model. Intel macOS, Linux, a missing
+  helper, or a failed native startup must degrade to the ONNX embedding path
+  without aborting captions. Sortformer owns provisional timing, not durable
+  identity. Its direct cache has four slots; the fallback is configured for six.
 - Live server binds 127.0.0.1:7337 and falls back to :7338…:7346 if busy.
   A leftover `autocwi live` process is the usual cause — `pkill -f "autocwi live"`.
 - macOS mic permission is granted per terminal app on first live run.
@@ -208,15 +502,30 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
   both but smears at word boundaries. Take the tracked curve by default, the
   framed one where tracking produced nothing or under-read by >15%.
 
-- Live mode: triple-stage English ASR + speaker attribution. The
-  160 ms white draft is merged under the 1120 ms accurate stream; accurate
-  partials provide provisional motion cues/commits, while modified-beam
-  Parakeet endpoint verification alone owns durable/haptic SSE words. The
+- Live mode: pre-capture English/Korean selection + confidence-aware speaker
+  attribution. English uses its three-stage ASR path; Korean uses the
+  authoritative 174M chunk-16 online Zipformer and finalizes directly at its
+  endpoint.
+  Speaker observations now move through unknown/provisional/stable/corrected;
+  gated enrollment, EMA centroids, ambiguity checks and switch hysteresis keep
+  short/noisy turns from forcing IDs. Stable `word_id`/revision metadata lets
+  endpoint or later profile evidence recolor an existing word in place, and
+  only stable/corrected attribution may raise speaker-change haptics. The
+  1120 ms accurate stream provides provisional read-ahead/cues/commits, while
+  modified-beam Parakeet endpoint verification alone owns durable/haptic SSE
+  words. Explicit readahead mode additionally merges the 160 ms white draft.
+  The
   deterministic benchmark is 0/77 clean and 7/308 across the stress matrix.
 - Offline renderer and burn-in were **removed** (live page is the renderer);
   offline pipeline ends at `spec.json`.
-- Offline pyannote diarization never yet run (needs HF_TOKEN); live
-  attribution uses the local titanet tracker instead.
+- Offline pyannote diarization never yet run (needs HF_TOKEN). Live attribution
+  now uses native Streaming Sortformer v2.1 for provisional timing plus local
+  int8 pyannote segmentation and language-specific 3D-Speaker identity
+  embeddings at endpoints: ERes2Net for English, multilingual CAM++ for Korean.
+  On the target Apple Silicon machine the cached native model processed the
+  34.5 s English sample in 4.01 s (8.6× real time) and the 13.3 s Korean sample
+  in 1.50 s (8.9×). The browser acceptance retained only S1/S2 for the English
+  dialogue; all 14 Korean sample word IDs settled to stable S1 at endpoint.
 - Syllable variation (CWI 2.2.4) is live: a colour wipe over already-visible
   text, gated by `motion.syllable_fill` to drawn-out words (~7% of words).
   Never make it a typewriter reveal — progressive appearance destroys the
@@ -278,16 +587,16 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
   wide (`Index End = start + 1`), **Ease High 50 / Ease Low 50**, swept by
   `ease(time, inTime, outTime, 0, textLenWords)` between the layer's
   `[START]`/`[END]` markers.
-- **The template is position + colour only — but the WEBSITE is not, and the
-  website is what is being matched.** `grep` the .aep: `ADBE Text Scale`,
+- **The template is position + colour only — but PDF §2.2.3 is authoritative.**
+  `grep` the .aep: `ADBE Text Scale`,
   `Tracking`, `Size`, `Rotation`, `Skew`, `Opacity` all occur **zero** times;
   the four animators touch only `ADBE Text Position 3D` and
   `ADBE Text Fill Color`, and their expressions return `[x,y]`, so no Z either.
   That is the stricter, calmer reading of the system and is what
   `wave_reach: 0` gives. The recordings in `docs/` are the website — a
   different implementation — and it animates the active word's size and weight
-  (see the bullet above). `cc` follows the recordings because they are the
-  reference being matched; do not "fix" it back to the template without asking.
+  (see the bullet above). Both live and `cc` retain the PDF's required,
+  constant +15% pop; do not "fix" them back to the template's omission.
 - **The lift is IN PHASE with the colour turn.** `Yellow` drives the `-amp`
   position AND the fill from ONE range selector, so a letter is at the top of
   its lift at the instant it turns and comes back down behind the boundary.
@@ -565,17 +874,16 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
   descending by the time it turns — one model, both cases. Verified at both
   ends: fast speech 17.6% at +80 ms (measured ~16% at +70..100 ms), held "is"
   77.5% (measured 77%).
-- **THE ANTICIPATION LIFT IS A WORD-LEVEL MOTION, NOT PER-CHARACTER.** The
-  word moves as one rigid unit. Measured on "is" in "precisely as each word is
-  spoken.", both glyphs dip, rise, hold and land in LOCKSTEP: -21/-26%, then
-  59/78%, peaking 77/102%, back to 1.5/4%. The i/s difference is only the
-  normaliser — "i" has a taller ink box because of its dot, so an identical
-  PIXEL lift reads as a smaller percentage of it.
-  Driving it per character was wrong twice over: a word's first letter got the
-  long INTER-word gap while every other letter got a tiny intra-word one, so
-  each word led with a lifted first letter (a visible stutter on every word),
-  and a word held through a pause raised only its first glyph. `wordLift()`
-  now runs on the word wrapper and characters carry no vertical offset at all.
+- **SYNCHRONIZATION COMPOSES WORD AND CHARACTER GEOMETRY.** The PDF's base
+  elevation/pop belongs to the word event and remains on the wrapper. But the
+  website recording is unambiguous at frame level: the `i/s` split and the
+  moving letter inside “spoken” occupy different baselines inside one word.
+  The renderer therefore adds a wait-aware character crouch/lift/pop around
+  each letter's own colour-turn time. A held first letter may rise farther;
+  fast intra-word turns use `wave_hold_floor`, preventing the full held-pause
+  amplitude from becoming a stutter on every character. Intonation size and
+  weight remain uniform across the word. Every character transform is
+  explicitly reset to `none` at rest.
 - **Deriving WEIGHT: use an ABSOLUTE density deadband, never the phrase's own
   maximum.** Normalising each phrase by its largest deviation stretches the
   biggest NOISE deviation to full bold whenever nothing in that phrase is
@@ -686,22 +994,27 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
   baseline rather than floating from their centre.
 - **Word-level timing, character-level appearance.** The AE template drives a
   WORD-index range selector (`textLenWords`, animator literally named "Words")
-  but with Ease High/Low set, which smooths the hand-off across characters. So
-  "alphabet-level motion" and "word-level sync" are the same thing seen from
-  two ends; `closed_caption.sync_granularity` switches between them.
-- **THE CAPTION INVARIANT: a word that has been shown must stop changing —
-  once its MOTION WINDOW passes.** (Refined 2026-07-23 for `motion.live_sync`.)
-  A word turns its speaker colour, then animates through a ~0.3 s transient (the
-  2.2.3 pop/elevation/swell) and comes to rest; from that point its size,
-  weight, colour and RESTING position are frozen for life. What the transient is
-  allowed to touch is bounded: `transform` only (so `font-size`/weight are never
-  re-resolved), on the word itself and — POSITION only — on its row-mates, and
-  every transform returns to rest and is written exactly once when the window
-  ends. Verification may add/remove words and (under `display.stability:
-  corrections`) respell one; it may never restyle one. Enforced by: server
+  but with Ease High/Low set, while the website resolves the hand-off on
+  character spans. So "alphabet-level motion" and "word-level sync" are
+  composable scopes, not competing interpretations;
+  `closed_caption.sync_granularity` switches the turn timing and live uses the
+  alphabet appearance within its active word.
+- **THE CAPTION INVARIANT: a word that has been shown must stop changing once
+  its MOTION WINDOW passes.** (Refined 2026-07-24 for expressive live motion.)
+  A word animates through one 520–720 ms first-paint transient and returns to
+  common rest. During that window only its own transform and variable-font
+  weight/width may change; `font-size`, line geometry, and earlier words stay
+  fixed. Speaker colour has an independent clock and may sweep during motion or
+  write directly afterward. Confidence-gated block F0 seeds the baseline before
+  the first recognized word; active weight may use the wider 180–700 transient
+  band, then must land exactly at Regular 400. At rest, transform is identity,
+  weight is 400, and width is 100. Verification may add/remove/respell words and recolour them, but
+  it may never start a second motion. Enforced by: server
   freezes `loudness`/prosody per time SLOT in `prosody_cache` (key
   `("§slot", utterance, round(start*20))` — text-keyed missed exactly when the
-  verifier respelled); page's `typeCache` is first-write-wins and geometry is
+  verifier respelled), and freezes force/attack/contour/flow/texture separately
+  in `delivery_cache` on the first event even during cold-start calibration;
+  page's `typeCache` is first-write-wins and geometry is
   frozen on the node as `el._type`; the motion loop marks `dataset.moving` for
   the window and writes rest once at its end; tentative words and the sidebar
   `project()` instead of `fold()` so they never vote in the running median.
@@ -715,33 +1028,44 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
   spreads ~26 dB below its median, clipping 35% of words to 3% whisper size;
   (b) a plain lo..hi window then put the MEDIAN word at mid-scale (6.5%), so
   ordinary speech read as shouted — the scale is now pivoted on the median so
-  it lands on CWI's 5% baseline; (c) caption boxes did not wrap, and since
-  verification ENLARGES words after placement, text ran off the stage — boxes
-  now `flex-wrap`; (d) syllable fills froze at `--fill 0%` (solid white words)
-  when the rAF chain stalled, so a 1.5 s sweep finalizes them.
+  it lands on CWI's 5% baseline; (c) wrapped flex boxes created multi-row
+  captions and verification overlaps, so each box is now `nowrap` and measured
+  overflow moves an unseen word to a new box; (d) syllable fills froze at
+  `--fill 0%` (solid white words) when the rAF chain stalled, so a 1.5 s sweep
+  finalizes them.
 - Type axes are anchored to the speaker's running baseline via `expression`
   in config.yaml. Mapping CWI's absolute anchors straight onto per-word
   acoustics made ordinary speech render as fabricated whispers/shouts (size
   swung 3.2x, weight 577). Do not raise `*_response` to 1.0 without re-checking
   that.
-- A word animates exactly once, when spoken. Words already on screen are
-  settled and must never move: `neighbor_bleed` is 0, `dataset.moved` guards
-  re-entry, and endpoint verification re-colours without replaying motion.
-- `display.mode` has four settings (config.yaml). Default **`fast`**: settled
-  committed words PLUS the accurate stream's own tail as white read-ahead
-  (~1.2 s behind the voice; ~35% less revision than the draft — the lone-word
-  and follow-a-video mode). `stable`: committed words only, never revised.
+- A word's synchronization activation runs exactly once. `dataset.moved`
+  guards re-entry, and endpoint/speaker verification never restarts it.
+  `neighbor_bleed` is 0 and `live_sync.neighbor_push` is false; stacked live
+  must not shift row-mates while somebody may still be reading them.
+- `display.mode` has four settings (config.yaml). Default **`fast`** adds the
+  accurate stream's own white tail (~35% less revision than the draft) to
+  committed words. `stable` hides the tail and shows committed words only.
   `sentence`: turn-taking, split at the verifier's punctuation. `readahead`:
   adds the 160 ms draft — lowest latency, visible rewriting. Do NOT reduce
   `live.endpoint_silence_s` for finer sentences (WER 2.27%→8.77% at 0.6 s),
   and do NOT release the held-back trailing word early: measured, it saves
   nothing (fires with the endpoint) and commits truncated spellings — a lone
   word reaches the screen through fast mode's white tail instead.
-- Presentation (user preference, deviates from CWI 2.4): captions left-aligned,
-  `display.retention: overflow` keeps lines until the stage is full and pushes
-  the oldest off the top, and `display.intent_circle` closes each line with a
-  circle — pulsing with the live level events on the active line (true dBFS,
-  not the gained copy), frozen on finished lines.
+- Live presentation is intentionally stacked: left-aligned text-hugging boxes
+  grow upward, but product Stage is always bounded to four fixed eight-word
+  rows. Older rows remain in Transcript; do not let them accumulate behind
+  the active caption. The line-edge voice circle is on: volume changes its outer radius,
+  F0 moves the bead vertically, and periodicity/brightness shape its restrained
+  inner texture. It follows the active speaker line without entering the
+  glyphs. A larger Voice Compass mirrors those channels in the side grid and
+  reserves its direction marker for future 2+ microphone
+  `direction_deg`/`azimuth_deg`; mono must display `awaiting array`. A
+  provisional/stable/corrected speaker change or a new ASR utterance starts a
+  separate semantic paragraph in Transcript. Stage row geometry ignores
+  diarization and utterance segmentation and follows immutable semantic word
+  order, so pending attribution, late speaker churn, or provisional utterance
+  boundaries cannot create one-word rows. Never rebuild the words:
+  their first-paint motion clock must survive the partition.
 - Endpoint verification reconciles PER WORD: matches corrected in place,
   deletions dropped, insertions (usually the one endpoint-held word) added at
   their spoken position via the normal word path. Never tear an utterance down
@@ -749,19 +1073,63 @@ rAF chain froze syllable fills at --fill 0% = solid white words).
   endpoint, so a structural mismatch fires on almost every utterance, and a
   block rebuild makes each sentence flash discretely at every pause (a full
   `rack.replaceChildren()` even wiped the transcript).
-- Live speaker attribution (CWI 2.1) runs by default: titanet-small
-  embeddings (one-time ~38 MB fetch), segment-then-cluster in
-  `SpeakerTracker`. Commits get a provisional classify-only label; the
-  endpoint pass segments at change points, clusters whole segments, merges
-  converged identities (aliases keep on-screen numbering stable). On the film
-  sample it finds the major turns but still conflates the two voices in fast
-  overlapping runs — close-mic'd speech separates far better (0.5 vs 0.2
-  cosine on clean spans). Tune under `live.diarization`.
+- Live paint is also PER WORD and PER FRAME. `text_revision_id`,
+  `timing_revision_id`, `speaker_revision_id`, source authority, finality, and
+  SSE id feed `live_render_core.js`; a bounded map coalesces bursts before one
+  `requestAnimationFrame` flush. `level` owns a separate meter/voice-circle
+  frame.
+  Ordinary updates never replace a word/line/stage, and replay payloads
+  reconstruct state without replaying motion. Inspect locally with
+  `display.debug_render`, `window.__cwiRenderDiag.report()`, or
+  `scripts/live_render_probe.py`.
+  **LIVE MOTION BELONGS TO FIRST PAINT (updated 2026-07-24).** Unlike `cc`,
+  live cannot move a word before ASR has created it. `renderReadAhead` therefore
+  starts each word's one §2.2.3 pop at its earliest real DOM appearance.
+  `dataset.moved` makes that activation once-only. The later onset cue, commit,
+  verification, and speaker correction are colour/text-only and can never
+  start or restart geometry. A decoder batch is revealed in timestamp order,
+  using a 140 ms base gap blended with bounded 80–260 ms acoustic onset gaps,
+  with at most two words moving. Preserve the planned reveal deadline and its
+  60 ms catch-up floor; using `now + gap` at each start accumulates latency.
+  A current word waits hidden for a free slot instead of skipping its motion.
+  Each motion lasts 520–720 ms and returns
+  naturally rather than being snapped so a third word can start. Colour
+  received while queued is held until first paint; colour received while moving
+  begins its sweep immediately without changing geometry. Verification keeps
+  unseen replacements queued and preserves an in-flight clock. Endpoint words
+  that have never been visible still receive first-paint motion; only historical
+  replay/correction insertions settle without it.
+  * **The per-character slide-in entry is OFF by default** (`character_entry_
+    enabled: false`) — cc has no such effect; it was a live-only addition and is
+    the other thing that read as extra motion. Set true to re-enable.
+  Never restart the pop for text, speaker, timing, commit, or verification
+  revisions; replay and reduced-motion records settle directly.
+- Live speaker attribution (CWI 2.1) is hybrid. On Apple Silicon the native
+  FluidAudio/Core ML conversion of NVIDIA
+  `diar_streaming_sortformer_4spk-v2.1` supplies continuous provisional timing
+  with the official 1.04 s context. The 1.5 MB int8 pyannote segmentation model
+  plus a full-turn 3D-Speaker embedding verifies endpoint identity, recovers
+  quiet speech, and supports the configured six identities beyond Sortformer's
+  four direct slots. English uses the 25 MB ERes2Net model (~66 ms measured);
+  Korean uses the 27 MB multilingual CAM++ model (~32 ms vs ~90 ms ERes2Net on
+  held-out Korean spans). Score Sortformer overlap by activity, not duration.
+  S1/S2 may remain arrival-ordered and provisional for latency. Never expose
+  unmapped higher native slots directly; S3…S6 embedding identities require
+  repeated clean endpoint observations, after which prior neutral words are
+  revised in place. Attach only endpoint-verified additional slots to the
+  durable S1… namespace; a short
+  phantom native slot must merge back to the embedding identity rather than
+  creating a one-word speaker paragraph. On unsupported platforms, native
+  startup/model failure must fall back to embeddings without aborting capture.
+  Offline pyannote 3.1 should separately move to
+  `speaker-diarization-community-1` after isolating the pyannote 4.x dependency
+  and gated model download. Details and primary links are in
+  `docs/RESEARCH.md`.
 - Haptic hardware module: not started; it should subscribe only to final
   `type: "word"` events at `/events` (live) or read `spec.json` (offline).
   Durable words carry optional `speaker_change`/`emphasis` salience flags
   (threshold `haptics.emphasis_db`) — actuate on those, never every word
-  (see docs/research-notes.md for the grounding).
+  (see docs/RESEARCH.md for the grounding).
 - Cold start is ~7.6 s of model loading (GIL-bound, parallelizing barely
   helps). The server/page open FIRST with `boot` status events, models warm
   up on silence, and "listening" appears only when capture is real — words

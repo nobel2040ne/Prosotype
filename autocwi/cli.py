@@ -98,11 +98,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--whisper", default=None, metavar="MODEL",
         help="use the legacy pause-segmented Whisper path (e.g. base.en) instead of streaming",
     )
-    lv.add_argument("--lang", default=None, help="language (default: en)")
+    lv.add_argument(
+        "--lang",
+        choices=("en", "ko"),
+        default=None,
+        help="skip the startup picker and use English (en) or Korean (ko)",
+    )
     lv.add_argument("--file", default=None,
                     help="stream a wav/mp4 file at real-time pace instead of the mic")
     lv.add_argument("--sample", action="store_true",
-                    help="stream the bundled CWI reference clip (no mic needed)")
+                    help="stream the bundled sample for the selected language")
+    lv.add_argument(
+        "--diarizer",
+        choices=("auto", "sortformer", "embedding", "off"),
+        default=None,
+        help="speaker backend: native streaming Sortformer when available, "
+             "the embedding fallback, or disabled",
+    )
     lv.add_argument("--loop", action="store_true",
                     help="restart the --file/--sample clip when it ends (continuous demo)")
     lv.add_argument("--port", type=int, default=None)

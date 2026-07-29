@@ -63,3 +63,42 @@ def test_end_before_start_rejected():
     with pytest.raises(ValidationError):
         Word(text="x", start=1.0, end=1.0, speaker="S1", loudness=0.5, pitch=0.5,
              loudness_db=-20, pitch_hz=100, conf=0.9)
+
+
+def test_speaker_attribution_fields_validate_and_clamp():
+    word = Word(
+        text="x", start=0.0, end=1.0, speaker="S1", loudness=0.5, pitch=0.5,
+        loudness_db=-20, pitch_hz=100, conf=0.9,
+        speaker_status="provisional", speaker_confidence=1.2,
+        speaker_change_probability=-0.1, speaker_revision_id=4, overlap=False,
+    )
+    assert word.speaker_confidence == 1.0
+    assert word.speaker_change_probability == 0.0
+    assert word.speaker_revision_id == 4
+    with pytest.raises(ValidationError):
+        Word(
+            text="x", start=0.0, end=1.0, speaker="S1", loudness=0.5,
+            pitch=0.5, loudness_db=-20, pitch_hz=100, conf=0.9,
+            speaker_status="certain",
+        )
+
+
+def test_legacy_spec_without_speaker_attribution_fields_is_stable():
+    payload = make_spec().model_dump(
+        exclude={
+            "words": {
+                "__all__": {
+                    "speaker_status",
+                    "speaker_confidence",
+                    "speaker_change_probability",
+                    "speaker_revision_id",
+                    "overlap",
+                }
+            }
+        }
+    )
+    loaded = CaptionSpec.model_validate(payload)
+    assert all(word.speaker_status is None for word in loaded.words)
+    assert all(word.speaker_confidence is None for word in loaded.words)
+    # None is the documented legacy representation of an implicitly stable
+    # assignment; renderers default an absent status to "stable".

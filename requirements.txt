@@ -8,6 +8,9 @@ faster-whisper==1.1.1
 ctranslate2==4.5.0
 # Dual true-streaming live ASR (local Nemotron; prebuilt platform wheels)
 sherpa-onnx==1.13.4
+# Optional first-phone onset sidecar. The checkpoint is fetched explicitly by
+# scripts/fetch_streaming_model.py; live inference remains fully local.
+transformers==4.48.3
 
 # Diarization (weights are gated on Hugging Face -> HF_TOKEN, see README)
 torch==2.5.1

@@ -1,18 +1,19 @@
 """Live captions: microphone -> true streaming ASR + prosody -> SSE events.
 
-The default recognizer is a pair of sherpa-onnx 0.6B streaming Nemotron
-profiles. A 160 ms stream produces immediate revisable words; a more accurate
-1120 ms stream supplies provisional spoken-onset cues, corrects overlapping
-drafts, and alone emits durable words. This uses extra local memory/CPU to
-avoid choosing either latency or accuracy for every stage.
+The default recognizer is the accuracy-first 1120 ms sherpa-onnx Nemotron 0.6B
+profile. It supplies provisional spoken-onset cues and stable commits; a
+Parakeet endpoint pass owns durable text. Explicit readahead mode additionally
+loads a 160 ms profile for highly revisable early drafts. Fast mode deliberately
+does not pay for inference whose output it would hide.
 
 Word events share the CaptionSpec word shape (text/start/end/speaker/
 loudness/pitch/loudness_db/pitch_hz/conf) plus an absolute `t` wall-clock
-onset. Only committed word events are appended to ``live_events.jsonl`` and
-need to be consumed by future haptic hardware. ``hypothesis`` and ``cue``
-events are optional live-display extensions and may be replaced at any time.
-Cues improve visual synchronization but are never written to the durable log
-or intended for haptic actuation.
+onset, stable ``word_id``, and revision-capable speaker metadata. Only final
+word events are appended to ``live_events.jsonl``. A later full word record
+with the same id may revise speaker attribution without duplicating text.
+``hypothesis`` and ``cue`` events are optional live-display extensions and may
+be replaced at any time. Cues improve visual synchronization but are never
+written to the durable log or intended for haptic actuation.
 
 Everything runs locally: sounddevice (mic) -> sherpa-onnx -> parselmouth,
 served to the browser over plain stdlib HTTP + Server-Sent Events. The former
@@ -26,11 +27,14 @@ import http.server
 import difflib
 import json
 import math
+import mimetypes
 import os
+import platform
 import queue
 import re
 import threading
 import time
+import unicodedata
 import warnings
 import webbrowser
 from collections import deque
@@ -38,15 +42,118 @@ from collections.abc import Iterable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
 
 import numpy as np
 
 SR = 16_000
 BLOCK = 1024  # samples per audio block (~64 ms)
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _rms_db(x: np.ndarray) -> float:
     return 20 * np.log10(max(float(np.sqrt(np.mean(x**2))), 1e-8))
+
+
+def _realtime_voice_features(
+    samples: np.ndarray,
+    pitch_floor_hz: float = 75.0,
+    pitch_ceiling_hz: float = 500.0,
+) -> tuple[float, float, float]:
+    """Return ``(f0_hz, periodicity, spectral_centroid_hz)`` for one block.
+
+    This intentionally small autocorrelation estimator serves the continuous
+    UI indicator, not the durable word prosody model. It stays on the capture
+    thread, has no model dependency, and gives the browser a fresh observation
+    every ~64 ms—well before ASR emits text.
+    """
+
+    frame = np.asarray(samples, dtype=np.float64)
+    if len(frame) < 256 or float(np.max(np.abs(frame))) < 1e-6:
+        return 0.0, 0.0, 0.0
+    frame = frame - float(np.mean(frame))
+    windowed = frame * np.hanning(len(frame))
+    energy = float(np.dot(windowed, windowed))
+    if energy < 1e-10:
+        return 0.0, 0.0, 0.0
+
+    # The centroid is a deliberately coarse timbre/brightness cue.
+    magnitude = np.abs(np.fft.rfft(windowed))
+    frequencies = np.fft.rfftfreq(len(windowed), 1.0 / SR)
+    mag_sum = float(np.sum(magnitude))
+    centroid = (
+        float(np.dot(magnitude, frequencies) / mag_sum)
+        if mag_sum > 1e-10 else 0.0
+    )
+
+    # FFT autocorrelation avoids an O(n²) pass on every capture block.
+    fft_size = 1 << (2 * len(windowed) - 1).bit_length()
+    spectrum = np.fft.rfft(windowed, fft_size)
+    correlation = np.fft.irfft(spectrum * np.conj(spectrum), fft_size)[:len(frame)]
+    if correlation[0] <= 1e-10:
+        return 0.0, 0.0, centroid
+    correlation /= correlation[0]
+    min_lag = max(1, int(SR / max(pitch_ceiling_hz, 1.0)))
+    max_lag = min(len(correlation) - 2, int(SR / max(pitch_floor_hz, 1.0)))
+    if max_lag <= min_lag:
+        return 0.0, 0.0, centroid
+    region = correlation[min_lag:max_lag + 1]
+    peak_offset = int(np.argmax(region))
+    lag = min_lag + peak_offset
+    periodicity = float(np.clip(correlation[lag], 0.0, 1.0))
+    if periodicity < 0.28:
+        return 0.0, periodicity, centroid
+
+    # Sub-sample parabolic interpolation removes visible quantization in the
+    # circle bead without pretending this UI estimator is a phonetic model.
+    before, center, after = correlation[lag - 1:lag + 2]
+    denominator = float(before - 2.0 * center + after)
+    offset = (
+        0.5 * float(before - after) / denominator
+        if abs(denominator) > 1e-12 else 0.0
+    )
+    refined_lag = lag + float(np.clip(offset, -0.5, 0.5))
+    return float(SR / refined_lag), periodicity, centroid
+
+
+def _delivery_profile(
+    *,
+    force: float,
+    attack: float,
+    contour: float,
+    flow: float,
+    texture: float,
+    confidence: float,
+    duration_s: float,
+    cfg: dict,
+) -> str:
+    """Name an audible delivery shape without inferring an inner emotion."""
+
+    profile = dict(cfg.get("profile", {}) or {})
+    if confidence < float(profile.get("min_confidence", 0.22)):
+        return "steady"
+    contour_threshold = float(profile.get("contour_threshold", 0.25))
+    if contour >= contour_threshold:
+        return "rising"
+    if contour <= -contour_threshold:
+        return "falling"
+    if (
+        flow >= float(profile.get("sustained_flow_min", 0.68))
+        and duration_s >= float(profile.get("sustained_duration_s", 0.34))
+    ):
+        return "sustained"
+    if force >= float(profile.get("forceful_force_min", 0.68)):
+        return "forceful"
+    if (
+        force <= float(profile.get("gentle_force_max", 0.32))
+        and attack <= float(profile.get("gentle_attack_max", 0.24))
+        and texture >= float(profile.get("gentle_texture_min", 0.60))
+    ):
+        return "gentle"
+    if texture >= float(profile.get("textured_min", 0.60)):
+        return "textured"
+    return "steady"
 
 
 # ---------------------------------------------------------------------------
@@ -171,14 +278,23 @@ def mic_blocks(stop: threading.Event, device: int | str | None = None):
             yield chunk
 
 
-def sample_clip_path() -> str:
-    """The bundled CWI reference clip, for testing live mode without a mic.
+def sample_clip_path(language: str = "en") -> str:
+    """The bundled language sample, for testing live mode without a mic.
 
-    Its audio is dialogue at roughly -36 dBFS, so it also exercises the input
-    gain and the stable-display path end to end.
+    English uses the CWI reference dialogue at roughly -36 dBFS, so it also
+    exercises input gain. Korean uses a CC BY 4.0 FLEURS utterance.
+    `--sample --lang ko` must never test a Korean recognizer with the English
+    reference clip.
     """
 
     root = Path(__file__).resolve().parent.parent
+    if language == "ko":
+        korean = root / "assets" / "sample-ko.wav"
+        if korean.exists():
+            return str(korean)
+        raise FileNotFoundError(
+            "bundled Korean sample not found: assets/sample-ko.wav"
+        )
     candidates = [
         root / "assets" / "sample.mp4",
         root / "AE PROJECT" / "AE PROJECT" / "(Footage)" / "ASETS" / "Video"
@@ -272,6 +388,27 @@ class InputGain:
         self.peak_db = self.absolute_floor_db
         self.speech = False
         self.clipping = False
+        prosody_cfg = dict(cfg.get("prosody", {}) or {})
+        self.pitch_floor_hz = float(prosody_cfg.get("pitch_floor_hz", 75.0))
+        self.pitch_ceiling_hz = float(prosody_cfg.get("pitch_ceiling_hz", 500.0))
+        self.pitch_hz = 0.0
+        self.pitch_confidence = 0.0
+        self.spectral_centroid_hz = 0.0
+        self._pitch_history: deque[float] = deque(maxlen=3)
+        self.delivery_cfg = dict(cfg.get("live", {}).get("delivery", {}) or {})
+        self.cfg_live_db_range = list(
+            cfg.get("live", {}).get("db_range", [-55.0, -18.0])
+        )
+        self.delivery_force = 0.0
+        self.delivery_attack = 0.0
+        self.delivery_contour = 0.0
+        self.delivery_flow = 0.0
+        self.delivery_texture = 0.0
+        self.delivery_confidence = 0.0
+        self.delivery_profile = "steady"
+        self._delivery_pitch_history: deque[float] = deque(maxlen=5)
+        self._previous_rms_db = self.absolute_floor_db
+        self._speech_run_s = 0.0
 
     def _update_floor(self, rms_db: float) -> None:
         self.levels.append(rms_db)
@@ -291,14 +428,46 @@ class InputGain:
         self.peak_db = float(20 * np.log10(max(float(np.max(np.abs(raw))), 1e-8)))
         self.clipping = bool(self.peak_db > -0.5)
         self._update_floor(self.rms_db)
+        self.speech = bool(self.rms_db > self.floor_db + self.floor_margin_db and
+                           self.rms_db > self.absolute_floor_db)
+        if self.speech:
+            pitch, confidence, centroid = _realtime_voice_features(
+                raw, self.pitch_floor_hz, self.pitch_ceiling_hz
+            )
+            self.pitch_confidence = float(confidence)
+            if pitch > 0:
+                self._pitch_history.append(float(pitch))
+                self.pitch_hz = float(np.median(self._pitch_history))
+            else:
+                self.pitch_hz = 0.0
+            # A short EMA makes timbre legible without making it lag speech.
+            if self.spectral_centroid_hz <= 0:
+                self.spectral_centroid_hz = float(centroid)
+            else:
+                self.spectral_centroid_hz += (
+                    float(centroid) - self.spectral_centroid_hz
+                ) * 0.28
+            self._update_delivery(len(raw) / SR)
+        else:
+            self.pitch_hz = 0.0
+            self.pitch_confidence = 0.0
+            self.spectral_centroid_hz = 0.0
+            self._pitch_history.clear()
+            self._delivery_pitch_history.clear()
+            self._speech_run_s = 0.0
+            self.delivery_force = 0.0
+            self.delivery_attack = 0.0
+            self.delivery_contour = 0.0
+            self.delivery_flow = 0.0
+            self.delivery_texture = 0.0
+            self.delivery_confidence = 0.0
+            self.delivery_profile = "steady"
+        self._previous_rms_db = self.rms_db
         if not self.enabled:
-            self.speech = bool(self.rms_db > self.floor_db + self.floor_margin_db)
             self.gain_db = 0.0
             return chunk
 
         # Only speech-like blocks may move the gain. Silence holds it steady.
-        self.speech = bool(self.rms_db > self.floor_db + self.floor_margin_db and
-                           self.rms_db > self.absolute_floor_db)
         if self.speech:
             desired = float(np.clip(self.target_dbfs - self.rms_db,
                                     self.min_gain_db, self.max_gain_db))
@@ -329,6 +498,83 @@ class InputGain:
             scaled = scaled * (ceiling / peak)
         return replace(chunk, asr_samples=scaled.astype(np.float32, copy=False))
 
+    def _update_delivery(self, dt: float) -> None:
+        """Update the real-time voice orb from the current 64 ms observation."""
+
+        self._speech_run_s += dt
+        smoothing = float(self.delivery_cfg.get("realtime_smoothing", 0.28))
+        smoothing = float(np.clip(smoothing, 0.01, 1.0))
+        db_lo, db_hi = map(float, self.cfg_live_db_range)
+        raw_force = float(np.clip(
+            (self.rms_db - db_lo) / max(1.0, db_hi - db_lo), 0.0, 1.0
+        ))
+        attack_scale = float(self.delivery_cfg.get("attack_full_scale_db", 12.0))
+        raw_attack = float(np.clip(
+            (self.rms_db - self._previous_rms_db) / max(1.0, attack_scale),
+            0.0,
+            1.0,
+        ))
+        if self.pitch_hz > 0 and self.pitch_confidence >= float(
+            self.delivery_cfg.get("pitch_confidence_min", 0.28)
+        ):
+            self._delivery_pitch_history.append(self.pitch_hz)
+        raw_contour = 0.0
+        if len(self._delivery_pitch_history) >= 2:
+            semitones = 12.0 * math.log2(
+                self._delivery_pitch_history[-1]
+                / max(self._delivery_pitch_history[0], 1.0)
+            )
+            raw_contour = float(np.clip(
+                semitones / float(self.delivery_cfg.get(
+                    "contour_full_scale_semitones", 5.0
+                )),
+                -1.0,
+                1.0,
+            ))
+        brightness_lo, brightness_hi = map(
+            float, self.delivery_cfg.get("texture_brightness_hz", [700, 4200])
+        )
+        brightness = float(np.clip(
+            (self.spectral_centroid_hz - brightness_lo)
+            / max(1.0, brightness_hi - brightness_lo),
+            0.0,
+            1.0,
+        ))
+        raw_flow = float(np.clip(
+            0.75 * self.pitch_confidence
+            + 0.25 * (1.0 - min(1.0, abs(raw_contour))),
+            0.0,
+            1.0,
+        ))
+        raw_texture = float(np.clip(
+            0.70 * (1.0 - self.pitch_confidence) + 0.30 * brightness,
+            0.0,
+            1.0,
+        ))
+        raw_confidence = float(np.clip(
+            0.45 + 0.55 * self.pitch_confidence, 0.0, 1.0
+        ))
+        for name, value in (
+            ("delivery_force", raw_force),
+            ("delivery_attack", raw_attack),
+            ("delivery_contour", raw_contour),
+            ("delivery_flow", raw_flow),
+            ("delivery_texture", raw_texture),
+            ("delivery_confidence", raw_confidence),
+        ):
+            current = float(getattr(self, name))
+            setattr(self, name, current + (value - current) * smoothing)
+        self.delivery_profile = _delivery_profile(
+            force=self.delivery_force,
+            attack=self.delivery_attack,
+            contour=self.delivery_contour,
+            flow=self.delivery_flow,
+            texture=self.delivery_texture,
+            confidence=self.delivery_confidence,
+            duration_s=self._speech_run_s,
+            cfg=self.delivery_cfg,
+        )
+
     def status(self) -> str:
         """Coarse state used by both the console and the browser meter."""
 
@@ -355,6 +601,16 @@ class InputGain:
             "target_db": round(self.target_dbfs, 1),
             "speech": self.speech,
             "status": self.status(),
+            "pitch_hz": round(self.pitch_hz, 1),
+            "pitch_confidence": round(self.pitch_confidence, 3),
+            "spectral_centroid_hz": round(self.spectral_centroid_hz, 1),
+            "delivery_force": round(self.delivery_force, 3),
+            "delivery_attack": round(self.delivery_attack, 3),
+            "delivery_contour": round(self.delivery_contour, 3),
+            "delivery_flow": round(self.delivery_flow, 3),
+            "delivery_texture": round(self.delivery_texture, 3),
+            "delivery_confidence": round(self.delivery_confidence, 3),
+            "delivery_profile": self.delivery_profile,
         }
 
 
@@ -388,12 +644,241 @@ class HypothesisWord:
         return groups
 
 
+def _word_delivery_features(
+    word: HypothesisWord,
+    audio: np.ndarray,
+    cfg: dict,
+) -> dict:
+    """Measure one word's force, contour, flow, and acoustic texture.
+
+    The descriptors are deliberately language-independent and interpretable.
+    They describe what is present in the waveform; they do not claim to know
+    whether the speaker feels angry, happy, sarcastic, etc. Callers freeze this
+    result on first paint so incomplete/final ASR revisions cannot cause a
+    second motion later.
+    """
+
+    delivery_cfg = dict(cfg.get("live", {}).get("delivery", {}) or {})
+    neutral = {
+        "delivery_force": 0.5,
+        "delivery_attack": 0.0,
+        "delivery_contour": 0.0,
+        "delivery_contour_confidence": 0.0,
+        "delivery_flow": 0.0,
+        "delivery_texture": 0.0,
+        "delivery_confidence": 0.0,
+        "delivery_profile": "steady",
+    }
+    if not delivery_cfg.get("enabled", True) or not len(audio):
+        return neutral
+
+    i0 = max(0, int(word.start * SR))
+    i1 = min(len(audio), max(i0 + 1, int(word.end * SR)))
+    if i1 <= i0:
+        return neutral
+    duration_s = (i1 - i0) / SR
+    context = int(float(delivery_cfg.get("context_s", 0.064)) * SR)
+    frame_n = max(256, int(float(delivery_cfg.get("frame_s", 0.064)) * SR))
+    hop_n = max(128, int(float(delivery_cfg.get("hop_s", 0.032)) * SR))
+    a0, a1 = max(0, i0 - context), min(len(audio), i1 + context)
+    analysis = np.asarray(audio[a0:a1], dtype=np.float32)
+    if len(analysis) < 256:
+        return neutral
+
+    centers = list(range(frame_n // 2, len(analysis), hop_n))
+    if not centers:
+        centers = [len(analysis) // 2]
+    pitch_floor = float(cfg.get("prosody", {}).get("pitch_floor_hz", 75.0))
+    pitch_ceiling = float(cfg.get("prosody", {}).get("pitch_ceiling_hz", 500.0))
+    confidence_floor = float(delivery_cfg.get("pitch_confidence_min", 0.28))
+    brightness_range = delivery_cfg.get("texture_brightness_hz", [700, 4200])
+    brightness_lo, brightness_hi = map(float, brightness_range)
+
+    levels: list[float] = []
+    pitches: list[float] = []
+    periodicities: list[float] = []
+    brightnesses: list[float] = []
+    relative_centers: list[int] = []
+    for center in centers:
+        left = max(0, center - frame_n // 2)
+        right = min(len(analysis), left + frame_n)
+        frame = analysis[left:right]
+        if len(frame) < 256:
+            continue
+        pitch, periodicity, centroid = _realtime_voice_features(
+            frame, pitch_floor, pitch_ceiling
+        )
+        levels.append(float(_rms_db(frame)))
+        pitches.append(float(pitch) if periodicity >= confidence_floor else 0.0)
+        periodicities.append(float(periodicity))
+        brightnesses.append(float(np.clip(
+            (centroid - brightness_lo) / max(1.0, brightness_hi - brightness_lo),
+            0.0,
+            1.0,
+        )))
+        relative_centers.append(a0 + center)
+    if not levels:
+        return neutral
+
+    inside = [
+        index for index, center in enumerate(relative_centers)
+        if i0 <= center <= i1
+    ]
+    if not inside:
+        nearest = min(
+            range(len(relative_centers)),
+            key=lambda index: abs(relative_centers[index] - (i0 + i1) / 2),
+        )
+        inside = [nearest]
+
+    word_levels = [levels[index] for index in inside]
+    word_periodicities = [periodicities[index] for index in inside]
+    word_brightnesses = [brightnesses[index] for index in inside]
+    voiced = [
+        pitches[index] for index in inside
+        if pitches[index] > 0
+    ]
+    word_db = float(_rms_db(np.asarray(audio[i0:i1], dtype=np.float32)))
+    # Absolute force stays anchored to the same true-capture range as live
+    # loudness. It does not inherit a late-changing per-speaker percentile.
+    db_lo, db_hi = map(float, cfg.get("live", {}).get("db_range", [-55, -18]))
+    force = float(np.clip((word_db - db_lo) / max(1.0, db_hi - db_lo), 0.0, 1.0))
+
+    pre = np.asarray(audio[max(0, i0 - context):i0], dtype=np.float32)
+    pre_db = float(_rms_db(pre)) if len(pre) >= 128 else min(word_levels)
+    early_count = max(1, len(word_levels) // 3)
+    early_db = float(np.max(word_levels[:early_count]))
+    attack_scale = float(delivery_cfg.get("attack_full_scale_db", 12.0))
+    attack = float(np.clip((early_db - pre_db) / max(1.0, attack_scale), 0.0, 1.0))
+
+    # The 64 ms orb estimator is intentionally immediate, but it is too sparse
+    # for durable word contour: two adjacent frames frequently octave-jumped
+    # and saturated ordinary Korean/English words at +/-1. Use the same robust
+    # Praat tracker as durable prosody, discard octave outliers, and require
+    # enough voiced evidence before contour is allowed to leave zero.
+    contour = 0.0
+    contour_confidence = 0.0
+    contour_voiced: list[float] = []
+    contour_frame_count = 0
+    try:
+        import parselmouth
+
+        snd = parselmouth.Sound(
+            np.asarray(audio[i0:i1], dtype=np.float64),
+            sampling_frequency=SR,
+        )
+        pitch = snd.to_pitch_cc(
+            time_step=0.01,
+            pitch_floor=pitch_floor,
+            pitch_ceiling=pitch_ceiling,
+        )
+        pitch_values = np.asarray(
+            pitch.selected_array["frequency"], dtype=np.float64
+        )
+        contour_frame_count = len(pitch_values)
+        raw_voiced = pitch_values[pitch_values > 0]
+        if len(raw_voiced):
+            median_pitch = float(np.median(raw_voiced))
+            octave_ratio = float(delivery_cfg.get(
+                "contour_octave_filter_ratio", 1.60
+            ))
+            contour_voiced = [
+                float(value) for value in raw_voiced
+                if median_pitch / octave_ratio
+                <= value
+                <= median_pitch * octave_ratio
+            ]
+        min_frames = int(delivery_cfg.get("contour_min_voiced_frames", 5))
+        voiced_fraction = len(contour_voiced) / max(contour_frame_count, 1)
+        min_fraction = float(delivery_cfg.get(
+            "contour_min_voiced_fraction", 0.30
+        ))
+        if (
+            len(contour_voiced) >= min_frames
+            and voiced_fraction >= min_fraction
+        ):
+            edge = max(2, len(contour_voiced) // 3)
+            first_pitch = float(np.median(contour_voiced[:edge]))
+            last_pitch = float(np.median(contour_voiced[-edge:]))
+            semitones = 12.0 * math.log2(
+                max(last_pitch, 1.0) / max(first_pitch, 1.0)
+            )
+            contour = float(np.clip(
+                semitones / float(delivery_cfg.get(
+                    "contour_full_scale_semitones", 7.0
+                )),
+                -1.0,
+                1.0,
+            ))
+            contour_confidence = float(np.clip(
+                min(1.0, len(contour_voiced) / max(2 * min_frames, 1))
+                * min(1.0, voiced_fraction / max(min_fraction, 1e-6)),
+                0.0,
+                1.0,
+            ))
+    except (parselmouth.PraatError, ValueError):
+        pass
+
+    periodicity = float(np.median(word_periodicities))
+    flow_voiced = contour_voiced or voiced
+    if len(flow_voiced) >= 2:
+        log_pitch = np.log2(np.asarray(flow_voiced))
+        jitter = float(np.median(np.abs(np.diff(log_pitch))))
+        continuity = float(np.clip(1.0 - jitter / 0.12, 0.0, 1.0))
+    else:
+        continuity = 0.0
+    voiced_ratio = (
+        len(flow_voiced) / max(1, contour_frame_count)
+        if contour_frame_count
+        else len(flow_voiced) / max(1, len(inside))
+    )
+    voiced_ratio = float(np.clip(voiced_ratio, 0.0, 1.0))
+    flow = float(np.clip(
+        0.55 * voiced_ratio + 0.30 * continuity + 0.15 * periodicity,
+        0.0,
+        1.0,
+    ))
+    brightness = float(np.median(word_brightnesses))
+    texture = float(np.clip(
+        0.70 * (1.0 - periodicity) + 0.30 * brightness,
+        0.0,
+        1.0,
+    ))
+    confidence = float(np.clip(
+        (duration_s / 0.24) * (0.40 + 0.60 * max(voiced_ratio, periodicity)),
+        0.0,
+        1.0,
+    ))
+    profile_name = _delivery_profile(
+        force=force,
+        attack=attack,
+        contour=contour,
+        flow=flow,
+        texture=texture,
+        confidence=confidence,
+        duration_s=duration_s,
+        cfg=delivery_cfg,
+    )
+    return {
+        "delivery_force": round(force, 4),
+        "delivery_attack": round(attack, 4),
+        "delivery_contour": round(contour, 4),
+        "delivery_contour_confidence": round(contour_confidence, 4),
+        "delivery_flow": round(flow, 4),
+        "delivery_texture": round(texture, 4),
+        "delivery_confidence": round(confidence, 4),
+        "delivery_profile": profile_name,
+    }
+
+
 def hypothesis_words(result, audio_duration: float) -> list[HypothesisWord]:
     """Collapse sherpa token pieces into timestamped display words.
 
-    The English transducer uses leading spaces as word-boundary markers, e.g.
-    ``[" THE", " YE", "LL", "OW"]``. Some revisions contain a standalone
-    space token, so a boundary is kept even when that token has no letters.
+    The English and Korean transducers use leading spaces as word-boundary
+    markers, e.g. ``[" THE", " YE", "LL", "OW"]`` and
+    ``[" 걔는", " 괜찮은", " 척", "하", "려", "구"]``. Some revisions
+    contain a standalone space token, so a boundary is kept even when that
+    token has no letters.
     """
 
     tokens = list(getattr(result, "tokens", []) or [])
@@ -471,21 +956,95 @@ def common_prefix_len(a: list[HypothesisWord], b: list[HypothesisWord]) -> int:
 
 
 def _normalized_token(text: str) -> str:
-    return "".join(re.findall(r"[A-Z0-9']+", text.upper()))
+    # Unicode-aware normalization is essential for Korean verifier alignment.
+    # The former Latin-only regex collapsed every Hangul eojeol to "", making
+    # SequenceMatcher treat unrelated Korean words as equal and preventing the
+    # offline recognizer from correcting the streaming spelling.
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFKC", text).casefold()
+        if char.isalnum() or char == "'"
+    )
+
+
+def _trailing_speech_span(
+    audio: np.ndarray,
+    after_s: float,
+) -> tuple[float, float] | None:
+    """Find the voiced part of a verifier-only tail.
+
+    Endpoint verification can recover words the streaming decoder omitted.
+    Those words have no streaming timestamps.  Squeezing them into synthetic
+    20 ms slots at the previous word boundary samples silence for prosody and
+    speaker embeddings—the exact failure that made the final reply in the
+    bundled sample look motionless and speaker-unknown.
+
+    The verifier has already established that words exist in this tail, so a
+    conservative energy search is enough to recover their acoustic region.  It
+    is deliberately local to the unmatched tail and does not replace the
+    normal streaming word clock.
+    """
+
+    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    duration = len(samples) / SR
+    start = float(np.clip(after_s, 0.0, duration))
+    tail = samples[int(start * SR):]
+    frame = round(0.02 * SR)
+    if len(tail) < frame:
+        return None
+    levels = []
+    for offset in range(0, len(tail) - frame + 1, frame):
+        levels.append(_rms_db(tail[offset:offset + frame]))
+    if not levels:
+        return None
+    levels = np.asarray(levels, dtype=np.float32)
+    noise_floor = float(np.percentile(levels, 20))
+    threshold = float(np.clip(noise_floor + 10.0, -52.0, -32.0))
+    active = np.flatnonzero(levels > threshold)
+    if len(active) < 2:
+        return None
+
+    # Keep the first substantial activity island. Endpoint audio can contain a
+    # later door/music transient; spanning from the first to the last active
+    # frame would stretch three words across several seconds and mix speakers.
+    max_gap_frames = round(0.28 * SR / frame)
+    clusters: list[np.ndarray] = []
+    cluster_start = 0
+    for index in range(1, len(active)):
+        if int(active[index] - active[index - 1]) > max_gap_frames:
+            clusters.append(active[cluster_start:index])
+            cluster_start = index
+    clusters.append(active[cluster_start:])
+    substantial = [
+        cluster for cluster in clusters
+        if len(cluster) >= 5
+        and (cluster[-1] - cluster[0] + 1) * frame / SR >= 0.18
+    ]
+    chosen = substantial[0] if substantial else max(clusters, key=len)
+
+    onset = max(start, start + float(chosen[0]) * frame / SR - 0.04)
+    offset = min(
+        duration,
+        start + float(chosen[-1] + 1) * frame / SR + 0.06,
+    )
+    return (onset, offset) if offset - onset >= 0.04 else None
 
 
 def conservative_verified_words(
-    streaming: list[HypothesisWord], verified_text: str
+    streaming: list[HypothesisWord],
+    verified_text: str,
+    audio: np.ndarray | None = None,
 ) -> list[HypothesisWord]:
     """Align authoritative endpoint text onto the streaming word clock.
 
     Equal words and one-for-one corrections retain their original timings.
     Unequal replacement spans are divided across the verified words, pure
-    insertions use the inter-word gap, and deleted streaming words disappear.
-    This makes the durable transcript verifier-accurate while retaining real
-    acoustic timing wherever the two recognizers agree. Close dialect spelling
-    variants such as British ``dishonoured`` vs US ``dishonored`` stay as the
-    streaming speaker produced them.
+    internal insertions use the inter-word gap, trailing insertions use the
+    actual active-speech tail when audio is available, and deleted streaming
+    words disappear. This makes the durable transcript verifier-accurate while
+    retaining real acoustic timing wherever the two recognizers agree. Close
+    dialect spelling variants such as British ``dishonoured`` vs US
+    ``dishonored`` stay as the streaming speaker produced them.
     """
 
     verified = verified_text.split()
@@ -535,8 +1094,17 @@ def conservative_verified_words(
             conf_available = all(word.conf_available for word in streaming[i1:i2])
         else:
             previous_end = streaming[i1 - 1].end if i1 else 0.0
-            next_start = streaming[i1].start if i1 < len(streaming) else previous_end
-            span_start, span_end = previous_end, next_start
+            if i1 < len(streaming):
+                span_start, span_end = previous_end, streaming[i1].start
+            else:
+                active_tail = (
+                    _trailing_speech_span(audio, previous_end)
+                    if audio is not None else None
+                )
+                span_start, span_end = active_tail or (
+                    previous_end,
+                    len(audio) / SR if audio is not None else previous_end,
+                )
             if span_end - span_start < 0.02 * verified_count:
                 span_end = span_start + 0.02 * verified_count
             neighbors = streaming[max(0, i1 - 1):min(len(streaming), i1 + 1)]
@@ -555,17 +1123,97 @@ def conservative_verified_words(
     return output
 
 
+def repair_verified_tail_timing(
+    words: list[HypothesisWord],
+    audio: np.ndarray,
+) -> list[HypothesisWord]:
+    """Move a verifier-confirmed trailing sentence onto its real speech.
+
+    A streaming transducer can emit the right trailing words with timestamps
+    collapsed onto the preceding silence.  In that case SequenceMatcher sees
+    equal text, so insertion-only repair cannot help.  When a sentence after
+    terminal punctuation is quiet at its claimed slots but clearly active
+    speech continues later, redistribute only that final sentence over the
+    detected speech.  This restores the evidence needed by both prosody and
+    diarization without retiming earlier words the viewer already saw.
+    """
+
+    if len(words) < 2:
+        return words
+    terminal = re.compile(r"""[.?!]["')\]]*$""")
+    suffix_start = None
+    for index in range(len(words) - 2, -1, -1):
+        if terminal.search(words[index].text):
+            suffix_start = index + 1
+            break
+    if suffix_start is None or suffix_start >= len(words):
+        return words
+
+    old_start = float(words[suffix_start].start)
+    old_end = float(words[-1].end)
+    active = _trailing_speech_span(audio, old_start)
+    if active is None or active[1] <= old_end + 0.18:
+        return words
+
+    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    claimed = samples[
+        max(0, int(old_start * SR)):min(len(samples), int(old_end * SR))
+    ]
+    detected = samples[
+        max(0, int(active[0] * SR)):min(len(samples), int(active[1] * SR))
+    ]
+    if not len(claimed) or not len(detected):
+        return words
+    # Do not move genuinely quiet but correctly timed speech merely because a
+    # later noise exists.  The later region must contain substantially stronger
+    # acoustic evidence than the claimed slots.
+    if _rms_db(detected) < _rms_db(claimed) + 6.0:
+        return words
+
+    repaired = list(words[:suffix_start])
+    suffix = words[suffix_start:]
+    step = (active[1] - active[0]) / len(suffix)
+    for index, word in enumerate(suffix):
+        repaired.append(HypothesisWord(
+            word.text,
+            active[0] + index * step,
+            active[0] + (index + 1) * step,
+            word.conf,
+            word.conf_available,
+            (),
+        ))
+    return repaired
+
+
 class EndpointVerifier:
     """Fast local whole-phrase recognizer used only for durable text."""
 
-    def __init__(self, recognizer):
+    def __init__(self, recognizer, tail_padding_s: float = 0.0):
         self.recognizer = recognizer
+        self.tail_padding_s = max(0.0, float(tail_padding_s))
 
     def transcribe(self, audio: np.ndarray) -> str:
+        audio = np.asarray(audio, dtype=np.float32)
+        if self.tail_padding_s:
+            audio = np.concatenate((
+                audio,
+                np.zeros(round(self.tail_padding_s * SR), dtype=np.float32),
+            ))
         stream = self.recognizer.create_stream()
-        stream.accept_waveform(SR, np.asarray(audio, dtype=np.float32))
+        stream.accept_waveform(SR, audio)
         self.recognizer.decode_stream(stream)
-        return str(stream.result.text or "").strip()
+        result = stream.result
+        text = str(result.text or "").strip()
+        # sherpa's generic CJK formatter removes spaces from Korean `text`,
+        # even though this model's SentencePiece tokens retain exact eojeol
+        # boundaries as leading ASCII spaces. Reconstruct only when the
+        # formatted result lost all internal whitespace; English and other
+        # normally formatted models keep their native result unchanged.
+        tokens = [str(token) for token in (result.tokens or [])]
+        token_text = "".join(tokens).strip()
+        if text and " " not in text and " " in token_text:
+            return token_text
+        return text
 
 
 class AdaptiveSpeechGate:
@@ -771,42 +1419,279 @@ def word_events(utts, model, lang: str, cfg: dict, speaker: str = "S1"):
 # True-streaming transducer -> revisable hypotheses + committed word events
 # ---------------------------------------------------------------------------
 
-class SpeakerTracker:
-    """Online speaker attribution from voice embeddings.
+SpeakerStatus = Literal["unknown", "provisional", "stable", "corrected"]
 
-    Live has no advance knowledge of the cast, so speakers are discovered as
-    they talk: each analysis window is embedded and matched against running
-    per-speaker centroids by cosine similarity; a voice that matches nothing
-    becomes the next speaker, in palette order.
 
-    ``embed`` is injected (samples -> L2-normalized vector or None) so the
-    clustering is testable offline without the ONNX model.
+@dataclass(frozen=True)
+class SpeakerAttribution:
+    """One revision-capable speaker decision returned by ``SpeakerTracker``."""
 
-    Two entry points with different trust levels: ``classify_span`` labels a
-    committed word mid-stream but never creates speakers or moves centroids —
-    a window there may straddle a turn boundary. ``label_words`` runs at the
-    endpoint over the whole utterance with sliding windows and majority vote
-    per word; only it may update the model of who sounds like whom.
+    speaker_id: str | None
+    status: SpeakerStatus
+    confidence: float
+    speaker_change_probability: float | None
+    revision_id: int
+    reason: str | None = None
+    observation_duration_s: float = 0.0
+    best_similarity: float | None = None
+    second_best_similarity: float | None = None
+    confidence_margin: float | None = None
+    centroid_updated: bool = False
+    switch_decision: str | None = None
+
+    def event_fields(self, include_debug: bool = False) -> dict:
+        fields = {
+            "speaker": self.speaker_id,
+            "speaker_status": self.status,
+            "speaker_confidence": round(float(np.clip(self.confidence, 0.0, 1.0)), 4),
+            "speaker_change_probability": (
+                None if self.speaker_change_probability is None
+                else round(float(np.clip(self.speaker_change_probability, 0.0, 1.0)), 4)
+            ),
+            "speaker_revision_id": self.revision_id,
+        }
+        if include_debug:
+            fields["speaker_debug"] = {
+                "observation_duration_s": round(self.observation_duration_s, 4),
+                "best_candidate_similarity": self.best_similarity,
+                "second_best_similarity": self.second_best_similarity,
+                "confidence_margin": self.confidence_margin,
+                "centroid_updated": self.centroid_updated,
+                "reason": self.reason,
+                "switch_decision": self.switch_decision,
+            }
+        return fields
+
+
+class PyannoteSpeakerActivity:
+    """Fast local speaker-activity labels from pyannote segmentation 3.0.
+
+    The model identifies up to three locally consistent speaker streams (and
+    their overlaps) inside one endpoint phrase.  Those local stream numbers are
+    deliberately *not* exposed as durable speaker identities: ``SpeakerTracker``
+    uses them only to cut clean acoustic turns, then its embedding profiles map
+    each turn onto stable S1/S2/... identities across endpoints.
+
+    Feeding the endpoint phrase directly avoids sherpa's full-file diarization
+    wrapper, which recomputes many overlapping speaker embeddings.  The int8
+    segmentation pass is about 40 ms for ten seconds on the target Mac.
     """
 
-    def __init__(self, embed, similarity: float = 0.35, max_speakers: int = 6,
-                 window_s: float = 1.0, hop_s: float = 0.25,
-                 min_span_s: float = 0.4, change_below: float = 0.3,
-                 merge_at: float = 0.5):
+    _POWERSET = (
+        (),
+        (0,),
+        (1,),
+        (2,),
+        (0, 1),
+        (0, 2),
+        (1, 2),
+    )
+
+    def __init__(self, model: str | Path, num_threads: int = 2):
+        import onnxruntime as ort
+
+        options = ort.SessionOptions()
+        options.inter_op_num_threads = 1
+        options.intra_op_num_threads = max(1, int(num_threads))
+        self.session = ort.InferenceSession(
+            str(model),
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
+        )
+        metadata = self.session.get_modelmeta().custom_metadata_map
+        self.sample_rate = int(metadata.get("sample_rate", SR))
+        self.frame_shift = int(metadata.get("receptive_field_shift", 270))
+        self.receptive_field = int(metadata.get("receptive_field_size", 991))
+        if self.sample_rate != SR:
+            raise ValueError(
+                f"speaker segmentation expects {self.sample_rate} Hz, not {SR} Hz"
+            )
+        classes = int(metadata.get("num_classes", len(self._POWERSET)))
+        if classes != len(self._POWERSET):
+            raise ValueError(
+                f"unsupported speaker segmentation powerset ({classes} classes)"
+            )
+
+    def __call__(
+        self,
+        samples: np.ndarray,
+        word_spans: list[tuple[float, float]],
+    ) -> list[int | None]:
+        if not word_spans or len(samples) < self.receptive_field:
+            return [None] * len(word_spans)
+        waveform = np.asarray(samples, dtype=np.float32).reshape(1, 1, -1)
+        input_name = self.session.get_inputs()[0].name
+        logits = self.session.run(None, {input_name: waveform})[0][0]
+        classes = np.argmax(logits, axis=-1)
+        frame_times = (
+            np.arange(len(classes), dtype=np.float32) * self.frame_shift
+            + self.receptive_field * 0.5
+        ) / self.sample_rate
+
+        labels: list[int | None] = []
+        for start, end in word_spans:
+            # A small acoustic skirt makes very short ASR words less sensitive
+            # to timestamp quantization while staying well inside a normal turn.
+            lo = max(0.0, float(start) - 0.06)
+            hi = min(len(samples) / SR, float(end) + 0.06)
+            indices = np.flatnonzero((frame_times >= lo) & (frame_times <= hi))
+            if not len(indices):
+                midpoint = (float(start) + float(end)) * 0.5
+                indices = np.array(
+                    [int(np.argmin(np.abs(frame_times - midpoint)))],
+                    dtype=np.int64,
+                )
+
+            votes = np.zeros(3, dtype=np.float32)
+            for class_index in classes[indices]:
+                for speaker in self._POWERSET[int(class_index)]:
+                    votes[speaker] += 1.0
+            order = np.argsort(-votes)
+            best = int(order[0])
+            second = float(votes[order[1]])
+            # Ambiguous overlap frames should not invent a boundary. The next
+            # clear singleton word supplies the change point instead.
+            labels.append(
+                best
+                if votes[best] > 0 and votes[best] >= second * 1.15
+                else None
+            )
+
+        return labels
+
+
+class SpeakerTracker:
+    """Confidence-aware online speaker attribution and profile enrollment.
+
+    The tracker is the single owner of live speaker profiles and lifecycle
+    state. ``observe`` accepts a timestamped embedding plus optional overlap,
+    signal-quality, and direction metadata. Direction is deliberately only a
+    weak prior; the current mono capture path does not manufacture one.
+
+    ``classify_span`` is the non-learning mid-stream path. ``label_words`` is
+    the endpoint segment-then-observe path and is the only audio entry point
+    allowed to enroll or update profiles.
+    """
+
+    def __init__(
+        self,
+        embed,
+        similarity: float | None = None,
+        max_speakers: int = 6,
+        window_s: float = 1.0,
+        hop_s: float = 0.25,
+        min_span_s: float | None = None,
+        change_below: float = 0.3,
+        merge_at: float = 0.5,
+        *,
+        min_enrollment_duration_s: float = 0.8,
+        min_assignment_duration_s: float = 0.25,
+        stable_after_observations: int = 2,
+        immediate_speaker_limit: int = 2,
+        assignment_threshold: float | None = None,
+        provisional_threshold: float | None = None,
+        new_speaker_threshold: float | None = None,
+        centroid_ema_alpha: float = 0.15,
+        switch_hysteresis_s: float = 0.35,
+        short_turn_max_duration_s: float = 0.4,
+        retain_threshold: float = 0.64,
+        switch_threshold: float | None = None,
+        min_confidence_margin: float = 0.08,
+        short_stable_threshold: float | None = None,
+        short_stable_min_margin: float = 0.12,
+        short_stable_max_duration_s: float = 1.3,
+        min_signal_quality: float = 0.25,
+        direction_prior_weight: float = 0.05,
+        speaker_activity=None,
+        debug: bool = False,
+    ):
         self.embed = embed
-        self.similarity = similarity
-        self.max_speakers = max_speakers
-        self.window_s = window_s
-        self.hop_s = hop_s
-        self.min_span_s = min_span_s
-        self.change_below = change_below
-        self.merge_at = merge_at
+        self.speaker_activity = speaker_activity
+        self.max_speakers = max(1, int(max_speakers))
+        self.window_s = float(window_s)
+        self.hop_s = float(hop_s)
+        self.min_assignment_duration_s = float(
+            min_assignment_duration_s if min_span_s is None else min_span_s
+        )
+        self.min_enrollment_duration_s = float(min_enrollment_duration_s)
+        self.stable_after_observations = max(1, int(stable_after_observations))
+        # S1/S2 stay genuinely live. A third-or-later identity is still
+        # supported, but one isolated native slot or embedding must not create
+        # a durable new speaker colour in an ordinary two-person conversation.
+        self.immediate_speaker_limit = max(
+            1,
+            min(self.max_speakers, int(immediate_speaker_limit)),
+        )
+
+        # ``similarity`` is the pre-lifecycle raw-cosine cutoff. Keep direct
+        # construction backward compatible while the new config supplies
+        # calibrated 0..1 confidence thresholds explicitly.
+        legacy_threshold = None if similarity is None else float(similarity)
+        self.assignment_threshold = float(
+            assignment_threshold if assignment_threshold is not None
+            else (legacy_threshold if legacy_threshold is not None else 0.72)
+        )
+        self.provisional_threshold = float(
+            provisional_threshold if provisional_threshold is not None
+            else max(0.0, self.assignment_threshold - 0.14)
+        )
+        self.new_speaker_threshold = float(
+            new_speaker_threshold if new_speaker_threshold is not None
+            else (legacy_threshold if legacy_threshold is not None else 0.42)
+        )
+        self.switch_threshold = float(
+            switch_threshold if switch_threshold is not None
+            else self.assignment_threshold
+        )
+        self.retain_threshold = float(retain_threshold)
+        self.centroid_ema_alpha = float(np.clip(centroid_ema_alpha, 0.0, 1.0))
+        self.switch_hysteresis_s = max(0.0, float(switch_hysteresis_s))
+        self.short_turn_max_duration_s = max(0.0, float(short_turn_max_duration_s))
+        self.min_confidence_margin = max(0.0, float(min_confidence_margin))
+        self.short_stable_threshold = float(
+            short_stable_threshold
+            if short_stable_threshold is not None
+            else self.assignment_threshold
+        )
+        self.short_stable_min_margin = max(
+            self.min_confidence_margin,
+            float(short_stable_min_margin),
+        )
+        self.short_stable_max_duration_s = max(
+            self.min_assignment_duration_s,
+            float(short_stable_max_duration_s),
+        )
+        self.min_signal_quality = float(np.clip(min_signal_quality, 0.0, 1.0))
+        self.direction_prior_weight = float(np.clip(direction_prior_weight, 0.0, 0.25))
+        self.change_below = float(change_below)
+        self.merge_at = float(merge_at)  # retained config/API compatibility
+        self.debug = bool(debug)
+
         self.centroids: list[np.ndarray] = []
         self.counts: list[int] = []
-        # A centroid that later proves to be the same voice as another is
-        # aliased to it rather than deleted, so speaker numbers already shown
-        # on screen stay stable and that voice's future words use the survivor.
+        self.enrolled_durations: list[float] = []
+        self.profile_observation_groups: list[set[int]] = []
+        self.profile_stable: list[bool] = []
+        self.profile_directions: list[float | None] = []
         self.alias: dict[int, int] = {}
+
+        self.last_confidently_active_speaker: str | None = None
+        self.last_speaker_change_timestamp: float | None = None
+        self.current_confidence = 0.0
+        self.assignment_status: SpeakerStatus = "unknown"
+        self.revision_id = 0
+        self.revision_history: dict[str, SpeakerAttribution] = {}
+        self.recent_direction_estimate: float | None = None
+
+        self._pending_switch: int | None = None
+        self._pending_switch_since: float | None = None
+        self._queued_revisions: list[tuple[str, SpeakerAttribution]] = []
+        self._pending_candidate_word_keys: dict[int, set[str]] = {}
+        self._observation_sequence = 0
+        self._observation_group_sequence = 0
+        self._speaker_switches = 0
+        self._corrections = 0
+        self._unknown_assignments = 0
 
     def _canon(self, index: int) -> int:
         while index in self.alias:
@@ -816,112 +1701,1046 @@ class SpeakerTracker:
     def _active(self) -> list[int]:
         return [i for i in range(len(self.centroids)) if i not in self.alias]
 
-    def _assign(self, emb: np.ndarray, update: bool) -> int | None:
-        active = self._active()
-        if not active:
-            if not update:
-                return None
-            self.centroids.append(emb.astype(np.float32).copy())
-            self.counts.append(1)
-            return 0
-        sims = [float(np.dot(self.centroids[i], emb) /
-                      (np.linalg.norm(self.centroids[i]) + 1e-9)) for i in active]
-        best = active[int(np.argmax(sims))]
-        if max(sims) >= self.similarity or not update or \
-                len(active) >= self.max_speakers:
-            if update:
-                n = self.counts[best]
-                self.centroids[best] = (self.centroids[best] * n + emb) / (n + 1)
-                self.counts[best] += 1
-            return best if (update or max(sims) >= self.similarity) else None
-        self.centroids.append(emb.astype(np.float32).copy())
+    @staticmethod
+    def _speaker_id(index: int) -> str:
+        return f"S{index + 1}"
+
+    @staticmethod
+    def _normalized_embedding(embedding) -> np.ndarray | None:
+        if embedding is None:
+            return None
+        vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if not len(vector) or not np.all(np.isfinite(vector)):
+            return None
+        norm = float(np.linalg.norm(vector))
+        return vector / norm if norm > 1e-9 else None
+
+    @staticmethod
+    def _direction_similarity(a: float, b: float) -> float:
+        distance = abs((a - b + 180.0) % 360.0 - 180.0)
+        return 1.0 - distance / 180.0
+
+    def _scores(self, embedding: np.ndarray,
+                direction_estimate: float | None) -> list[tuple[int, float]]:
+        scored = []
+        for index in self._active():
+            raw = float(np.dot(self.centroids[index], embedding))
+            confidence = float(np.clip(raw, 0.0, 1.0))
+            known_direction = self.profile_directions[index]
+            if direction_estimate is not None and known_direction is not None:
+                direction_score = self._direction_similarity(
+                    float(direction_estimate), float(known_direction)
+                )
+                weight = self.direction_prior_weight
+                confidence = (1.0 - weight) * confidence + weight * direction_score
+            scored.append((index, confidence))
+        return sorted(scored, key=lambda item: (-item[1], item[0]))
+
+    def _profile_is_stable(self, index: int) -> bool:
+        required_duration = (
+            self.min_enrollment_duration_s * self.stable_after_observations
+        )
+        repeated = self.counts[index] >= self.stable_after_observations
+        if index >= self.immediate_speaker_limit:
+            # Several punctuation/acoustic segments from one long noisy turn
+            # are not independent evidence. Higher identities need distinct
+            # endpoint passes, not merely several fragments in one pass.
+            return (
+                len(self.profile_observation_groups[index])
+                >= self.stable_after_observations
+            )
+        return repeated or self.enrolled_durations[index] >= required_duration
+
+    @staticmethod
+    def _speaker_index(speaker_id: str | None) -> int | None:
+        if not speaker_id or not speaker_id.startswith("S"):
+            return None
+        try:
+            return int(speaker_id[1:]) - 1
+        except ValueError:
+            return None
+
+    def _public_attribution(
+        self,
+        result: SpeakerAttribution,
+        observation_key: str | None,
+    ) -> SpeakerAttribution:
+        """Hide an additional identity until endpoint evidence repeats.
+
+        The candidate profile remains available internally for the next clean
+        match. The audience sees neutral attribution instead of a transient
+        S3/S4/S5 colour, and the stored word is revised once the profile is
+        confirmed.
+        """
+
+        index = self._speaker_index(result.speaker_id)
+        if (
+            index is None
+            or index < self.immediate_speaker_limit
+            or index >= len(self.profile_stable)
+            or self.profile_stable[index]
+        ):
+            return result
+        if observation_key is not None and not observation_key.startswith(
+            "@observation:"
+        ):
+            self._pending_candidate_word_keys.setdefault(index, set()).add(
+                observation_key
+            )
+        return replace(
+            result,
+            speaker_id=None,
+            status="unknown",
+            reason=(
+                "additional speaker candidate awaiting repeated endpoint "
+                "confirmation"
+            ),
+            centroid_updated=False,
+            switch_decision="pending-additional-speaker-confirmation",
+        )
+
+    def _create_profile(
+        self,
+        embedding: np.ndarray,
+        duration: float,
+        direction_estimate: float | None,
+        observation_group: int,
+    ) -> int:
+        index = len(self.centroids)
+        self.centroids.append(embedding.copy())
         self.counts.append(1)
-        return len(self.centroids) - 1
+        self.enrolled_durations.append(duration)
+        self.profile_observation_groups.append({observation_group})
+        self.profile_stable.append(False)
+        self.profile_directions.append(direction_estimate)
+        self.profile_stable[index] = self._profile_is_stable(index)
+        return index
 
-    def _merge_converged(self) -> None:
-        # Two identities the clustering created early can turn out to be one
-        # voice once their centroids see more speech; fold them together.
-        active = self._active()
-        for i_pos, i in enumerate(active):
-            for j in active[i_pos + 1:]:
-                if j in self.alias:
-                    continue
-                ci, cj = self.centroids[i], self.centroids[j]
-                sim = float(np.dot(ci, cj) /
-                            (np.linalg.norm(ci) * np.linalg.norm(cj) + 1e-9))
-                if sim >= self.merge_at:
-                    ni, nj = self.counts[i], self.counts[j]
-                    self.centroids[i] = (ci * ni + cj * nj) / (ni + nj)
-                    self.counts[i] = ni + nj
-                    self.alias[j] = i
+    def _update_profile(
+        self,
+        index: int,
+        embedding: np.ndarray,
+        duration: float,
+        direction_estimate: float | None,
+        observation_group: int,
+    ) -> bool:
+        alpha = self.centroid_ema_alpha
+        updated = (1.0 - alpha) * self.centroids[index] + alpha * embedding
+        norm = float(np.linalg.norm(updated))
+        if norm <= 1e-9:
+            return False
+        self.centroids[index] = (updated / norm).astype(np.float32)
+        self.counts[index] += 1
+        self.enrolled_durations[index] += duration
+        self.profile_observation_groups[index].add(observation_group)
+        if direction_estimate is not None:
+            previous = self.profile_directions[index]
+            self.profile_directions[index] = (
+                float(direction_estimate) if previous is None
+                else (1.0 - alpha) * float(previous) + alpha * float(direction_estimate)
+            )
+        self.profile_stable[index] = self._profile_is_stable(index)
+        return True
 
-    def classify_span(self, audio: np.ndarray, start_s: float,
-                      end_s: float) -> str | None:
-        """Provisional label for a committed word; verification corrects it."""
+    def _base_result(
+        self,
+        speaker_id: str | None,
+        status: SpeakerStatus,
+        confidence: float,
+        change_probability: float | None,
+        reason: str,
+        duration: float,
+        best: float | None,
+        second: float | None,
+        margin: float | None,
+        centroid_updated: bool,
+        switch_decision: str | None,
+    ) -> SpeakerAttribution:
+        return SpeakerAttribution(
+            speaker_id=speaker_id,
+            status=status,
+            confidence=float(np.clip(confidence, 0.0, 1.0)),
+            speaker_change_probability=change_probability,
+            revision_id=0,
+            reason=reason,
+            observation_duration_s=duration,
+            best_similarity=None if best is None else round(best, 4),
+            second_best_similarity=None if second is None else round(second, 4),
+            confidence_margin=None if margin is None else round(margin, 4),
+            centroid_updated=centroid_updated,
+            switch_decision=switch_decision,
+        )
+
+    def _record(
+        self,
+        result: SpeakerAttribution,
+        observation_key: str | None,
+    ) -> SpeakerAttribution:
+        key = observation_key
+        if key is None:
+            self._observation_sequence += 1
+            key = f"@observation:{self._observation_sequence}"
+        previous = self.revision_history.get(key)
+        status = result.status
+        if (
+            previous is not None
+            and result.status == "stable"
+            and previous.speaker_id is not None
+            and result.speaker_id != previous.speaker_id
+        ):
+            status = "corrected"
+            self._corrections += 1
+        changed = (
+            previous is None
+            or previous.speaker_id != result.speaker_id
+            or previous.status != status
+            or abs(previous.confidence - result.confidence) > 1e-6
+        )
+        if changed:
+            self.revision_id += 1
+        recorded = replace(
+            result,
+            status=status,
+            revision_id=self.revision_id if changed else previous.revision_id,
+        )
+        self.revision_history[key] = recorded
+        self.current_confidence = recorded.confidence
+        self.assignment_status = recorded.status
+        if recorded.status == "unknown":
+            self._unknown_assignments += 1
+        if self.debug:
+            print("[speaker] " + json.dumps({
+                "observation": key,
+                **recorded.event_fields(include_debug=True),
+            }, ensure_ascii=False))
+        return recorded
+
+    def _queue_stabilized_profile(self, speaker_id: str,
+                                  except_key: str | None = None) -> None:
+        for key, previous in list(self.revision_history.items()):
+            if key == except_key or key.startswith("@observation:"):
+                continue
+            if previous.speaker_id != speaker_id or previous.status != "provisional":
+                continue
+            self.revision_id += 1
+            revised = replace(
+                previous,
+                status="stable",
+                revision_id=self.revision_id,
+                reason="profile reached stable enrollment",
+                centroid_updated=False,
+            )
+            self.revision_history[key] = revised
+            self._queued_revisions.append((key, revised))
+        index = self._speaker_index(speaker_id)
+        if index is None:
+            return
+        for key in sorted(self._pending_candidate_word_keys.pop(index, set())):
+            if key == except_key:
+                continue
+            previous = self.revision_history.get(key)
+            if previous is None or previous.status != "unknown":
+                continue
+            self.revision_id += 1
+            revised = replace(
+                previous,
+                speaker_id=speaker_id,
+                status="stable",
+                revision_id=self.revision_id,
+                reason="additional speaker reached repeated endpoint confirmation",
+                centroid_updated=False,
+                switch_decision="confirmed-additional-speaker",
+            )
+            self.revision_history[key] = revised
+            self._queued_revisions.append((key, revised))
+
+    def drain_revisions(self) -> list[tuple[str, SpeakerAttribution]]:
+        revisions = self._queued_revisions
+        self._queued_revisions = []
+        return revisions
+
+    def metrics(self) -> dict[str, int]:
+        return {
+            "speaker_id_switches": self._speaker_switches,
+            "corrections": self._corrections,
+            "unknown_assignments": self._unknown_assignments,
+            "profiles": len(self._active()),
+        }
+
+    def observe(
+        self,
+        embedding,
+        start_s: float,
+        end_s: float,
+        *,
+        update: bool = True,
+        overlap: bool = False,
+        signal_quality: float | None = None,
+        direction_estimate: float | None = None,
+        observation_key: str | None = None,
+        observation_group: int | None = None,
+    ) -> SpeakerAttribution:
+        """Attribute one timestamped embedding and optionally update profiles."""
+
+        duration = max(0.0, float(end_s) - float(start_s))
+        if observation_group is None:
+            self._observation_group_sequence += 1
+            observation_group = self._observation_group_sequence
+        if direction_estimate is not None and math.isfinite(float(direction_estimate)):
+            self.recent_direction_estimate = float(direction_estimate) % 360.0
+        else:
+            direction_estimate = None
+
+        unsuitable_reason = None
+        if overlap:
+            unsuitable_reason = "overlap-marked observation"
+        elif signal_quality is not None and signal_quality < self.min_signal_quality:
+            unsuitable_reason = "signal quality below update threshold"
+        vector = self._normalized_embedding(embedding)
+        if vector is None:
+            return self._record(self._base_result(
+                None, "unknown", 0.0, None, "invalid or missing embedding",
+                duration, None, None, None, False, None,
+            ), observation_key)
+
+        scored = self._scores(vector, direction_estimate)
+        best_index = scored[0][0] if scored else None
+        best = scored[0][1] if scored else None
+        second = scored[1][1] if len(scored) > 1 else None
+        margin = None if best is None else best - (second if second is not None else 0.0)
+        ambiguous = second is not None and margin < self.min_confidence_margin
+        current_index = None
+        if self.last_confidently_active_speaker is not None:
+            try:
+                current_index = int(self.last_confidently_active_speaker[1:]) - 1
+                current_index = self._canon(current_index)
+            except (ValueError, IndexError):
+                current_index = None
+        current_score = next(
+            (score for index, score in scored if index == current_index), 0.0
+        )
+
+        if duration < self.min_assignment_duration_s:
+            if (
+                current_index is not None
+                and duration <= self.short_turn_max_duration_s
+            ):
+                confidence = max(current_score, self.provisional_threshold)
+                return self._record(self._base_result(
+                    self._speaker_id(current_index), "provisional", confidence,
+                    0.0, "short turn retained recent speaker by continuity",
+                    duration, best, second, margin, False, "retained-short-turn",
+                ), observation_key)
+            return self._record(self._base_result(
+                None, "unknown", best or 0.0, None,
+                "observation shorter than minimum assignment duration",
+                duration, best, second, margin, False, None,
+            ), observation_key)
+
+        can_update = (
+            update
+            and unsuitable_reason is None
+            and duration + 1e-9 >= self.min_enrollment_duration_s
+            and not ambiguous
+        )
+
+        if not scored:
+            if not can_update:
+                reason = unsuitable_reason or (
+                    "observation too short to enroll the first speaker"
+                )
+                return self._record(self._base_result(
+                    None, "unknown", 0.0, None, reason, duration,
+                    None, None, None, False, None,
+                ), observation_key)
+            index = self._create_profile(
+                vector,
+                duration,
+                direction_estimate,
+                observation_group,
+            )
+            status: SpeakerStatus = (
+                "stable" if self.profile_stable[index] else "provisional"
+            )
+            if status == "stable":
+                self.last_confidently_active_speaker = self._speaker_id(index)
+                self.last_speaker_change_timestamp = float(end_s)
+            result = self._record(self._base_result(
+                self._speaker_id(index), status, 1.0, 0.0,
+                "enrolled first speaker profile", duration,
+                1.0, None, None, True, "initial-enrollment",
+            ), observation_key)
+            if status == "stable":
+                self._queue_stabilized_profile(self._speaker_id(index), observation_key)
+            return result
+
+        if (
+            best is not None
+            and best < self.new_speaker_threshold
+            and can_update
+            and len(self._active()) < self.max_speakers
+        ):
+            index = self._create_profile(
+                vector,
+                duration,
+                direction_estimate,
+                observation_group,
+            )
+            status = "stable" if self.profile_stable[index] else "provisional"
+            speaker_id = self._speaker_id(index)
+            switch_decision = "new-profile-pending"
+            if current_index is None and status == "stable":
+                self.last_confidently_active_speaker = speaker_id
+                self.last_speaker_change_timestamp = float(end_s)
+                switch_decision = "new-profile-active"
+            elif current_index is not None:
+                if (
+                    status == "stable"
+                    and duration >= self.switch_hysteresis_s
+                ):
+                    previous_speaker = self.last_confidently_active_speaker
+                    self.last_confidently_active_speaker = speaker_id
+                    self.last_speaker_change_timestamp = float(end_s)
+                    if previous_speaker != speaker_id:
+                        self._speaker_switches += 1
+                    switch_decision = "accepted-persistent-new-speaker"
+                else:
+                    status = "provisional"
+                    self._pending_switch = index
+                    self._pending_switch_since = float(start_s)
+            result = self._record(self._base_result(
+                speaker_id, status, 1.0, 1.0 if current_index is not None else 0.0,
+                "enrolled clearly separated speaker profile", duration,
+                best, second, margin, True, switch_decision,
+            ), observation_key)
+            if status == "stable":
+                self._queue_stabilized_profile(speaker_id, observation_key)
+            return result
+
+        # Clean short turns naturally produce lower absolute cosine scores.
+        # Accept one before the generic low-score rejection only when an
+        # already-stable profile wins by a strong margin. Enrollment and
+        # ambiguous turns still use the stricter global thresholds.
+        short_best_index = (
+            self._canon(best_index) if best_index is not None else None
+        )
+        short_stable_match = (
+            short_best_index is not None
+            and self.profile_stable[short_best_index]
+            and duration <= self.short_stable_max_duration_s
+            and best is not None
+            and best >= self.short_stable_threshold
+            and margin is not None
+            and margin >= self.short_stable_min_margin
+        )
+        if short_stable_match:
+            speaker_id = self._speaker_id(short_best_index)
+            previous_speaker = self.last_confidently_active_speaker
+            self.last_confidently_active_speaker = speaker_id
+            self.last_speaker_change_timestamp = float(end_s)
+            self._pending_switch = None
+            self._pending_switch_since = None
+            changed_speaker = (
+                previous_speaker is not None
+                and previous_speaker != speaker_id
+            )
+            if changed_speaker:
+                self._speaker_switches += 1
+            return self._record(self._base_result(
+                speaker_id,
+                "stable",
+                best,
+                best if changed_speaker else 0.0,
+                "short turn matched stable profile with strong margin",
+                duration,
+                best,
+                second,
+                margin,
+                False,
+                "accepted-short-stable",
+            ), observation_key)
+
+        if best is None or best < self.provisional_threshold:
+            if (
+                current_index is not None
+                and duration <= self.short_turn_max_duration_s
+            ):
+                return self._record(self._base_result(
+                    self._speaker_id(current_index), "provisional",
+                    max(current_score, self.provisional_threshold), 0.0,
+                    "weak short turn retained recent speaker by continuity",
+                    duration, best, second, margin, False, "retained-short-turn",
+                ), observation_key)
+            reason = unsuitable_reason or (
+                "best candidate below provisional threshold"
+                if len(self._active()) < self.max_speakers
+                else "best candidate below threshold and speaker limit reached"
+            )
+            return self._record(self._base_result(
+                None, "unknown", best or 0.0, None, reason, duration,
+                best, second, margin, False, "rejected-low-confidence",
+            ), observation_key)
+
+        assert best_index is not None
+        best_index = self._canon(best_index)
+        if ambiguous:
+            return self._record(self._base_result(
+                None, "unknown", best, None,
+                "top speaker candidates are ambiguous", duration,
+                best, second, margin, False, "rejected-ambiguous",
+            ), observation_key)
+
+        if best < self.assignment_threshold:
+            chosen = current_index if (
+                current_index is not None and current_score >= self.retain_threshold
+            ) else best_index
+            return self._record(self._base_result(
+                self._speaker_id(chosen), "provisional",
+                current_score if chosen == current_index else best,
+                0.0 if chosen == current_index else best,
+                "candidate met provisional but not stable threshold",
+                duration, best, second, margin, False, "provisional",
+            ), observation_key)
+
+        was_stable = self.profile_stable[best_index]
+        centroid_updated = False
+        if can_update:
+            centroid_updated = self._update_profile(
+                best_index,
+                vector,
+                duration,
+                direction_estimate,
+                observation_group,
+            )
+        became_stable = not was_stable and self.profile_stable[best_index]
+        speaker_id = self._speaker_id(best_index)
+
+        if current_index is None:
+            status = "stable" if self.profile_stable[best_index] else "provisional"
+            if status == "stable":
+                self.last_confidently_active_speaker = speaker_id
+                self.last_speaker_change_timestamp = float(end_s)
+            result = self._record(self._base_result(
+                speaker_id, status, best, 0.0,
+                "matched enrolled speaker profile", duration,
+                best, second, margin, centroid_updated, "initial-active",
+            ), observation_key)
+            if became_stable:
+                self._queue_stabilized_profile(speaker_id, observation_key)
+            return result
+
+        if best_index == current_index:
+            self._pending_switch = None
+            self._pending_switch_since = None
+            status = "stable" if self.profile_stable[best_index] else "provisional"
+            result = self._record(self._base_result(
+                speaker_id, status, best, 0.0,
+                "retained current speaker", duration,
+                best, second, margin, centroid_updated, "retained-current",
+            ), observation_key)
+            if became_stable:
+                self._queue_stabilized_profile(speaker_id, observation_key)
+            return result
+
+        if (
+            current_score >= self.retain_threshold
+            and best - current_score < self.min_confidence_margin
+        ):
+            self._pending_switch = None
+            self._pending_switch_since = None
+            return self._record(self._base_result(
+                self._speaker_id(current_index), "provisional", current_score,
+                best, "challenger did not clear retention margin",
+                duration, best, second, margin, False, "rejected-retention",
+            ), observation_key)
+
+        if best < self.switch_threshold:
+            return self._record(self._base_result(
+                self._speaker_id(current_index), "provisional", current_score,
+                best, "challenger did not clear switch threshold",
+                duration, best, second, margin, False, "rejected-threshold",
+            ), observation_key)
+
+        if self._pending_switch != best_index:
+            self._pending_switch = best_index
+            self._pending_switch_since = float(start_s)
+        persistence = float(end_s) - float(self._pending_switch_since or start_s)
+        if persistence < self.switch_hysteresis_s:
+            return self._record(self._base_result(
+                self._speaker_id(current_index), "provisional", current_score,
+                best, "speaker switch awaiting persistence",
+                duration, best, second, margin, False, "rejected-hysteresis",
+            ), observation_key)
+
+        if not self.profile_stable[best_index]:
+            return self._record(self._base_result(
+                speaker_id, "provisional", best, best,
+                "challenger profile is not stably enrolled",
+                duration, best, second, margin, centroid_updated,
+                "pending-profile-stability",
+            ), observation_key)
+
+        previous_speaker = self.last_confidently_active_speaker
+        self.last_confidently_active_speaker = speaker_id
+        self.last_speaker_change_timestamp = float(end_s)
+        self._pending_switch = None
+        self._pending_switch_since = None
+        if previous_speaker != speaker_id:
+            self._speaker_switches += 1
+        result = self._record(self._base_result(
+            speaker_id, "stable", best, best,
+            "accepted persistent speaker switch", duration,
+            best, second, margin, centroid_updated, "accepted-switch",
+        ), observation_key)
+        if became_stable:
+            self._queue_stabilized_profile(speaker_id, observation_key)
+        return result
+
+    def classify_span(
+        self,
+        audio: np.ndarray,
+        start_s: float,
+        end_s: float,
+        *,
+        observation_key: str | None = None,
+        timestamp_offset: float = 0.0,
+        overlap: bool = False,
+        signal_quality: float | None = None,
+        direction_estimate: float | None = None,
+    ) -> SpeakerAttribution:
+        """Classify without learning; the endpoint remains authoritative."""
 
         if not self._active():
             # Before the first endpoint there is nothing to classify against;
-            # skip the embedding entirely rather than pay it for a None.
-            return None
+            # skip the embedding entirely rather than pay it for an unknown.
+            return self._record(self._base_result(
+                None, "unknown", 0.0, None,
+                "no enrolled speaker profiles", end_s - start_s,
+                None, None, None, False, None,
+            ), observation_key)
         span = audio[max(0, int((end_s - self.window_s) * SR)):int(end_s * SR)]
-        if len(span) < int(self.min_span_s * SR):
-            return None
-        emb = self.embed(span)
-        if emb is None:
-            return None
-        index = self._assign(emb, update=False)
-        return None if index is None else f"S{self._canon(index) + 1}"
+        if len(span) < int(self.min_assignment_duration_s * SR):
+            embedding = None
+        else:
+            embedding = self.embed(span)
+        result = self.observe(
+            embedding,
+            timestamp_offset + start_s,
+            timestamp_offset + end_s,
+            update=False,
+            overlap=overlap,
+            signal_quality=signal_quality,
+            direction_estimate=direction_estimate,
+            observation_key=observation_key,
+        )
+        public_result = self._public_attribution(result, observation_key)
+        if public_result is not result:
+            result = self._record(
+                replace(public_result, revision_id=0),
+                observation_key,
+            )
+        # Even a high-confidence mid-stream match remains revisable until the
+        # endpoint segmentation sees the whole turn.
+        if result.status in {"stable", "corrected"}:
+            result = replace(
+                result,
+                status="provisional",
+                reason="classify-only match awaiting endpoint",
+            )
+            if observation_key is not None:
+                self.revision_history[observation_key] = result
+        return result
 
-    def label_words(self, audio: np.ndarray, words) -> list[str]:
-        """Per-word labels for a finished utterance.
-
-        Segment-then-cluster: adjacent sliding windows are compared to find
-        change points (where the voice audibly switches), each contiguous
-        segment is embedded WHOLE, and those long clean embeddings are what
-        get clustered. Clustering raw short windows instead either invented
-        phantom speakers or collapsed everyone into one, because windows that
-        straddle a turn boundary belong to nobody.
-        """
+    def label_words(
+        self,
+        audio: np.ndarray,
+        words,
+        *,
+        observation_keys: list[str] | None = None,
+        timestamp_offset: float = 0.0,
+        overlap: bool = False,
+        signal_quality: float | None = None,
+        direction_estimate: float | None = None,
+    ) -> list[SpeakerAttribution]:
+        """Endpoint segment-then-observe attribution projected onto words."""
 
         if not words:
             return []
+        if observation_keys is not None and len(observation_keys) != len(words):
+            raise ValueError("observation_keys must align with words")
+        self._observation_group_sequence += 1
+        endpoint_observation_group = self._observation_group_sequence
         t0, t1 = words[0].start, words[-1].end
+        activity_bounds: list[float] = []
+        activity_labels = None
+        if self.speaker_activity is not None:
+            phrase = audio[int(t0 * SR):int(t1 * SR)]
+            spans = [(word.start - t0, word.end - t0) for word in words]
+            try:
+                activity_labels = self.speaker_activity(phrase, spans)
+            except Exception as exc:
+                # Speaker colour is an enhancement; a failed segmentation pass
+                # must not stop accurate text from reaching the live page.
+                if self.debug:
+                    print(f"[speaker] segmentation failed: {exc}")
+                activity_labels = None
+            if activity_labels is not None and len(activity_labels) != len(words):
+                activity_labels = None
+
+        if activity_labels is not None:
+            # Only clear local-speaker changes become boundaries. Ambiguous
+            # overlap/nonspeech labels are skipped until the next clear word.
+            previous_label = None
+            previous_word = None
+            for word, label in zip(words, activity_labels):
+                if label is None:
+                    continue
+                if previous_label is not None and label != previous_label:
+                    activity_bounds.append((previous_word.end + word.start) / 2)
+                previous_label = label
+                previous_word = word
+
+        # Speaker-embedding changes remain necessary for sequential, non-
+        # overlapping dialogue: a powerset segmentation stream may legally be
+        # reused by a different voice after the first one stops. Non-overlapping
+        # windows avoid the previous 75%-shared-audio smear at real turns.
         windows: list[tuple[float, np.ndarray]] = []
         t = t0
         while t + self.window_s <= t1 + 1e-9:
-            emb = self.embed(audio[int(t * SR):int((t + self.window_s) * SR)])
-            if emb is not None:
-                windows.append((t + self.window_s / 2, emb))
+            embedding = self._normalized_embedding(
+                self.embed(audio[int(t * SR):int((t + self.window_s) * SR)])
+            )
+            if embedding is not None:
+                windows.append((t + self.window_s / 2, embedding))
             t += self.hop_s
-        bounds = [t0]
+        acoustic_bounds = []
         for (m1, e1), (m2, e2) in zip(windows, windows[1:]):
             if float(np.dot(e1, e2)) < self.change_below:
-                bounds.append((m1 + m2) / 2)
-        bounds.append(t1)
+                acoustic_bounds.append((m1 + m2) / 2)
+        # Endpoint punctuation gives a second, acoustically independent
+        # opportunity to compare voices. Overlapping 1 s embedding windows can
+        # smooth a real turn so strongly that their adjacent cosine never crosses
+        # ``change_below`` (the bundled sample merged two speakers into one
+        # 3.8 s profile this way). A sentence boundary is not assumed to be a
+        # speaker change: it merely creates clean spans which are still matched
+        # against the same centroids and will reuse the same id for one speaker.
+        terminal = re.compile(r"""[.?!]["')\]]*$""")
+        punctuation_candidates: list[tuple[int, float]] = []
+        for index, (left, right) in enumerate(zip(words, words[1:])):
+            if terminal.search(left.text):
+                punctuation_candidates.append((
+                    index,
+                    (left.end + right.start) / 2,
+                ))
+        punctuation_bounds = []
+        previous_index = -1
+        for index, boundary in punctuation_candidates:
+            sentence_word_count = index - previous_index
+            next_word = words[index + 1]
+            # A one-word "sentence" with no timestamped gap is commonly the
+            # first word of the following speaker's continuing turn ("Tab? I
+            # can't..."). Keeping it with the following span prevents silence-
+            # padded one-word embeddings from enrolling a phantom speaker.
+            if (
+                sentence_word_count == 1
+                and next_word.start - words[index].end < 0.08
+            ):
+                continue
+            punctuation_bounds.append(boundary)
+            previous_index = index
+        # A coarse one-second embedding boundary near an exact verifier
+        # punctuation boundary can otherwise carve a mixed sliver out of both
+        # turns and enroll a phantom third speaker. Prefer the word-aligned
+        # boundary within a 750 ms neighbourhood.
+        punctuation_reference_bounds = [
+            boundary for _, boundary in punctuation_candidates
+        ]
+        acoustic_bounds = [
+            boundary for boundary in acoustic_bounds
+            if not any(
+                abs(boundary - punctuation) < min(0.75, self.window_s * 0.75)
+                for punctuation in punctuation_reference_bounds
+            )
+        ]
+        bounds = [
+            t0,
+            *activity_bounds,
+            *acoustic_bounds,
+            *punctuation_bounds,
+            t1,
+        ]
+        bounds = sorted(set(float(np.clip(boundary, t0, t1))
+                            for boundary in bounds))
         cleaned = [bounds[0]]
-        for b in bounds[1:]:
-            if b - cleaned[-1] > 0.6:
-                cleaned.append(b)
+        for boundary in bounds[1:]:
+            if boundary - cleaned[-1] >= self.min_assignment_duration_s:
+                cleaned.append(boundary)
         if cleaned[-1] < t1:
             cleaned.append(t1)
-        segments: list[tuple[float, float, int]] = []
-        for a, b in zip(cleaned, cleaned[1:]):
-            emb = self.embed(audio[int(a * SR):int(b * SR)])
-            index = self._assign(emb, update=True) if emb is not None else None
-            segments.append((a, b, 0 if index is None else index))
-        self._merge_converged()
+
+        segments: list[tuple[float, float, SpeakerAttribution]] = []
+        for start, end in zip(cleaned, cleaned[1:]):
+            embedding = self.embed(audio[int(start * SR):int(end * SR)])
+            result = self.observe(
+                embedding,
+                timestamp_offset + start,
+                timestamp_offset + end,
+                update=True,
+                overlap=overlap,
+                signal_quality=signal_quality,
+                direction_estimate=direction_estimate,
+                observation_group=endpoint_observation_group,
+            )
+            segments.append((start, end, result))
+
         labels = []
-        for word in words:
-            mid = (word.start + word.end) / 2
-            index = segments[-1][2]
-            for a, b, seg_index in segments:
-                if a - 1e-9 <= mid <= b + 1e-9:
-                    index = seg_index
+        for index, word in enumerate(words):
+            midpoint = (word.start + word.end) / 2
+            result = segments[-1][2]
+            for start, end, segment_result in segments:
+                if start - 1e-9 <= midpoint <= end + 1e-9:
+                    result = segment_result
                     break
-            # Canonical AFTER merging, so an identity that just proved to be an
-            # existing speaker already reports that speaker's label.
-            labels.append(f"S{self._canon(index) + 1}")
+            key = observation_keys[index] if observation_keys is not None else None
+            public_result = self._public_attribution(result, key)
+            labels.append(self._record(
+                replace(public_result, revision_id=0),
+                key,
+            ))
         return labels
+
+
+class SortformerHybridSpeakerTracker:
+    """Streaming Sortformer decisions with the proven embedding fallback.
+
+    Sortformer owns low-latency arrival-ordered speaker slots. The existing
+    segmentation/embedding tracker still runs at endpoints so quiet speech
+    missed by Sortformer is never forced into the wrong slot.
+    """
+
+    def __init__(
+        self,
+        bridge,
+        fallback: SpeakerTracker,
+        *,
+        min_word_coverage: float = 0.24,
+        endpoint_wait_ms: float = 90.0,
+        debug: bool = False,
+    ):
+        self.bridge = bridge
+        self.fallback = fallback
+        self.min_word_coverage = float(
+            np.clip(min_word_coverage, 0.0, 1.0)
+        )
+        self.endpoint_wait_ms = max(0.0, float(endpoint_wait_ms))
+        self.debug = bool(debug)
+        self.embed = fallback.embed
+        self.speaker_activity = fallback.speaker_activity
+        self._sortformer_decisions = 0
+        self._embedding_fallbacks = 0
+        # Sortformer speaker slots are arrival-ordered within the native
+        # session. Endpoint embeddings attach those slots to the durable S1…
+        # identity namespace, and can merge a transient phantom slot back to
+        # a known speaker without rewriting future provisional words.
+        self._slot_speakers: dict[int, str] = {}
+
+    def __getattr__(self, name):
+        return getattr(self.fallback, name)
+
+    @staticmethod
+    def _speaker_id(index: int) -> str:
+        return f"S{int(index) + 1}"
+
+    def feed(
+        self,
+        samples: np.ndarray,
+        *,
+        source_start: float,
+        discontinuity: bool = False,
+    ) -> None:
+        try:
+            self.bridge.feed(
+                samples,
+                source_start=source_start,
+                discontinuity=discontinuity,
+            )
+        except Exception as exc:
+            if self.debug:
+                print(f"[speaker] Sortformer feed failed: {exc}")
+
+    def finish(self) -> None:
+        try:
+            self.bridge.finish()
+        except Exception as exc:
+            if self.debug:
+                print(f"[speaker] Sortformer finalize failed: {exc}")
+
+    def close(self) -> None:
+        self.bridge.close()
+
+    def _from_sortformer(
+        self,
+        decision,
+        start_s: float,
+        end_s: float,
+        *,
+        observation_key: str | None,
+        endpoint: bool,
+    ) -> SpeakerAttribution | None:
+        if decision is None or decision.coverage < self.min_word_coverage:
+            return None
+        self._sortformer_decisions += 1
+        confidence = float(np.clip(
+            0.55 + 0.35 * decision.coverage + 0.10 * decision.activity,
+            0.0,
+            1.0,
+        ))
+        speaker_id = self._slot_speakers.get(decision.speaker_index)
+        if speaker_id is None:
+            if decision.speaker_index >= self.fallback.immediate_speaker_limit:
+                # Native 4-speaker models occasionally flash a faint extra
+                # track. Let the non-learning embedding classifier retain a
+                # known voice (or return unknown) until an endpoint verifies
+                # that this really is an additional person.
+                return None
+            speaker_id = self._speaker_id(decision.speaker_index)
+        result = self.fallback._base_result(
+            speaker_id,
+            "stable" if endpoint else "provisional",
+            confidence,
+            None,
+            (
+                "streaming Sortformer endpoint assignment"
+                if endpoint
+                else "streaming Sortformer tentative assignment"
+            ),
+            max(0.0, end_s - start_s),
+            None,
+            None,
+            None,
+            False,
+            "sortformer",
+        )
+        return self.fallback._record(result, observation_key)
+
+    def classify_span(
+        self,
+        audio: np.ndarray,
+        start_s: float,
+        end_s: float,
+        *,
+        observation_key: str | None = None,
+        timestamp_offset: float = 0.0,
+        overlap: bool = False,
+        signal_quality: float | None = None,
+        direction_estimate: float | None = None,
+    ) -> SpeakerAttribution:
+        absolute_start = timestamp_offset + start_s
+        absolute_end = timestamp_offset + end_s
+        decision = self.bridge.decision(absolute_start, absolute_end)
+        result = self._from_sortformer(
+            decision,
+            absolute_start,
+            absolute_end,
+            observation_key=observation_key,
+            endpoint=False,
+        )
+        if result is not None:
+            return result
+        self._embedding_fallbacks += 1
+        return self.fallback.classify_span(
+            audio,
+            start_s,
+            end_s,
+            observation_key=observation_key,
+            timestamp_offset=timestamp_offset,
+            overlap=overlap,
+            signal_quality=signal_quality,
+            direction_estimate=direction_estimate,
+        )
+
+    def label_words(
+        self,
+        audio: np.ndarray,
+        words,
+        *,
+        observation_keys: list[str] | None = None,
+        timestamp_offset: float = 0.0,
+        overlap: bool = False,
+        signal_quality: float | None = None,
+        direction_estimate: float | None = None,
+    ) -> list[SpeakerAttribution]:
+        # Always update the embedding profiles. They recover quiet/distant
+        # turns and keep the existing >4-speaker path alive.
+        fallback = self.fallback.label_words(
+            audio,
+            words,
+            observation_keys=observation_keys,
+            timestamp_offset=timestamp_offset,
+            overlap=overlap,
+            signal_quality=signal_quality,
+            direction_estimate=direction_estimate,
+        )
+        labels = []
+        for index, (word, fallback_result) in enumerate(zip(words, fallback)):
+            key = observation_keys[index] if observation_keys is not None else None
+            absolute_start = timestamp_offset + word.start
+            absolute_end = timestamp_offset + word.end
+            decision = self.bridge.decision(
+                absolute_start,
+                absolute_end,
+                wait_ms=self.endpoint_wait_ms,
+            )
+            # Endpoint embeddings are the identity verifier. Sortformer is
+            # intentionally trusted for *when* a speaker changed, but a clean
+            # full-turn embedding remains more reliable for *who* the slot is.
+            # This also prevents a brief Sortformer phantom speaker from
+            # splitting a paragraph after verification.
+            if (
+                decision is not None
+                and decision.coverage >= self.min_word_coverage
+                and fallback_result.speaker_id is not None
+            ):
+                self._sortformer_decisions += 1
+                resolved_speaker = self._slot_speakers.get(
+                    decision.speaker_index,
+                    self._speaker_id(decision.speaker_index),
+                )
+                if fallback_result.status in {"stable", "corrected"}:
+                    self._slot_speakers.setdefault(
+                        decision.speaker_index,
+                        fallback_result.speaker_id,
+                    )
+                    labels.append(fallback_result)
+                    continue
+                if fallback_result.speaker_id != resolved_speaker:
+                    # A weak endpoint embedding that agrees with an already
+                    # known speaker is safer than inventing a transient third
+                    # speaker from a short Sortformer track.
+                    labels.append(fallback_result)
+                    continue
+            result = self._from_sortformer(
+                decision,
+                absolute_start,
+                absolute_end,
+                observation_key=key,
+                endpoint=True,
+            )
+            if result is None:
+                self._embedding_fallbacks += 1
+                result = fallback_result
+            labels.append(result)
+        return labels
+
+    def drain_revisions(self) -> list[tuple[str, SpeakerAttribution]]:
+        return self.fallback.drain_revisions()
+
+    def metrics(self) -> dict[str, int]:
+        return {
+            **self.fallback.metrics(),
+            "sortformer_decisions": self._sortformer_decisions,
+            "embedding_fallbacks": self._embedding_fallbacks,
+        }
 
 
 class StreamingCaptioner:
@@ -948,7 +2767,11 @@ class StreamingCaptioner:
         self.utterance = 0
         self.db_history: deque[float] = deque(maxlen=120)
         self.prosody_cache: dict[tuple[str, int], tuple[float, float, float]] = {}
+        self.delivery_cache: dict[tuple[str, int, int], dict] = {}
         self._last_final_speaker: str | None = None
+        self._word_slots: list[tuple[float, float, str]] = []
+        self._final_word_events: dict[str, dict] = {}
+        self._word_revisions: dict[str, dict] = {}
 
     @property
     def audio(self) -> np.ndarray:
@@ -1020,8 +2843,103 @@ class StreamingCaptioner:
         stops[0]["t"] = 0.0
         return stops
 
+    def _word_id(self, word: HypothesisWord) -> str:
+        return self._word_ids_for([word])[0]
+
+    def _word_ids_for(self, words: list[HypothesisWord]) -> list[str]:
+        """One-to-one timing alignment onto stable ids within an utterance."""
+
+        slots = getattr(self, "_word_slots", None)
+        if slots is None:
+            slots = self._word_slots = []
+        used: set[str] = set()
+        ids = []
+        for word in words:
+            candidates = [
+                (abs(start - word.start) + 0.5 * abs(end - word.end), word_id)
+                for start, end, word_id in slots
+                if word_id not in used and abs(start - word.start) < 0.22
+            ]
+            if candidates:
+                _, word_id = min(candidates)
+            else:
+                word_id = f"u{self.utterance}:w{len(slots)}"
+                slots.append((word.start, word.end, word_id))
+            used.add(word_id)
+            ids.append(word_id)
+        return ids
+
+    def _attribution(
+        self,
+        value: SpeakerAttribution | str | None,
+        *,
+        final: bool,
+    ) -> SpeakerAttribution:
+        if isinstance(value, SpeakerAttribution):
+            return value
+        if isinstance(value, str):
+            return SpeakerAttribution(
+                value, "stable" if final else "provisional", 1.0, 0.0, 0,
+                "explicit speaker label",
+            )
+        if getattr(self, "speaker_tracker", None) is None and final:
+            # Backward-compatible single-speaker degradation when the optional
+            # local embedding model is disabled or absent.
+            return SpeakerAttribution(
+                self.speaker, "stable", 1.0, 0.0, 0,
+                "single-speaker fallback (tracker unavailable)",
+            )
+        return SpeakerAttribution(
+            None, "unknown", 0.0, None, 0, "speaker not yet attributed",
+        )
+
+    def _word_revision_fields(
+        self,
+        word_id: str,
+        *,
+        text: str,
+        t: float,
+        start: float,
+        end: float,
+    ) -> dict[str, int]:
+        """Return monotonic per-channel revisions for one displayed word.
+
+        SSE arrival order is insufficient once EventSource reconnect replay and
+        the draft/accurate streams interleave.  The browser compares these
+        explicit revisions so an old hypothesis cannot roll verified text or
+        timing back.  Speaker attribution retains its independent revision id.
+        """
+
+        revisions = getattr(self, "_word_revisions", None)
+        if revisions is None:
+            revisions = self._word_revisions = {}
+        previous = revisions.get(word_id)
+        if previous is None:
+            current = {
+                "text": text,
+                "timing": (t, start, end),
+                "text_revision_id": 1,
+                "timing_revision_id": 1,
+            }
+        else:
+            current = dict(previous)
+            if text != previous["text"]:
+                current["text"] = text
+                current["text_revision_id"] += 1
+            timing = (t, start, end)
+            if timing != previous["timing"]:
+                current["timing"] = timing
+                current["timing_revision_id"] += 1
+        revisions[word_id] = current
+        return {
+            "text_revision_id": current["text_revision_id"],
+            "timing_revision_id": current["timing_revision_id"],
+        }
+
     def _word_event(self, word: HypothesisWord, audio: np.ndarray,
-                    final: bool, speaker: str | None = None) -> dict:
+                    final: bool,
+                    speaker: SpeakerAttribution | str | None = None,
+                    word_id: str | None = None) -> dict:
         # Hypotheses are revised frequently. Re-running pitch analysis for the
         # same word on every decoder tick wastes enough CPU to create its own
         # backlog, and it also makes the displayed typography wobble.
@@ -1042,6 +2960,24 @@ class StreamingCaptioner:
                 frozen = self.prosody_cache.get(("§slot", self.utterance, slot + delta))
                 if frozen is not None:
                     break
+        delivery_cache = getattr(self, "delivery_cache", None)
+        if delivery_cache is None:
+            delivery_cache = self.delivery_cache = {}
+        delivery = delivery_cache.get(slot_key)
+        if delivery is None:
+            for delta in (-1, 1, -2, 2):
+                delivery = delivery_cache.get(
+                    ("§slot", self.utterance, slot + delta)
+                )
+                if delivery is not None:
+                    break
+        if delivery is None:
+            # Unlike cold-start loudness normalization, these exact-span
+            # descriptors freeze at the first event. A later endpoint may have
+            # more audio, but allowing it to restyle a visible word recreates
+            # the late-motion failure this layer is designed to prevent.
+            delivery = _word_delivery_features(word, audio, self.cfg)
+            delivery_cache[slot_key] = delivery
         prosody_key = (word.text.casefold(), round(word.start * 100))
         features = self.prosody_cache.get(prosody_key)
         if frozen is not None:
@@ -1083,12 +3019,17 @@ class StreamingCaptioner:
         # prosody, with a user-adjustable threshold. Durable words carry the
         # selection so the future haptic module never needs analysis code.
         salience: dict = {}
-        if final:
-            spoken_by = speaker or self.speaker
-            if self._last_final_speaker is not None and \
-                    spoken_by != self._last_final_speaker:
+        attribution = self._attribution(speaker, final=final)
+        stable_attribution = attribution.status in {"stable", "corrected"}
+        if final and stable_attribution and attribution.speaker_id is not None:
+            spoken_by = attribution.speaker_id
+            if (self._last_final_speaker is not None
+                    and spoken_by != self._last_final_speaker):
                 salience["speaker_change"] = True
             self._last_final_speaker = spoken_by
+        if final:
+            # Emphasis is acoustic salience, independent of whether speaker
+            # identity has stabilized. Only the speaker-change flag is gated.
             emphasis_db = self.cfg.get("haptics", {}).get("emphasis_db", 6.0)
             if len(self.db_history) >= 6 and db - med >= emphasis_db:
                 salience["emphasis"] = True
@@ -1115,34 +3056,63 @@ class StreamingCaptioner:
             # a session normalize against the cold-start `db_range` and are
             # genuinely wrong, so they are allowed exactly one correction.
             self.prosody_cache[slot_key] = (db, pitch_hz, voiced_frac, loudness)
-        return {
+        word_id = word_id or self._word_id(word)
+        event_t = round(self.stream_base + word.start, 3)
+        event_start = round(word.start, 3)
+        event_end = round(word.end, 3)
+        revision_fields = self._word_revision_fields(
+            word_id,
+            text=word.text,
+            t=event_t,
+            start=event_start,
+            end=event_end,
+        )
+        speaker_fields = attribution.event_fields(
+            include_debug=bool(
+                self.cfg.get("live", {})
+                .get("speaker_attribution", {})
+                .get("debug", False)
+            )
+        )
+        event = {
             "type": "word",
             "final": final,
             "utterance": self.utterance,
+            "word_id": word_id,
             "text": word.text,
-            "t": round(self.stream_base + word.start, 3),
-            "start": round(word.start, 3),
-            "end": round(word.end, 3),
-            "speaker": speaker or self.speaker,
-            # False means "this is a fallback, not an identification". The page
-            # leaves such a word white rather than colouring it and flipping
-            # the hue later, which is a mutation on text already read.
-            "speaker_known": speaker is not None,
+            "t": event_t,
+            "start": event_start,
+            "end": event_end,
+            **revision_fields,
+            # Keep the original required speaker contract. Unknown live
+            # assignments carry the configured fallback id but are rendered
+            # neutral because ``speaker_status`` is authoritative.
+            "speaker": speaker_fields.pop("speaker") or self.speaker,
+            "speaker_known": attribution.speaker_id is not None,
+            **speaker_fields,
             "loudness": round(loudness, 4),
             "pitch": 0.5,
             "loudness_db": round(db, 2),
             "pitch_hz": round(pitch_hz, 2),
             "voiced_frac": round(voiced_frac, 3),
+            **delivery,
             "conf": round(word.conf, 3),
             "conf_available": word.conf_available,
             **({"syllables": syllables} if syllables else {}),
             **salience,
         }
+        if final:
+            final_events = getattr(self, "_final_word_events", None)
+            if final_events is None:
+                final_events = self._final_word_events = {}
+            final_events[word_id] = dict(event)
+        return event
 
     def _process_result(self, endpoint: bool = False):
         audio = self.audio
         result = self.recognizer.get_result_all(self.stream)
         current = hypothesis_words(result, len(audio) / SR)
+        current_word_ids = self._word_ids_for(current)
 
         if self.draft_only:
             # The low-latency recognizer is a revisable white read-ahead layer.
@@ -1167,24 +3137,66 @@ class StreamingCaptioner:
 
         committed_now = current[len(self.committed):commit_to]
 
-        def provisional_speaker(word):
+        def provisional_speaker(word, word_id):
             # Mid-stream classification only: it never invents a speaker or
             # moves a centroid, because a window here can straddle a turn
             # boundary. The endpoint pass owns learning; it corrects these.
             if self.speaker_tracker is None:
                 return None
-            return self.speaker_tracker.classify_span(audio, word.start, word.end)
+            return self.speaker_tracker.classify_span(
+                audio,
+                word.start,
+                word.end,
+                observation_key=word_id,
+                timestamp_offset=self.stream_base,
+            )
 
         if self.verifier is None:
-            for word in committed_now:
-                yield self._word_event(word, audio, final=True,
-                                       speaker=provisional_speaker(word))
+            if endpoint and current and self.speaker_tracker is not None:
+                # Korean deliberately has no weaker offline text verifier, but
+                # speaker attribution still needs one full-utterance endpoint
+                # pass. Re-emit the same word IDs so early live words remain
+                # visible and their provisional identities settle in place.
+                already_final = set(self._final_word_events)
+                speakers = self.speaker_tracker.label_words(
+                    audio,
+                    current,
+                    observation_keys=current_word_ids,
+                    timestamp_offset=self.stream_base,
+                )
+                for index, word in enumerate(current):
+                    event = self._word_event(
+                        word,
+                        audio,
+                        final=True,
+                        speaker=speakers[index],
+                        word_id=current_word_ids[index],
+                    )
+                    if current_word_ids[index] in already_final:
+                        # A historical identity correction updates colour and
+                        # paragraph ownership; it must not replay haptics.
+                        event.pop("speaker_change", None)
+                        event.pop("emphasis", None)
+                        event["correction"] = True
+                    yield event
+            else:
+                for offset, word in enumerate(
+                    committed_now, start=len(self.committed)
+                ):
+                    yield self._word_event(word, audio, final=True,
+                                           speaker=provisional_speaker(
+                                               word, current_word_ids[offset]
+                                           ), word_id=current_word_ids[offset])
         elif not endpoint:
             # Stable streaming words may be rendered immediately, but remain
             # provisional until the whole-phrase verifier sees the endpoint.
-            for word in committed_now:
+            for offset, word in enumerate(
+                committed_now, start=len(self.committed)
+            ):
                 event = self._word_event(word, audio, final=False,
-                                         speaker=provisional_speaker(word))
+                                         speaker=provisional_speaker(
+                                             word, current_word_ids[offset]
+                                         ), word_id=current_word_ids[offset])
                 event.update(type="commit", provisional=True, verified=False)
                 yield event
         if commit_to > len(self.committed):
@@ -1192,16 +3204,34 @@ class StreamingCaptioner:
 
         if self.verifier is not None and endpoint and current:
             verified_text = self.verifier.transcribe(audio)
-            verified = conservative_verified_words(current, verified_text)
-            speakers = (self.speaker_tracker.label_words(audio, verified)
-                        if self.speaker_tracker is not None else None)
-            final_events = [self._word_event(word, audio, final=True,
-                                             speaker=speakers[i] if speakers else None)
+            verified = conservative_verified_words(
+                current,
+                verified_text,
+                audio=audio,
+            )
+            verified = repair_verified_tail_timing(verified, audio)
+            word_ids = self._word_ids_for(verified)
+            speakers = (
+                self.speaker_tracker.label_words(
+                    audio,
+                    verified,
+                    observation_keys=word_ids,
+                    timestamp_offset=self.stream_base,
+                )
+                if self.speaker_tracker is not None else None
+            )
+            final_events = [self._word_event(
+                                word, audio, final=True,
+                                speaker=speakers[i] if speakers else None,
+                                word_id=word_ids[i],
+                            )
                             for i, word in enumerate(verified)]
             for event in final_events:
-                # The endpoint pass is authoritative even when it produced no
-                # label (no tracker configured = one speaker, which is known).
-                event.update(verified=True, provisional=False, speaker_known=True)
+                event.update(
+                    verified=True,
+                    provisional=False,
+                    speaker_known=event.get("speaker_status", "stable") != "unknown",
+                )
             yield {
                 "type": "verification",
                 "utterance": self.utterance,
@@ -1209,9 +3239,49 @@ class StreamingCaptioner:
                 "words": final_events,
             }
             yield from final_events
+            # A later clean observation may make an earlier provisional
+            # profile stable. Re-emit the complete durable word with the same
+            # ``word_id`` so replay, logs, and the page can update in place.
+            if self.speaker_tracker is not None:
+                current_ids = {event["word_id"] for event in final_events}
+                for word_id, attribution in self.speaker_tracker.drain_revisions():
+                    if word_id in current_ids:
+                        continue
+                    original = self._final_word_events.get(word_id)
+                    if original is None:
+                        continue
+                    fields = attribution.event_fields(
+                        include_debug=bool(
+                            self.cfg.get("live", {})
+                            .get("speaker_attribution", {})
+                            .get("debug", False)
+                        )
+                    )
+                    fields["speaker"] = fields.get("speaker") or original["speaker"]
+                    revised = {
+                        **original,
+                        **fields,
+                        "type": "word",
+                        "final": True,
+                        "verified": True,
+                        "correction": True,
+                    }
+                    # Historical corrections update state but never replay a
+                    # delayed haptic pulse.
+                    revised.pop("speaker_change", None)
+                    revised.pop("emphasis", None)
+                    self._final_word_events[word_id] = revised
+                    yield revised
 
         pending = current[len(self.committed):]
-        partial_events = [self._word_event(w, audio, final=False) for w in pending]
+        partial_start = len(self.committed)
+        partial_events = [
+            self._word_event(
+                word, audio, final=False,
+                word_id=current_word_ids[partial_start + index],
+            )
+            for index, word in enumerate(pending)
+        ]
         partial_key = tuple((w["text"], w["start"], w["end"]) for w in partial_events)
         if partial_key != self.last_partial_key or committed_now or endpoint:
             yield {
@@ -1281,22 +3351,31 @@ class StreamingCaptioner:
         self.last_partial_key = ()
         self.utterance += 1
         self.prosody_cache = {}
+        self.delivery_cache = {}
+        self._word_slots = []
+        # Word ids include the utterance number, so completed per-channel
+        # counters cannot be referenced by the next stream and need not grow
+        # for the lifetime of a long-running caption session.
+        self._word_revisions = {}
 
 
 class DualStreamingCaptioner:
-    """Fuse immediate draft hypotheses/cues with accurate durable words."""
+    """Publish accurate live words, with an optional lower-latency draft."""
 
     def __init__(self, draft_recognizer, accurate_recognizer, cfg: dict,
                  verifier: EndpointVerifier | None = None,
                  speaker_tracker: "SpeakerTracker | None" = None):
-        self.draft = StreamingCaptioner(draft_recognizer, cfg, draft_only=True)
+        self.draft = (
+            StreamingCaptioner(draft_recognizer, cfg, draft_only=True)
+            if draft_recognizer is not None else None
+        )
         self.accurate = StreamingCaptioner(
             accurate_recognizer, cfg, verifier=verifier,
             speaker_tracker=speaker_tracker,
         )
         self.draft_words: list[dict] = []
         self.accurate_words: list[dict] = []
-        self.cued_slots: set[tuple[int, int]] = set()
+        self.cued_slots: set[tuple[int, str]] = set()
         self.last_merged_key: tuple = ()
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="asr")
         self.closed = False
@@ -1350,14 +3429,23 @@ class DualStreamingCaptioner:
         """Emit accurate-profile words once for display-only color/pop timing."""
 
         cues = []
-        for word in words:
-            slot = (utterance, round(word["t"] * 20))  # 50 ms slot identity
+        for index, word in enumerate(words):
+            # A transducer can emit several words on the same encoder frame.
+            # A 50 ms timestamp key collapsed all of those into one cue, so
+            # only the first word received its live colour update. Stable word
+            # identity keeps every word independent; the indexed fallback is
+            # only for legacy/custom recognizers that do not expose word_id.
+            identity = str(
+                word.get("word_id")
+                or f"legacy:{index}:{round(word['t'] * 1000)}"
+            )
+            slot = (utterance, identity)
             if slot in self.cued_slots:
                 continue
             self.cued_slots.add(slot)
             cue = dict(word)
             cue.update(type="cue", final=False, provisional=True,
-                       utterance=utterance)
+                       utterance=utterance, src="accurate")
             cues.append(cue)
         return cues
 
@@ -1395,10 +3483,17 @@ class DualStreamingCaptioner:
                 dropped_s = event.get("dropped_s", 0.0)
                 changed = True
             elif event["type"] == "verification":
-                verifications.append(event)
+                verified = dict(event)
+                verified["words"] = [
+                    {**word, "src": word.get("src", "accurate")}
+                    for word in event.get("words", [])
+                ]
+                verifications.append(verified)
                 changed = True
             else:
-                durable.append(event)
+                accurate = dict(event)
+                accurate.setdefault("src", "accurate")
+                durable.append(accurate)
                 changed = True
         # Endpoint verification must reach the browser before the following
         # empty hypothesis clears the last provisional word nodes.
@@ -1413,13 +3508,15 @@ class DualStreamingCaptioner:
         yield from durable
 
     def accept(self, item):
-        # The ONNX calls release the GIL. Run both profiles concurrently across
-        # the M1 cores and publish whichever stream completes first; this keeps
-        # the draft immediate without putting its CPU time in front of finals.
+        # The ONNX calls release the GIL. When explicit readahead is enabled,
+        # run both profiles concurrently and publish whichever completes first.
         futures = {
             self.executor.submit(lambda: list(self.accurate.accept(item))): "accurate",
-            self.executor.submit(lambda: list(self.draft.accept(item))): "draft",
         }
+        if self.draft is not None:
+            futures[
+                self.executor.submit(lambda: list(self.draft.accept(item)))
+            ] = "draft"
         pending = set(futures)
         while pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
@@ -1431,9 +3528,13 @@ class DualStreamingCaptioner:
                     yield from self._handle_draft_events(events)
 
     def finish(self):
-        draft_future = self.executor.submit(lambda: list(self.draft.finish()))
+        draft_future = (
+            self.executor.submit(lambda: list(self.draft.finish()))
+            if self.draft is not None else None
+        )
         accurate_future = self.executor.submit(lambda: list(self.accurate.finish()))
-        yield from self._handle_draft_events(draft_future.result())
+        if draft_future is not None:
+            yield from self._handle_draft_events(draft_future.result())
         changed = False
         for event in accurate_future.result():
             if event["type"] == "hypothesis":
@@ -1458,13 +3559,46 @@ def streaming_events(blocks, recognizer, cfg: dict, draft_recognizer=None,
                      verifier: EndpointVerifier | None = None,
                      gain: "InputGain | None" = None,
                      speaker_tracker: "SpeakerTracker | None" = None,
-                     sound_detector=None):
-    captioner = (DualStreamingCaptioner(
-        draft_recognizer, recognizer, cfg, verifier=verifier,
-        speaker_tracker=speaker_tracker,
+                     sound_detector=None, onset_detector=None):
+    captioner = (
+        DualStreamingCaptioner(
+            draft_recognizer, recognizer, cfg, verifier=verifier,
+            speaker_tracker=speaker_tracker,
+        )
+        if draft_recognizer is not None or verifier is not None
+        else StreamingCaptioner(
+            recognizer, cfg, verifier=verifier,
+            speaker_tracker=speaker_tracker,
+        )
     )
-                 if draft_recognizer is not None else StreamingCaptioner(recognizer, cfg))
     gain = gain if gain is not None else InputGain(cfg)
+    # Sound tagging is useful context, but its AudioSet inference must not sit
+    # in front of the speech recognizer. A dedicated serial worker preserves
+    # detector state/order while the caption-critical path continues.
+    sound_pool = (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="sound")
+        if sound_detector is not None else None
+    )
+    sound_futures: deque = deque()
+    onset_pool = (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="onset")
+        if onset_detector is not None else None
+    )
+    onset_futures: deque = deque()
+
+    def drain_sound(wait_for_all: bool = False):
+        while sound_futures and (wait_for_all or sound_futures[0].done()):
+            yield from sound_futures.popleft().result()
+
+    def drain_onset(wait_for_all: bool = False):
+        while onset_futures and (wait_for_all or onset_futures[0].done()):
+            yield from onset_futures.popleft().result()
+
+    def current_utterance() -> int:
+        if isinstance(captioner, DualStreamingCaptioner):
+            return captioner.accurate.utterance
+        return captioner.utterance
+
     level_period_s = float(
         cfg.get("live", {}).get("input_gain", {}).get("level_event_period_s", 0.12)
     )
@@ -1473,20 +3607,77 @@ def streaming_events(blocks, recognizer, cfg: dict, draft_recognizer=None,
         for block in blocks:
             if isinstance(block, AudioChunk):
                 block = gain.process(block)
+                if (
+                    speaker_tracker is not None
+                    and hasattr(speaker_tracker, "feed")
+                ):
+                    # Sortformer runs in its own native Core ML process. Feed
+                    # it before ASR so its 1.04 s look-ahead and Nemotron's
+                    # 1.12 s acoustic context advance together.
+                    speaker_tracker.feed(
+                        block.samples,
+                        source_start=block.source_start,
+                        discontinuity=block.discontinuity,
+                    )
                 if block.source_start >= next_level_at:
                     next_level_at = block.source_start + level_period_s
                     yield gain.level_event(block.source_start)
-                if sound_detector is not None:
+                if sound_pool is not None:
                     # TRUE captured level (block.samples), never the gained ASR
                     # copy — the acoustic scene must not be speech-normalized.
-                    yield from sound_detector.feed(block.samples, block.source_end)
+                    samples = block.samples
+                    source_end = block.source_end
+                    sound_futures.append(sound_pool.submit(
+                        lambda audio=samples, t=source_end: list(
+                            sound_detector.feed(audio, t)
+                        )
+                    ))
+                    yield from drain_sound()
+                if onset_pool is not None:
+                    # The onset model receives the same gained copy as ASR,
+                    # never the true-level prosody signal. It runs in its own
+                    # serial worker so a 40 ms phone probe cannot sit in front
+                    # of either Nemotron stream.
+                    onset_futures.append(onset_pool.submit(
+                        onset_detector.feed,
+                        block.recognizer_samples,
+                        block.source_start,
+                        current_utterance(),
+                        discontinuity=block.discontinuity,
+                    ))
+                    yield from drain_onset()
             yield from captioner.accept(block)
+            yield from drain_sound()
+            yield from drain_onset()
+        if (
+            speaker_tracker is not None
+            and hasattr(speaker_tracker, "finish")
+        ):
+            # Flush the native right-context preview before the ASR's own
+            # end-of-file flush projects final speaker labels onto words.
+            speaker_tracker.finish()
         yield from captioner.finish()
         if sound_detector is not None:
+            yield from drain_sound(wait_for_all=True)
             yield from sound_detector.finish()
+        if onset_detector is not None:
+            yield from drain_onset(wait_for_all=True)
     finally:
         if isinstance(captioner, DualStreamingCaptioner):
             captioner.close()
+        if sound_pool is not None:
+            sound_pool.shutdown(wait=True, cancel_futures=True)
+        if onset_pool is not None:
+            onset_pool.shutdown(wait=True, cancel_futures=True)
+        if (
+            speaker_tracker is not None
+            and hasattr(speaker_tracker, "close")
+        ):
+            speaker_tracker.close()
+        if speaker_tracker is not None and speaker_tracker.debug:
+            print("[speaker] summary " + json.dumps(
+                speaker_tracker.metrics(), ensure_ascii=False
+            ))
 
 
 def load_streaming_recognizer(cfg: dict, model_dir: str | Path | None = None):
@@ -1506,9 +3697,15 @@ def load_streaming_recognizer(cfg: dict, model_dir: str | Path | None = None):
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
+        fetch_flag = (
+            " --korean-only"
+            if cfg.get("live", {}).get("lang") == "ko"
+            else ""
+        )
         raise SystemExit(
             "streaming model is missing — run: "
-            ".venv/bin/python scripts/fetch_streaming_model.py\n  " + "\n  ".join(missing)
+            f".venv/bin/python scripts/fetch_streaming_model.py{fetch_flag}\n  "
+            + "\n  ".join(missing)
         )
     live_cfg = cfg["live"]
     return sherpa_onnx.OnlineRecognizer.from_transducer(
@@ -1522,6 +3719,7 @@ def load_streaming_recognizer(cfg: dict, model_dir: str | Path | None = None):
         rule2_min_trailing_silence=live_cfg.get("endpoint_silence_s", 0.8),
         rule3_min_utterance_length=live_cfg.get("endpoint_max_s", 12.0),
         decoding_method=live_cfg.get("decoding_method", "greedy_search"),
+        max_active_paths=live_cfg.get("streaming_max_active_paths", 4),
     )
 
 
@@ -1530,26 +3728,66 @@ def load_speaker_tracker(cfg: dict) -> SpeakerTracker | None:
 
     Absence degrades to single-speaker S1 rather than failing: attribution is
     an enhancement, and live mode must still run before the one-time model
-    download has happened.
+    download has happened. On Apple Silicon, ``auto`` prefers the native
+    Streaming Sortformer helper and retains the embedding tracker as a quiet-
+    speech/>4-speaker fallback.
     """
 
     dia = dict(cfg.get("live", {}).get("diarization", {}) or {})
-    if not dia.get("enabled", False):
+    backend = str(dia.get("backend", "auto")).casefold()
+    if not dia.get("enabled", False) or backend == "off":
         return None
-    model = Path(dia.get("model",
-                         "assets/speaker-embedding-en/nemo_en_titanet_small.onnx"))
+    model = Path(dia.get(
+        "model",
+        "assets/speaker-embedding-en/"
+        "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
+    ))
     if not model.is_absolute():
         model = Path(__file__).resolve().parent.parent / model
     if not model.is_file():
-        print("[live] speaker model missing — run scripts/fetch_streaming_model.py"
-              " (continuing single-speaker)")
-        return None
+        # Keep an existing install working: fall back to whatever speaker model
+        # is already downloaded rather than silently dropping to one speaker
+        # until the user re-fetches.
+        alt = sorted(model.parent.glob("*.onnx")) if model.parent.is_dir() else []
+        if alt:
+            print(f"[live] {model.name} not found — using {alt[0].name}; run "
+                  "scripts/fetch_streaming_model.py for the stronger default")
+            model = alt[0]
+        else:
+            print("[live] speaker model missing — run scripts/fetch_streaming_model.py"
+                  " (continuing single-speaker)")
+            return None
 
     import sherpa_onnx
 
     extractor = sherpa_onnx.SpeakerEmbeddingExtractor(
         sherpa_onnx.SpeakerEmbeddingExtractorConfig(
             model=str(model), num_threads=dia.get("num_threads", 2)))
+
+    segmentation = Path(dia.get(
+        "segmentation_model",
+        "assets/speaker-segmentation-en/model.int8.onnx",
+    ))
+    if not segmentation.is_absolute():
+        segmentation = Path(__file__).resolve().parent.parent / segmentation
+    speaker_activity = None
+    if segmentation.is_file():
+        try:
+            speaker_activity = PyannoteSpeakerActivity(
+                segmentation,
+                num_threads=dia.get("segmentation_num_threads", 2),
+            )
+        except Exception as exc:
+            print(
+                f"[live] speaker segmentation failed to load ({exc}) — "
+                "using embedding change points"
+            )
+    else:
+        print(
+            "[live] speaker segmentation model missing — run "
+            "scripts/fetch_streaming_model.py --speaker-only "
+            "(using embedding change points)"
+        )
 
     def embed(samples: np.ndarray) -> np.ndarray | None:
         if len(samples) < int(0.25 * SR):
@@ -1561,15 +3799,110 @@ def load_speaker_tracker(cfg: dict) -> SpeakerTracker | None:
         norm = float(np.linalg.norm(vec))
         return vec / norm if norm > 0 else None
 
-    return SpeakerTracker(
+    policy = dict(cfg.get("live", {}).get("speaker_attribution", {}) or {})
+    fallback = SpeakerTracker(
         embed,
-        similarity=dia.get("similarity", 0.35),
         max_speakers=dia.get("max_speakers", 6),
         window_s=dia.get("window_s", 1.0),
         hop_s=dia.get("hop_s", 0.25),
-        min_span_s=dia.get("min_span_s", 0.4),
         change_below=dia.get("change_below", 0.3),
         merge_at=dia.get("merge_at", 0.5),
+        min_enrollment_duration_s=policy.get("min_enrollment_duration_s", 0.8),
+        min_assignment_duration_s=policy.get("min_assignment_duration_s", 0.25),
+        stable_after_observations=policy.get("stable_after_observations", 2),
+        immediate_speaker_limit=policy.get("immediate_speaker_limit", 2),
+        assignment_threshold=policy.get("assignment_threshold", 0.72),
+        provisional_threshold=policy.get("provisional_threshold", 0.58),
+        new_speaker_threshold=policy.get("new_speaker_threshold", 0.42),
+        centroid_ema_alpha=policy.get("centroid_ema_alpha", 0.15),
+        switch_hysteresis_s=policy.get("switch_hysteresis_s", 0.35),
+        short_turn_max_duration_s=policy.get("short_turn_max_duration_s", 0.4),
+        retain_threshold=policy.get("retain_threshold", 0.64),
+        switch_threshold=policy.get("switch_threshold", 0.72),
+        min_confidence_margin=policy.get("min_confidence_margin", 0.08),
+        short_stable_threshold=policy.get("short_stable_threshold"),
+        short_stable_min_margin=policy.get("short_stable_min_margin", 0.12),
+        short_stable_max_duration_s=policy.get(
+            "short_stable_max_duration_s", 1.3
+        ),
+        min_signal_quality=policy.get("min_signal_quality", 0.25),
+        direction_prior_weight=policy.get("direction_prior_weight", 0.05),
+        speaker_activity=speaker_activity,
+        debug=policy.get("debug", False),
+    )
+    if backend not in {"auto", "sortformer"}:
+        print(f"[live] speaker diarizer: embedding ({model.name})")
+        return fallback
+
+    sortformer = dict(dia.get("sortformer", {}) or {})
+    executable = Path(sortformer.get(
+        "executable",
+        "native/sortformer/.build/release/autocwi-sortformer",
+    ))
+    cache_dir = Path(sortformer.get(
+        "cache_dir",
+        "assets/sortformer-coreml",
+    ))
+    if not executable.is_absolute():
+        executable = REPO_ROOT / executable
+    if not cache_dir.is_absolute():
+        cache_dir = REPO_ROOT / cache_dir
+    native_supported = (
+        platform.system() == "Darwin"
+        and platform.machine() in {"arm64", "aarch64"}
+    )
+    model_prepared = any(
+        path.is_dir()
+        for path in cache_dir.glob(
+            "sortformer/**/Sortformer_v2.1.mlmodelc"
+        )
+    )
+    if (
+        not native_supported
+        or not executable.is_file()
+        or not model_prepared
+    ):
+        reason = (
+            "requires Apple Silicon"
+            if not native_supported
+            else (
+                "helper is not built"
+                if not executable.is_file()
+                else "model cache is not prepared"
+            )
+        )
+        print(
+            f"[live] Sortformer unavailable ({reason}) — using "
+            f"embedding fallback ({model.name}); run "
+            "scripts/fetch_streaming_model.py --sortformer-only"
+        )
+        return fallback
+
+    try:
+        from .sortformer import SortformerBridge
+
+        bridge = SortformerBridge(
+            executable,
+            cache_dir,
+            startup_timeout_s=sortformer.get("startup_timeout_s", 120.0),
+            debug=policy.get("debug", False),
+        )
+    except Exception as exc:
+        print(
+            f"[live] Sortformer failed to start ({exc}) — using "
+            f"embedding fallback ({model.name})"
+        )
+        return fallback
+    print(
+        "[live] speaker diarizer: Streaming Sortformer "
+        f"({bridge.latency_s:.2f}s) + {model.name} fallback"
+    )
+    return SortformerHybridSpeakerTracker(
+        bridge,
+        fallback,
+        min_word_coverage=sortformer.get("min_word_coverage", 0.24),
+        endpoint_wait_ms=sortformer.get("endpoint_wait_ms", 90.0),
+        debug=policy.get("debug", False),
     )
 
 
@@ -1645,43 +3978,143 @@ def _is_durable_record(ev: dict) -> bool:
     return False
 
 
+def reconstruct_durable_words(events: Iterable[dict]) -> list[dict]:
+    """Reconstruct the latest attributed transcript from a durable event log.
+
+    Speaker correction records are complete word events with the same
+    ``word_id`` as the word they supersede. Legacy logs without ``word_id``
+    retain append-only behavior.
+    """
+
+    words: list[dict] = []
+    positions: dict[str, int] = {}
+    for event in events:
+        if event.get("type", "word") != "word" or not event.get("final", True):
+            continue
+        word_id = event.get("word_id")
+        if word_id is not None and word_id in positions:
+            words[positions[word_id]] = dict(event)
+        else:
+            if word_id is not None:
+                positions[word_id] = len(words)
+            words.append(dict(event))
+    return words
+
+
 def load_endpoint_verifier(cfg: dict) -> EndpointVerifier:
     """Load the configured offline phrase verifier with no network fallback."""
 
     import sherpa_onnx
 
-    model_dir = Path(cfg["live"]["verifier_model_dir"])
+    live_cfg = cfg["live"]
+    model_dir = Path(live_cfg["verifier_model_dir"])
     if not model_dir.is_absolute():
         model_dir = Path(__file__).resolve().parent.parent / model_dir
+    configured_files = live_cfg.get("verifier_files", {}) or {}
     files = {
-        "tokens": model_dir / "tokens.txt",
-        "encoder": model_dir / "encoder.int8.onnx",
-        "decoder": model_dir / "decoder.int8.onnx",
-        "joiner": model_dir / "joiner.int8.onnx",
+        "tokens": model_dir / configured_files.get("tokens", "tokens.txt"),
+        "encoder": model_dir / configured_files.get(
+            "encoder", "encoder.int8.onnx"
+        ),
+        "decoder": model_dir / configured_files.get(
+            "decoder", "decoder.int8.onnx"
+        ),
+        "joiner": model_dir / configured_files.get(
+            "joiner", "joiner.int8.onnx"
+        ),
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
+        fetch_flag = (
+            " --korean-only"
+            if live_cfg.get("lang") == "ko"
+            else ""
+        )
         raise SystemExit(
             "endpoint verifier is missing — run: "
-            ".venv/bin/python scripts/fetch_streaming_model.py --offline-verifier\n  "
+            f".venv/bin/python scripts/fetch_streaming_model.py{fetch_flag}\n  "
             + "\n  ".join(missing)
         )
-    recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+    recognizer_kwargs = dict(
         **{name: str(path) for name, path in files.items()},
-        num_threads=cfg["live"].get("verifier_num_threads", 4),
+        num_threads=live_cfg.get("verifier_num_threads", 4),
         provider="cpu",
-        model_type="nemo_transducer",
-        decoding_method=cfg["live"].get(
+        decoding_method=live_cfg.get(
             "verifier_decoding_method", "modified_beam_search"
         ),
-        max_active_paths=cfg["live"].get("verifier_max_active_paths", 4),
+        max_active_paths=live_cfg.get("verifier_max_active_paths", 4),
     )
-    return EndpointVerifier(recognizer)
+    model_type = live_cfg.get("verifier_model_type", "nemo_transducer")
+    if model_type:
+        recognizer_kwargs["model_type"] = model_type
+    recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+        **recognizer_kwargs
+    )
+    return EndpointVerifier(
+        recognizer,
+        tail_padding_s=live_cfg.get("verifier_tail_padding_s", 0.0),
+    )
 
 
 # ---------------------------------------------------------------------------
 # SSE broadcast server
 # ---------------------------------------------------------------------------
+
+class LiveLanguageSession:
+    """Thread-safe language choice shared by the startup thread and local UI."""
+
+    def __init__(
+        self,
+        languages: list[dict],
+        language: str | None = None,
+    ):
+        self.languages = tuple(dict(item) for item in languages)
+        self._supported = {str(item["id"]) for item in self.languages}
+        if language is not None and language not in self._supported:
+            raise ValueError(f"unsupported live language: {language}")
+        self._language = language
+        self._stage = "loading" if language else "selecting"
+        self._lock = threading.Lock()
+        self._selected = threading.Event()
+        if language:
+            self._selected.set()
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "state": self._stage,
+                "language": self._language,
+                "languages": [dict(item) for item in self.languages],
+            }
+
+    def select_language(self, language: str) -> dict:
+        with self._lock:
+            if language not in self._supported:
+                raise ValueError(f"unsupported live language: {language}")
+            if self._language is not None and self._language != language:
+                raise RuntimeError(
+                    "language is locked for this capture; restart live mode to change it"
+                )
+            self._language = language
+            if self._stage == "selecting":
+                self._stage = "loading"
+            self._selected.set()
+            return {
+                "state": self._stage,
+                "language": self._language,
+                "languages": [dict(item) for item in self.languages],
+            }
+
+    def wait_for_language(self) -> str:
+        self._selected.wait()
+        with self._lock:
+            assert self._language is not None
+            return self._language
+
+    def set_stage(self, stage: str) -> None:
+        with self._lock:
+            self._stage = stage
+
 
 class Broadcaster:
     """Bounded SSE fan-out with durable replay on browser reconnect.
@@ -1698,19 +4131,59 @@ class Broadcaster:
         self._next_id = 1
         self._history: deque[tuple[int, bytes]] = deque(maxlen=history_limit)
         self._latest_hypothesis: tuple[int, bytes] | None = None
+        self._has_presented_to_client = False
+
+    @staticmethod
+    def _replay_chunk(
+        event_id: int,
+        chunk: bytes,
+        *,
+        first_presentation: bool = False,
+    ) -> bytes:
+        """Mark a retained SSE record without changing its stable event id."""
+
+        try:
+            data_line = next(
+                line for line in chunk.decode().splitlines()
+                if line.startswith("data: ")
+            )
+            event = json.loads(data_line[6:])
+            event["_replay"] = True
+            event["_first_presentation"] = first_presentation
+            return (
+                f"id: {event_id}\n"
+                f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            ).encode()
+        except (StopIteration, UnicodeDecodeError, json.JSONDecodeError):
+            return chunk
 
     def register(self, last_event_id: int | None = None) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=self._max_queue)
         after = max(0, last_event_id or 0)
         with self._lock:
+            first_presentation = not self._has_presented_to_client
+            self._has_presented_to_client = True
             replay = [(event_id, chunk) for event_id, chunk in self._history
                       if event_id > after]
             if (self._latest_hypothesis is not None and
                     self._latest_hypothesis[0] > after):
                 replay.append(self._latest_hypothesis)
             replay = sorted(dict(replay).items())[-self._max_queue:]
-            for _, chunk in replay:
-                q.put_nowait(chunk)
+            # Tell the renderer which retained records are history. Their
+            # state must be reconstructed, but their already-finished CWI
+            # motion must not replay after reconnect. The copied payload gets
+            # an ephemeral marker while preserving its original stable SSE id.
+            # The first audience connection is different: model loading can
+            # delay the browser bundle until opening words are already retained,
+            # even though that audience has never seen them. Mark that one
+            # startup backlog as first presentation so it keeps first-paint
+            # motion; later connections remain ordinary settled replay.
+            for event_id, chunk in replay:
+                q.put_nowait(self._replay_chunk(
+                    event_id,
+                    chunk,
+                    first_presentation=first_presentation,
+                ))
             self._clients.add(q)
         return q
 
@@ -1748,7 +4221,22 @@ class Broadcaster:
                     q.put_nowait(None)
 
 
-def make_handler(page_path: Path, broadcaster: Broadcaster):
+def make_handler(
+    page_path: Path,
+    broadcaster: Broadcaster,
+    *,
+    static_root: Path | None = None,
+    legacy_page_path: Path | None = None,
+    font_path: Path | None = None,
+    korean_font_path: Path | None = None,
+    runtime_config: dict | None = None,
+    language_session: LiveLanguageSession | None = None,
+):
+    static_root = static_root.resolve() if static_root is not None else None
+    runtime_body = json.dumps(
+        runtime_config or {}, ensure_ascii=False
+    ).encode("utf-8")
+
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -1764,20 +4252,81 @@ def make_handler(page_path: Path, broadcaster: Broadcaster):
         def log_message(self, *a):  # keep the console for caption output
             pass
 
+        def _send_bytes(
+            self,
+            body: bytes,
+            content_type: str,
+            *,
+            cache_control: str = "no-cache",
+            status: int = 200,
+        ) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", cache_control)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_json(self, value: dict, *, status: int = 200) -> None:
+            self._send_bytes(
+                json.dumps(value, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8",
+                status=status,
+            )
+
+        def _send_file(
+            self,
+            path: Path,
+            *,
+            content_type: str | None = None,
+            immutable: bool = False,
+        ) -> None:
+            mime = content_type or mimetypes.guess_type(path.name)[0]
+            self._send_bytes(
+                path.read_bytes(),
+                mime or "application/octet-stream",
+                cache_control=(
+                    "public, max-age=31536000, immutable"
+                    if immutable else "no-cache"
+                ),
+            )
+
         def do_GET(self):
-            if self.path in ("/", "/index.html", "/live.html"):
-                body = page_path.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            elif self.path == "/events":
+            path = urlsplit(self.path).path
+            if path in ("/", "/index.html", "/live.html"):
+                self._send_file(
+                    page_path, content_type="text/html; charset=utf-8"
+                )
+            elif path in ("/legacy", "/legacy/") and legacy_page_path is not None:
+                self._send_file(
+                    legacy_page_path, content_type="text/html; charset=utf-8"
+                )
+            elif path == "/runtime-config.json":
+                self._send_bytes(
+                    runtime_body, "application/json; charset=utf-8"
+                )
+            elif path == "/session" and language_session is not None:
+                self._send_json(language_session.snapshot())
+            elif path == "/RobotoFlex.ttf" and font_path is not None:
+                self._send_file(
+                    font_path,
+                    content_type="font/ttf",
+                    immutable=True,
+                )
+            elif path == "/NotoSansKR.ttf" and korean_font_path is not None:
+                self._send_file(
+                    korean_font_path,
+                    content_type="font/ttf",
+                    immutable=True,
+                )
+            elif path == "/events":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("X-Accel-Buffering", "no")
                 self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 try:
                     last_event_id = int(self.headers.get("Last-Event-ID", "0"))
@@ -1800,8 +4349,62 @@ def make_handler(page_path: Path, broadcaster: Broadcaster):
                     pass
                 finally:
                     broadcaster.unregister(q)
+            elif static_root is not None:
+                candidate = (static_root / path.lstrip("/")).resolve()
+                if (
+                    candidate.is_relative_to(static_root)
+                    and candidate.is_file()
+                ):
+                    self._send_file(
+                        candidate,
+                        immutable=path.startswith("/_next/static/"),
+                    )
+                else:
+                    self.send_error(404)
             else:
                 self.send_error(404)
+
+        def do_POST(self):
+            path = urlsplit(self.path).path
+            if path != "/session/language" or language_session is None:
+                self.send_error(404)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_json({"error": "invalid content length"}, status=400)
+                return
+            if length <= 0 or length > 1024:
+                self._send_json({"error": "invalid request body"}, status=400)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                language = str(payload.get("language", ""))
+                snapshot = language_session.select_language(language)
+            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                self._send_json({"error": "invalid JSON body"}, status=400)
+                return
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+                return
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=409)
+                return
+            self._send_json(snapshot, status=202)
+
+        def do_OPTIONS(self):
+            path = urlsplit(self.path).path
+            if path != "/session/language" or language_session is None:
+                self.send_error(404)
+                return
+            # The exported app is same-origin. This preflight exists only for
+            # the documented localhost:3000 Next development workflow.
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
     return Handler
 
@@ -1811,7 +4414,7 @@ def make_handler(page_path: Path, broadcaster: Broadcaster):
 # ---------------------------------------------------------------------------
 
 def _load_live_stack(cfg: dict):
-    """Load the four live models and warm them up before capture starts.
+    """Load the active live models and warm them before capture starts.
 
     Measured: the pool saves little (~0.7 s of 8.3 s — the ONNX session
     constructors hold the GIL, so loads mostly serialize), and that is fine.
@@ -1823,24 +4426,43 @@ def _load_live_stack(cfg: dict):
     """
 
     live_cfg = cfg["live"]
-    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="load") as pool:
+    from .onset import load_phoneme_onset_detector
+
+    # Fast mode renders only the accurate stream. Loading and running the draft
+    # anyway used roughly half the streaming-ASR compute while contributing no
+    # visible words. Keep it exclusively for explicit raw readahead.
+    needs_draft = (
+        cfg.get("display", {}).get("mode") == "readahead"
+        and live_cfg.get("draft_enabled", True)
+    )
+    needs_verifier = live_cfg.get("verifier_enabled", True)
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix="load") as pool:
         accurate = pool.submit(load_streaming_recognizer, cfg)
-        draft = pool.submit(
-            load_streaming_recognizer, cfg,
-            live_cfg.get("draft_model_dir", live_cfg["streaming_model_dir"]))
-        verifier = pool.submit(load_endpoint_verifier, cfg)
+        draft = (
+            pool.submit(
+                load_streaming_recognizer, cfg,
+                live_cfg.get("draft_model_dir", live_cfg["streaming_model_dir"]),
+            )
+            if needs_draft else None
+        )
+        verifier = pool.submit(load_endpoint_verifier, cfg) if needs_verifier else None
         tracker = pool.submit(load_speaker_tracker, cfg)
         detector = pool.submit(load_sound_event_detector, cfg)
-        accurate, draft = accurate.result(), draft.result()
-        verifier, tracker = verifier.result(), tracker.result()
+        onset = pool.submit(load_phoneme_onset_detector, cfg)
+        accurate = accurate.result()
+        draft = draft.result() if draft is not None else None
+        verifier = verifier.result() if verifier is not None else None
+        tracker = tracker.result()
         detector = detector.result()
+        onset = onset.result()
     warm = np.zeros(SR // 2, dtype=np.float32)
-    for recognizer in (accurate, draft):
+    for recognizer in (item for item in (accurate, draft) if item is not None):
         stream = recognizer.create_stream()
         stream.accept_waveform(SR, warm)
         while recognizer.is_ready(stream):
             recognizer.decode_stream(stream)
-    verifier.transcribe(warm)
+    if verifier is not None:
+        verifier.transcribe(warm)
     if tracker is not None:
         tracker.embed(np.zeros(SR, dtype=np.float32))
     if detector is not None:
@@ -1848,12 +4470,34 @@ def _load_live_stack(cfg: dict):
         # the real stream is not classified against 2 s of leading zeros.
         detector.feed(np.zeros(2 * SR, dtype=np.float32), 0.0)
         detector.reset()
-    return accurate, draft, verifier, tracker, detector
+    if onset is not None:
+        onset.warm()
+    return accurate, draft, verifier, tracker, detector, onset
 
 
-def _start_server(page: Path, port: int, open_browser: bool):
+def _start_server(
+    page: Path,
+    port: int,
+    open_browser: bool,
+    *,
+    static_root: Path | None = None,
+    legacy_page: Path | None = None,
+    font_path: Path | None = None,
+    korean_font_path: Path | None = None,
+    runtime_config: dict | None = None,
+    language_session: LiveLanguageSession | None = None,
+):
     broadcaster = Broadcaster()
-    handler = make_handler(page, broadcaster)
+    handler = make_handler(
+        page,
+        broadcaster,
+        static_root=static_root,
+        legacy_page_path=legacy_page,
+        font_path=font_path,
+        korean_font_path=korean_font_path,
+        runtime_config=runtime_config,
+        language_session=language_session,
+    )
     server = None
     for p in range(port, port + 10):
         try:
@@ -1872,12 +4516,214 @@ def _start_server(page: Path, port: int, open_browser: bool):
     return server, broadcaster
 
 
+def _live_language_options(cfg: dict) -> list[dict]:
+    configured = cfg.get("live", {}).get("languages", {}) or {}
+    options = []
+    for language, values in configured.items():
+        values = values or {}
+        options.append({
+            "id": language,
+            "label": values.get("label", language),
+            "nativeLabel": values.get("native_label", values.get("label", language)),
+            "description": values.get("description", ""),
+        })
+    if not options:
+        options.append({
+            "id": "en",
+            "label": "English",
+            "nativeLabel": "English",
+            "description": "",
+        })
+    return options
+
+
+def _configure_live_language(cfg: dict, language: str) -> dict:
+    live_cfg = cfg.get("live", {}) or {}
+    languages = live_cfg.get("languages", {}) or {}
+    if language not in languages:
+        supported = ", ".join(languages) or "en"
+        raise SystemExit(
+            f"unsupported live language {language!r}; choose one of: {supported}"
+        )
+    override = dict(languages.get(language, {}) or {})
+    merged = {**live_cfg, **override, "lang": language}
+    for nested in (
+        "onset_prefix",
+        "diarization",
+        "speaker_attribution",
+    ):
+        if nested in override:
+            merged[nested] = {
+                **(live_cfg.get(nested, {}) or {}),
+                **(override.get(nested, {}) or {}),
+            }
+    return {**cfg, "live": merged}
+
+
+def _studio_runtime_config(
+    cfg: dict,
+    *,
+    selected_language: str | None = None,
+    language_selection_required: bool = False,
+) -> dict:
+    display = cfg.get("display", {}) or {}
+    live_sync = cfg.get("motion", {}).get("live_sync", {}) or {}
+    return {
+        "palette": list(cfg.get("palette", []))
+        + list(cfg.get("palette_support", [])),
+        "displayMode": display.get("mode", "fast"),
+        "maxWords": display.get("max_words", 8),
+        "paragraphWordLimit": display.get(
+            "studio_paragraph_word_limit", 0
+        ),
+        "stageParagraphHistory": display.get(
+            "studio_stage_paragraph_history", 6
+        ),
+        "stageWordsPerBlock": display.get(
+            "studio_stack_words_per_block", 8
+        ),
+        "revealGapMs": round(
+            float(display.get("word_reveal_gap_s", 0.14)) * 1000
+        ),
+        "revealGapMinMs": round(
+            float(display.get("word_reveal_gap_min_s", 0.08)) * 1000
+        ),
+        "revealGapMaxMs": round(
+            float(display.get("word_reveal_gap_max_s", 0.26)) * 1000
+        ),
+        "revealTimingStrength": display.get(
+            "word_reveal_timing_strength", 0.75
+        ),
+        "catchupGapMs": round(
+            float(display.get("word_reveal_catchup_gap_s", 0.06)) * 1000
+        ),
+        "maxActiveMotions": display.get("max_simultaneous_reveals", 2),
+        "wordMotionBaseMs": round(
+            float(display.get("word_motion_duration_s", 0.52)) * 1000
+        ),
+        "wordMotionMaxMs": round(
+            float(display.get("word_motion_max_duration_s", 0.72)) * 1000
+        ),
+        "wordMotionSpanStretch": display.get(
+            "word_motion_span_stretch", 0.42
+        ),
+        "wordMotionMinMs": round(
+            float(display.get("word_motion_min_duration_s", 0.32)) * 1000
+        ),
+        "wordMotionBacklogTargetMs": round(
+            float(display.get("word_motion_backlog_target_s", 0.60)) * 1000
+        ),
+        "wordMotionRateHeadroom": display.get(
+            "word_motion_rate_headroom", 0.90
+        ),
+        "wordMotionCatchupScale": display.get(
+            "word_motion_catchup_scale", 0.82
+        ),
+        "syncPop": live_sync.get("sync_pop", 0.10),
+        "syncElevationEm": live_sync.get("sync_elevation_em", 0.20),
+        "characterWaveLiftEm": live_sync.get(
+            "character_wave_lift_em", 0.085
+        ),
+        "characterWavePop": live_sync.get("character_wave_pop", 0.030),
+        "deliveryMotionEnabled": live_sync.get("delivery_enabled", True),
+        "deliveryContourLiftEm": live_sync.get(
+            "delivery_contour_lift_em", 0.055
+        ),
+        "deliveryForceLiftEm": live_sync.get(
+            "delivery_force_lift_em", 0.045
+        ),
+        "deliveryAttackDropEm": live_sync.get(
+            "delivery_attack_drop_em", 0.025
+        ),
+        "deliveryFlowHoldEm": live_sync.get(
+            "delivery_flow_hold_em", 0.035
+        ),
+        "deliveryIntonationLiftGain": live_sync.get(
+            "delivery_intonation_lift_gain", 0.35
+        ),
+        "deliveryAxisGainFloor": live_sync.get(
+            "delivery_axis_gain_floor", 0.50
+        ),
+        "deliveryFlowDurationMs": live_sync.get(
+            "delivery_flow_duration_ms", 90
+        ),
+        "deliveryTextureGlowPx": live_sync.get(
+            "delivery_texture_glow_px", 6
+        ),
+        "deliveryMinConfidence": live_sync.get(
+            "delivery_min_confidence", 0.38
+        ),
+        "deliveryProfileGains": dict(live_sync.get(
+            "delivery_profile_gains",
+            {
+                "steady": 0.30,
+                "gentle": 0.48,
+                "textured": 0.58,
+                "rising": 0.76,
+                "falling": 0.76,
+                "sustained": 0.70,
+                "forceful": 0.90,
+            },
+        )),
+        "languages": _live_language_options(cfg),
+        "selectedLanguage": selected_language,
+        "languageSelectionRequired": language_selection_required,
+    }
+
+
+def _select_live_frontend(
+    cfg: dict,
+    legacy_page: Path,
+) -> tuple[Path, Path | None, Path | None, Path, Path | None, dict]:
+    display = cfg.get("display", {}) or {}
+    studio_root = REPO_ROOT / "web" / "out"
+    studio_page = studio_root / "index.html"
+    requested = display.get("frontend", "next")
+    static_root = None
+    page = legacy_page
+    legacy_route = None
+    if requested == "next" and studio_page.is_file():
+        page = studio_page
+        static_root = studio_root
+        legacy_route = legacy_page
+        print("[live] frontend: Next.js studio (legacy diagnostics at /legacy)")
+    elif requested == "next":
+        print(
+            "[live] Next.js studio not built; using legacy frontend "
+            "(run: cd web && npm install && npm run build)"
+        )
+
+    font_path = Path(cfg["render"]["font_path"])
+    if not font_path.is_absolute():
+        font_path = REPO_ROOT / font_path
+    korean_font_value = cfg["render"].get(
+        "korean_font_path", "assets/NotoSansKR.ttf"
+    )
+    korean_font_path = Path(korean_font_value)
+    if not korean_font_path.is_absolute():
+        korean_font_path = REPO_ROOT / korean_font_path
+    if not korean_font_path.is_file():
+        print(
+            "[live] Korean variable font missing; using a system fallback "
+            "(run: python scripts/fetch_font.py)"
+        )
+        korean_font_path = None
+    return (
+        page,
+        static_root,
+        legacy_route,
+        font_path,
+        korean_font_path,
+        _studio_runtime_config(cfg),
+    )
+
+
 def run_live(args, cfg: dict, device: str) -> None:
     live_cfg = cfg["live"]
     if getattr(args, "list_devices", False):
         print("[live] input devices:\n" + list_input_devices())
         return
-    lang = getattr(args, "lang", None) or live_cfg["lang"]
+    requested_lang = getattr(args, "lang", None)
     port = getattr(args, "port", None) or live_cfg["port"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -1894,17 +4740,115 @@ def run_live(args, cfg: dict, device: str) -> None:
     live_cfg = cfg["live"]
 
     from .livepage import render_live
-    page = Path(render_live(cfg, out))
+    legacy_page = Path(render_live(cfg, out))
+    (
+        page,
+        static_root,
+        legacy_route,
+        font_path,
+        korean_font_path,
+        runtime_config,
+    ) = (
+        _select_live_frontend(cfg, legacy_page)
+    )
 
     stop = threading.Event()
+    headless = bool(getattr(args, "once", False))
+    whisper_model = getattr(args, "whisper", None)
+    language_options = _live_language_options(cfg)
+    supported_languages = {item["id"] for item in language_options}
+    if requested_lang is not None and requested_lang not in supported_languages:
+        raise SystemExit(
+            f"unsupported live language {requested_lang!r}; choose one of: "
+            + ", ".join(sorted(supported_languages))
+        )
+    # The static Next.js studio is the language picker. An explicit --lang
+    # remains the deterministic/headless override, while the diagnostics
+    # fallback keeps the configured default if the studio has not been built.
+    selection_required = (
+        requested_lang is None
+        and not headless
+        and static_root is not None
+    )
+    initial_lang = (
+        None if selection_required
+        else (requested_lang or live_cfg.get("lang", "en"))
+    )
+    language_session = LiveLanguageSession(language_options, initial_lang)
+    runtime_config.update({
+        "languages": language_options,
+        "selectedLanguage": initial_lang,
+        "languageSelectionRequired": selection_required,
+    })
+
     realtime = not os.environ.get("AUTOCWI_FAST")
     mic_device = getattr(args, "device", None)
     if mic_device is not None and str(mic_device).lstrip("-").isdigit():
         mic_device = int(mic_device)
+    server = broadcaster = None
+    if not headless:
+        # Page first, language second, models third. Capture has not started
+        # while the local UI is selecting or warming its language-specific ASR.
+        server, broadcaster = _start_server(
+            page,
+            port,
+            not getattr(args, "no_open", False),
+            static_root=static_root,
+            legacy_page=legacy_route,
+            font_path=font_path,
+            korean_font_path=korean_font_path,
+            runtime_config=runtime_config,
+            language_session=language_session,
+        )
+        if selection_required:
+            broadcaster.publish({"type": "boot", "stage": "choose language"})
+            print("[live] choose English or 한국어 in the browser")
+            try:
+                lang = language_session.wait_for_language()
+            except KeyboardInterrupt:
+                stop.set()
+                server.shutdown()
+                print("\n[live] stopped before capture")
+                return
+        else:
+            lang = initial_lang
+        language_session.set_stage("loading")
+        broadcaster.publish({
+            "type": "boot",
+            "stage": "loading models",
+            "language": lang,
+        })
+    else:
+        lang = initial_lang
+
+    assert lang is not None
+    cfg = _configure_live_language(cfg, lang)
+    live_cfg = cfg["live"]
+    diarizer_override = getattr(args, "diarizer", None)
+    if diarizer_override is not None:
+        cfg = {
+            **cfg,
+            "live": {
+                **live_cfg,
+                "diarization": {
+                    **(live_cfg.get("diarization", {}) or {}),
+                    "backend": diarizer_override,
+                    "enabled": diarizer_override != "off",
+                },
+            },
+        }
+        live_cfg = cfg["live"]
+
+    # Resolve the bundled clip only after language selection. Previously the
+    # picker could select Korean while `--sample` had already bound the English
+    # video, making a healthy Korean model look catastrophically inaccurate.
     source_file = getattr(args, "file", None)
     if getattr(args, "sample", False) and not source_file:
-        source_file = sample_clip_path()
-        print(f"[live] streaming bundled sample: {Path(source_file).name}")
+        source_file = sample_clip_path(lang)
+        print(
+            f"[live] streaming bundled {lang} sample: "
+            f"{Path(source_file).name}"
+        )
     # --once processes to EOF and exits; a loop would never reach EOF.
     loop = getattr(args, "loop", False) and not getattr(args, "once", False)
     if loop and source_file:
@@ -1914,7 +4858,7 @@ def run_live(args, cfg: dict, device: str) -> None:
         if source_file
         else mic_blocks(stop, device=mic_device)
     )
-    whisper_model = getattr(args, "whisper", None)
+
     if whisper_model:
         from faster_whisper import WhisperModel
 
@@ -1922,33 +4866,37 @@ def run_live(args, cfg: dict, device: str) -> None:
         model = WhisperModel(whisper_model, device=ct2_device,
                              compute_type="float16" if ct2_device == "cuda" else "int8")
         print(f"[live] legacy whisper-{whisper_model} ready (lang={lang})")
+        if broadcaster is not None:
+            language_session.set_stage("listening")
+            broadcaster.publish({
+                "type": "boot",
+                "stage": "listening",
+                "language": lang,
+            })
         events = word_events(utterances(blocks, live_cfg), model, lang, cfg)
     else:
-        if lang != "en":
-            raise SystemExit(
-                "the bundled streaming model is English-only; use --lang en"
-            )
-        headless = bool(getattr(args, "once", False))
-        server = broadcaster = None
-        if not headless:
-            # Page first, models second: the browser shows "loading models"
-            # progress instead of a dead tab, and capture starts only after
-            # warm-up — so "listening" on screen means actually listening.
-            server, broadcaster = _start_server(
-                page, port, not getattr(args, "no_open", False))
-            broadcaster.publish({"type": "boot", "stage": "loading models"})
         t_load = time.perf_counter()
-        model, draft_model, verifier, tracker, detector = _load_live_stack(cfg)
+        model, draft_model, verifier, tracker, detector, onset = _load_live_stack(cfg)
+        model_label = live_cfg.get("model_label", "streaming transducer")
         print(f"[live] local ASR ready in {time.perf_counter() - t_load:.1f}s: "
-              "160ms draft + 1120ms accurate stream + Parakeet endpoint "
-              "verifier (lang=en, CPU)"
+              + model_label
+              + (" + 160ms draft readahead" if draft_model is not None else "")
+              + (" + endpoint verifier" if verifier is not None else "")
+              + f" (lang={lang}, CPU)"
               + (" + speaker attribution" if tracker else "")
-              + (" + non-speech sound lane" if detector else ""))
+              + (" + non-speech sound lane" if detector else "")
+              + (" + phoneme onset hints" if onset else ""))
         if broadcaster is not None:
-            broadcaster.publish({"type": "boot", "stage": "listening"})
+            language_session.set_stage("listening")
+            broadcaster.publish({
+                "type": "boot",
+                "stage": "listening",
+                "language": lang,
+            })
         events = streaming_events(
             blocks, model, cfg, draft_model, verifier=verifier,
             speaker_tracker=tracker, sound_detector=detector,
+            onset_detector=onset,
         )
     events_path = out / "live_events.jsonl"
 
@@ -1962,9 +4910,18 @@ def run_live(args, cfg: dict, device: str) -> None:
         print(f"[live] {n} durable events -> {events_path}")
         return
 
-    if server is None:  # legacy whisper path still starts its server here
+    if server is None:  # defensive: non-headless paths normally start above
         server, broadcaster = _start_server(
-            page, port, not getattr(args, "no_open", False))
+            page,
+            port,
+            not getattr(args, "no_open", False),
+            static_root=static_root,
+            legacy_page=legacy_route,
+            font_path=font_path,
+            korean_font_path=korean_font_path,
+            runtime_config=runtime_config,
+            language_session=language_session,
+        )
 
     try:
         with open(events_path, "w", encoding="utf-8") as f:

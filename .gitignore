@@ -5,20 +5,34 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# --- Next.js studio ---------------------------------------------------------
+web/node_modules/
+web/.next/
+web/out/
+
 # --- macOS ------------------------------------------------------------------
 .DS_Store
 
 # --- Local tool state -------------------------------------------------------
 .claude/settings.local.json
 
-# --- Downloaded model weights (~1.9 GB) -------------------------------------
+# --- Downloaded model weights (multi-GB) ------------------------------------
 # One-time fetches, not source. Re-create with:
 #   .venv/bin/python scripts/fetch_streaming_model.py
-# titanet (speaker embedding) downloads itself on first live run.
+# Speaker embedding and segmentation are fetched by
+# `scripts/fetch_streaming_model.py --speaker-only`.
 assets/streaming-nemotron-en-160ms/
 assets/streaming-nemotron-en-1120ms/
+assets/streaming-zipformer-ko/
+assets/streaming-zipformer-ko-174m/
 assets/parakeet-unified-en-offline/
 assets/speaker-embedding-en/
+assets/speaker-embedding-multilingual/
+assets/speaker-segmentation-en/
+assets/sortformer-coreml/
+assets/phoneme-onset-en/
+native/sortformer/.build/
+native/sortformer/.swiftpm/
 
 # Audio-tagging model weights, fetched by scripts/fetch_streaming_model.py.
 assets/audio-tagging-en/*.onnx
@@ -26,6 +40,7 @@ assets/audio-tagging-en/*.onnx
 # Roboto Flex, fetched by scripts/fetch_font.py. The design system names it
 # (2.3.1) but the file itself is a download, not something we author.
 assets/RobotoFlex.ttf
+assets/NotoSansKR.ttf
 
 # --- Generated output -------------------------------------------------------
 # `autocwi cc` / `live` / `tune` write here. captions.html and tuner.html are
