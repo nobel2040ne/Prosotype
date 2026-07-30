@@ -26,6 +26,36 @@ palette_support:
   - "#EB47C2"
   - "#ED5E82"
 
+# Light-stage speaker colors. A DOCUMENTED DEVIATION from 2.1.1/2.1.2, used only
+# by the Next studio's optional light stage (which itself deviates from 2.4.1's
+# 90% black captions box). The CI palette above is built for that black box and
+# is unreadable on a light surface -- measured against the light caption plate
+# #FAFAF8, CI Yellow is 1.19:1, CI Green 1.52:1, CI Blue 1.39:1. Each entry keeps
+# its CI hue and darkens only its value until it clears WCAG AA 4.5:1, so speaker
+# identity still reads as yellow/green/blue. The dark stage renders the exact CI
+# values above and remains one toggle away.
+palette_light:
+  - "#76760C"   # from CI Main Yellow #E5E517   4.60:1
+  - "#0D840D"   # from CI Main Green  #17E517   4.65:1
+  - "#0D7F7F"   # from CI Main Blue   #17E5E5   4.61:1
+  - "#C714C7"   # from CI Main Pink   #E517E5   4.62:1
+  - "#E11717"   # from CI Main Red    #E51717   4.63:1
+  - "#AA5F11"   # from CI Main Orange #E58017   4.61:1
+# Supporting colors (2.1.2) for speakers 7+, same derivation.
+palette_support_light:
+  - "#C14D26"   # from #E85C2E   4.61:1
+  - "#876F29"   # from #EBC247   4.63:1
+  - "#657A25"   # from #C2EB47   4.60:1
+  - "#467F33"   # from #82ED5E   4.63:1
+  - "#27823E"   # from #47EB70   4.62:1
+  - "#327E6B"   # from #5EEDC9   4.64:1
+  - "#2D7A94"   # from #47C2EB   4.65:1
+  - "#4F6DC7"   # from #5E82ED   4.63:1
+  - "#7B5ED1"   # from #8C6BED   4.60:1
+  - "#9D52B6"   # from #CC6BED   4.66:1
+  - "#C03A9F"   # from #EB47C2   4.62:1
+  - "#BC4B67"   # from #ED5E82   4.63:1
+
 # The Captions Box (2.4.1): black at 90% opacity, hugging each caption line,
 # overlaid on the video inside the work area (lower 20% of the frame, 2.4.3).
 caption_box:
@@ -87,25 +117,59 @@ display:
   intent_circle_pitch_hz: [80, 250]
   intent_circle_brightness_hz: [500, 3500]
   intent_circle_smoothing: 0.24
-  # The diagnostics/legacy box and product Stage both use an eight-word visual
-  # block. Transcript keeps complete semantic turns.
+  # The diagnostics/legacy box uses an eight-word visual block. Transcript keeps
+  # complete semantic turns.
   max_words: 8
   studio_paragraph_word_limit: 0  # 0 = unlimited; split only on speaker change
-  # Audience Stage is a rolling six-row stack. Each row accepts eight
-  # sequentially revealed words; completed rows stay fixed while only the
-  # newest row grows. At most two words *animate* together via the separate
-  # reveal scheduler below. Older text remains available in Transcript.
+  # FALLBACK ONLY since 2026-07-30. Audience Stage is a rolling stack whose depth
+  # is MEASURED in the browser (`useStackCapacity`): available stage height over a
+  # real row's height, because the stage is a flexible box and the caption size
+  # follows both it and the Caption scale slider. As a constant this was six, and
+  # measured at 1440x900 six rows filled 52% of the stage -- so the seventh row
+  # evicted the first while half the surface sat empty and the stack visibly
+  # scrolled for no reason. The same window now holds nine. This value is what the
+  # studio uses before it has measured anything, and the floor of the clamp.
+  # Completed rows stay fixed while only the newest row grows; older text stays in
+  # Transcript.
   studio_stage_paragraph_history: 6
-  studio_stack_words_per_block: 8
+  # THE MAXIMUM words in a Stage row, not the row width. Words-per-row and the
+  # caption type size are one decision -- rows do not wrap, so N words set a hard
+  # ceiling on the type -- and `planStageLayout` now makes it as one calculation
+  # from the measured stage. Holding N at six handed the caption size to the
+  # window's aspect ratio: measured, 1440x900 gave 47px type on an 86%-full stage
+  # while 862x998 gave 23.6px on a stage that was 40% EMPTY, because six words
+  # still had to cross a 538px stage. The narrow window now picks three words and
+  # 44px.
+  # Six is still the ceiling: at the shipped type size eight words landed exactly
+  # on the wrap boundary, so a verifier respelling that changed a word's width
+  # flipped the row between one and two visual lines and the stack below jumped.
+  studio_stack_words_per_block: 6
+  # The floor. Below three, a row stops reading as a phrase.
+  studio_stack_words_min: 3
+  # Rows the stack must be able to show before a shorter row (and therefore
+  # larger type) is preferred. This is the term that keeps a WIDE stage on six
+  # words: at 10 rows, 1440x900 keeps six and 862x998 drops to three. Lower it
+  # and wide stages start using three-word rows at the height ceiling, which
+  # wastes their width; raise it and narrow stages go back to small type.
+  studio_stack_min_rows: 10
   # Streaming recognizers often release several words in one decoder batch.
   # Paint them in spoken order instead of popping the whole batch at once. The
   # gap follows the words' acoustic spacing inside a batch, bounded so fast
   # speech stays legible and a pause does not create a second long delay.
-  # Deadlines stay anchored to the original batch schedule: waiting behind two
+  # Deadlines stay anchored to the original batch schedule: waiting behind the
   # active motions never restarts the full gap. A current word waits hidden for
   # a motion slot; it is never painted motionless and never animated after it
   # has already appeared.
-  max_simultaneous_reveals: 2
+  #
+  # THREE, raised from two on 2026-07-30 because the caption visibly lagged.
+  # This is a THROUGHPUT CEILING, not a tuning preference: N slots at the
+  # 320 ms smoothness floor can display at most N/0.32 words/s. Two slots gave
+  # 6.25 w/s against conversational English's measured ~6.2 w/s (160 ms median
+  # onset spacing), so the queue sat exactly on its limit and the presentation
+  # backlog grew to a measured 3.2 s single-pass / 7.6 s looped. Three slots
+  # give 9.4 w/s and drain it. Do NOT instead lower word_motion_min_duration_s:
+  # below 320 ms the motion itself stops reading as motion.
+  max_simultaneous_reveals: 3
   word_reveal_gap_s: 0.14
   word_reveal_gap_min_s: 0.08
   word_reveal_gap_max_s: 0.26
@@ -124,6 +188,14 @@ display:
   # pressure adds bounded headroom until the caption frontier is within 600 ms.
   word_motion_min_duration_s: 0.32
   word_motion_backlog_target_s: 0.60
+  # Above this much acoustic backlog a word is HISTORY, not live speech: it is
+  # revealed settled and un-paced instead of animating. Cold start is why this
+  # exists -- model loading takes ~7.6 s while the source keeps running, so the
+  # first browser to attach inherited a MEASURED 12.7 s / 28-word queue and
+  # spent ~7 s racing through it, arriving seconds after the sound. That is what
+  # read as lagging and choppy. The adaptive clock cannot fix it: it can shorten
+  # a motion but not make one free. Set to 0 to disable and animate everything.
+  word_motion_backlog_ceiling_s: 1.20
   word_motion_rate_headroom: 0.90
   word_motion_catchup_scale: 0.82
   # A speculative first phone ("H" in a sustained "Hello") must remain alive
@@ -283,6 +355,26 @@ motion:
     lift_min_gain: 0.28
     lift_max_gain: 1.40
     emphasis_deadband: 0.02
+    # RESOLUTION, not amplitude. Real speech clusters in a narrow band around
+    # the speaker's running median, but loudness->scale and pitch->weight/width
+    # were LINEAR across their whole domain, so that band used almost none of
+    # the visual range and its variation vanished under the constant 10% CWI
+    # sync pop. A measured 0.45->0.55 loudness swing reached the screen as ~3%
+    # of scale. This gamma steepens each axis around its own centre (median word
+    # for loudness, per-speaker baseline for pitch) with BOTH ENDPOINTS PINNED,
+    # so small changes become visible while the reachable extremes are
+    # unchanged — it cannot recreate the fabricated whisper/shout failure.
+    # Applies to INTONATION (2.3.3–2.3.6) only, never to the constant
+    # synchronization cue (2.2.3), whose amplitude is identical for every word.
+    # 1.0 disables. Lower = more sensitive; below ~0.45 ordinary speech starts
+    # to look busy.
+    voice_sensitivity_gamma: 0.62
+    # Amplitude is CONTINUOUS in the measured voice — there is no trigger
+    # threshold and no dead zone. This is the smallest excursion a genuinely
+    # flat word receives, not a gate: nothing is snapped to it, and a barely
+    # inflected word lands just above it. Raise it and ordinary speech moves
+    # more; lower it and only clearly shaped delivery reads.
+    delivery_expressiveness_floor: 0.34
     # WEBSITE SYNCHRONIZATION LAYER. `intonation.mov` changes a stressed word
     # uniformly; `synchronization.mov` hands a *continuous* motion boundary
     # through the word. Adjacent samples are blended into one ribbon: isolated
@@ -324,22 +416,26 @@ motion:
     # loudness/pitch variation in its transient size/weight/width axes.
     # This does not lower the semantic delivery-profile thresholds.
     delivery_axis_gain_floor: 0.50
+    # WEIGHT IS THE CHANNEL THAT WAS DOING THE LEAST, MEASURED (2026-07-30).
+    # Sampled over 92 words of the bundled sample, `--active-weight` deviated
+    # from Regular 400 by a median of 102 units and a MAXIMUM of 170 -- on the
+    # Roboto Flex wght axis 400->500 is Regular->Medium, which at caption size is
+    # very nearly invisible. Two things held it down: the rendered band was
+    # 180..700 (so pitch had to reach 80/250 Hz to spend it), and the shared
+    # `delivery_axis_gain_floor` halved what was left.
+    # `weight_range` is the transient band a word may travel through -- it must
+    # still LAND on exactly 400, which is what the keyframes enforce. 100..900 is
+    # the full usable axis of both caption faces (Roboto Flex goes to 1000; Noto
+    # Sans KR stops at 900), so this is the widest honest setting.
+    # `weight_gain` multiplies the weight channel ONLY. It does not touch the
+    # constant §2.2.3 synchronization cue, size, width, or lift.
+    weight_range: [100, 900]
+    weight_gain: 1.75
     # Slow flow may use more of the existing window but never exceed the global
     # 720 ms cap; the next fresh word remains hidden until a slot opens.
     delivery_flow_duration_ms: 90
     delivery_texture_glow_px: 6
     delivery_min_confidence: 0.38
-    # Presentation deadband for VOICE-SHAPED deviation only. The constant CWI
-    # synchronization cue (`sync_pop` / `sync_elevation_em`) remains readable
-    # on every active word; ordinary words simply avoid exaggerated prosody.
-    delivery_profile_gains:
-      steady: 0.30
-      gentle: 0.48
-      textured: 0.58
-      rising: 0.76
-      falling: 0.76
-      sustained: 0.70
-      forceful: 0.90
     neighbor_push: false      # past written captions never move again
     # Open-caption adaptation: a word cannot be visible before ASR supplies it,
     # so its first paint is its visual activation. Run the same fixed §2.2.3
@@ -495,6 +591,22 @@ live:
   # context without making the live endpoint wait longer. It prevents the
   # bundled sample's unstable "order" -> "artist" endpoint correction.
   verifier_tail_padding_s: 0.10
+  # `local` = fully offline (default). `openai` opts the DURABLE TEXT LANE ONLY
+  # into a cloud call at each endpoint; timing/prosody/diarization stay local
+  # because OpenAI returns no word timestamps. The local verifier above runs
+  # first and remains the fallback. Needs OPENAI_API_KEY + `pip install openai`.
+  # UNMEASURED against local Parakeet — benchmark before demoing.
+  verifier_backend: local
+  openai_verifier:
+    # Endpoint buffers are COMPLETE utterances, so the completed-audio model
+    # applies; `gpt-live-transcribe` trades quality for streaming latency this
+    # seam does not need.
+    model: gpt-transcribe
+    timeout_s: 2.0        # bounds the stall: transcribe() blocks the capture path
+    min_duration_s: 0.4   # skip the round trip on fragments/false endpoints
+    language: null        # null = session language
+    prompt: ""            # optional keyword/context hint
+    record_disagreements: true
   # Longer verifier phrases retain linguistic context. Stable streaming words
   # remain visible immediately; only the authoritative phrase lock waits.
   endpoint_silence_s: 1.2

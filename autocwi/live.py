@@ -128,7 +128,15 @@ def _delivery_profile(
     duration_s: float,
     cfg: dict,
 ) -> str:
-    """Name an audible delivery shape without inferring an inner emotion."""
+    """Name an audible delivery shape without inferring an inner emotion.
+
+    DIAGNOSTIC ONLY. This label selects which motion FAMILY a word uses, but it
+    must never gate how much of the word's measured voice reaches the screen --
+    that is continuous (see `deliveryExpressiveness` in
+    `web/src/lib/voice-sensitivity.ts`). Thresholds here are unavoidable because
+    a family is a discrete choice; amplitude is not, and must not inherit their
+    dead zone.
+    """
 
     profile = dict(cfg.get("profile", {}) or {})
     if confidence < float(profile.get("min_confidence", 0.22)):
@@ -4002,7 +4010,13 @@ def reconstruct_durable_words(events: Iterable[dict]) -> list[dict]:
 
 
 def load_endpoint_verifier(cfg: dict) -> EndpointVerifier:
-    """Load the configured offline phrase verifier with no network fallback."""
+    """Load the configured phrase verifier.
+
+    Defaults to the fully offline local model. `live.verifier_backend: openai`
+    wraps it in the opt-in cloud verifier, which keeps this local recognizer as
+    its mandatory fallback -- see `autocwi/cloud_verifier.py` for why the cloud
+    lane may only ever touch durable TEXT and never word timing.
+    """
 
     import sherpa_onnx
 
@@ -4050,10 +4064,36 @@ def load_endpoint_verifier(cfg: dict) -> EndpointVerifier:
     recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
         **recognizer_kwargs
     )
-    return EndpointVerifier(
+    verifier = EndpointVerifier(
         recognizer,
         tail_padding_s=live_cfg.get("verifier_tail_padding_s", 0.0),
     )
+
+    return apply_verifier_backend(verifier, cfg)
+
+
+def apply_verifier_backend(verifier: EndpointVerifier, cfg: dict):
+    """Wrap the offline verifier according to `live.verifier_backend`.
+
+    Split out from the loader so the backend decision is testable without the
+    sherpa model files the offline test suite deliberately does not carry.
+    """
+
+    live_cfg = cfg.get("live", {}) or {}
+    backend = str(live_cfg.get("verifier_backend", "local")).casefold()
+    if backend in ("", "local", "offline"):
+        return verifier
+    if backend != "openai":
+        raise SystemExit(
+            f"unknown live.verifier_backend: {backend!r} (expected 'local' or "
+            "'openai')"
+        )
+
+    from .cloud_verifier import CloudEndpointVerifier, privacy_notice
+
+    cloud = CloudEndpointVerifier(verifier, cfg)
+    print(privacy_notice(cloud.model))
+    return cloud
 
 
 # ---------------------------------------------------------------------------
@@ -4571,6 +4611,9 @@ def _studio_runtime_config(
     return {
         "palette": list(cfg.get("palette", []))
         + list(cfg.get("palette_support", [])),
+        # Same speakers, same hues, darkened for the studio's light stage.
+        "paletteLight": list(cfg.get("palette_light", []))
+        + list(cfg.get("palette_support_light", [])),
         "displayMode": display.get("mode", "fast"),
         "maxWords": display.get("max_words", 8),
         "paragraphWordLimit": display.get(
@@ -4580,8 +4623,10 @@ def _studio_runtime_config(
             "studio_stage_paragraph_history", 6
         ),
         "stageWordsPerBlock": display.get(
-            "studio_stack_words_per_block", 8
+            "studio_stack_words_per_block", 6
         ),
+        "stageWordsMin": display.get("studio_stack_words_min", 3),
+        "stageMinRows": display.get("studio_stack_min_rows", 10),
         "revealGapMs": round(
             float(display.get("word_reveal_gap_s", 0.14)) * 1000
         ),
@@ -4597,7 +4642,7 @@ def _studio_runtime_config(
         "catchupGapMs": round(
             float(display.get("word_reveal_catchup_gap_s", 0.06)) * 1000
         ),
-        "maxActiveMotions": display.get("max_simultaneous_reveals", 2),
+        "maxActiveMotions": display.get("max_simultaneous_reveals", 3),
         "wordMotionBaseMs": round(
             float(display.get("word_motion_duration_s", 0.52)) * 1000
         ),
@@ -4612,6 +4657,9 @@ def _studio_runtime_config(
         ),
         "wordMotionBacklogTargetMs": round(
             float(display.get("word_motion_backlog_target_s", 0.60)) * 1000
+        ),
+        "motionBacklogCeilingMs": round(
+            float(display.get("word_motion_backlog_ceiling_s", 1.20)) * 1000
         ),
         "wordMotionRateHeadroom": display.get(
             "word_motion_rate_headroom", 0.90
@@ -4644,6 +4692,16 @@ def _studio_runtime_config(
         "deliveryAxisGainFloor": live_sync.get(
             "delivery_axis_gain_floor", 0.50
         ),
+        "weightRange": [
+            float(v) for v in live_sync.get("weight_range", [100, 900])
+        ],
+        "weightGain": float(live_sync.get("weight_gain", 1.75)),
+        "voiceSensitivityGamma": live_sync.get(
+            "voice_sensitivity_gamma", 0.62
+        ),
+        "deliveryExpressivenessFloor": live_sync.get(
+            "delivery_expressiveness_floor", 0.34
+        ),
         "deliveryFlowDurationMs": live_sync.get(
             "delivery_flow_duration_ms", 90
         ),
@@ -4653,18 +4711,6 @@ def _studio_runtime_config(
         "deliveryMinConfidence": live_sync.get(
             "delivery_min_confidence", 0.38
         ),
-        "deliveryProfileGains": dict(live_sync.get(
-            "delivery_profile_gains",
-            {
-                "steady": 0.30,
-                "gentle": 0.48,
-                "textured": 0.58,
-                "rising": 0.76,
-                "falling": 0.76,
-                "sustained": 0.70,
-                "forceful": 0.90,
-            },
-        )),
         "languages": _live_language_options(cfg),
         "selectedLanguage": selected_language,
         "languageSelectionRequired": language_selection_required,

@@ -534,8 +534,9 @@ variable `wght` axis because the design-system Roboto Flex file has no Hangul
 outlines; a static system fallback did not express the pitch-driven weight
 motion continuously.
 The product Transcript treats a speaker/ASR utterance as one semantic paragraph.
-Audience Stage derives fixed eight-word rows from immutable semantic word order
-and retains six rows,
+Audience Stage derives fixed-width rows from immutable semantic word order,
+sizes both the row and the type from the measured stage, and retains as many
+rows as that stage holds,
 so already read words do not compete with an ever-growing wall of boxes. The
 current accurate hypothesis remains visible in the active block while the
 reveal scheduler limits simultaneous word motions to two; concurrency is not a

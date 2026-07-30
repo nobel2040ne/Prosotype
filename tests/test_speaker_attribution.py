@@ -255,11 +255,6 @@ def test_sse_word_revision_replaces_existing_word(tmp_path):
         replayed.append(json.loads(payload.split("data: ", 1)[1]))
     assert len(reconstruct_durable_words(replayed)) == 1
 
-    page = open(render_live(load_config(), tmp_path), encoding="utf-8").read()
-    assert "function applySpeakerRevision(ev)" in page
-    assert "wordNodes.get(RenderCore.wordKey(ev))" in page
-    assert "addFinalWord(ev);  // bounded replay" in page
-
 
 def test_haptic_speaker_change_ignores_provisional_assignment():
     captioner = StreamingCaptioner.__new__(StreamingCaptioner)

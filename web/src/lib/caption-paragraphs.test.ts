@@ -311,6 +311,25 @@ test("stack motion occurs for a new row and the rows it pushes upward", () => {
   ]);
 });
 
+test("a new bottom row enters even when it displaces nothing", () => {
+  // Top-anchored stack below the history cap: the retained rows keep their
+  // positions and only the new row moves.
+  assert.deepEqual(
+    planCaptionStackMotion(
+      [
+        {id: "row-0", top: 200},
+        {id: "row-1", top: 260},
+      ],
+      [
+        {id: "row-0", top: 200},
+        {id: "row-1", top: 260},
+        {id: "row-2", top: 320},
+      ],
+    ),
+    [{id: "row-2", kind: "enter", deltaY: 0}],
+  );
+});
+
 test("the first caption block receives one calm entry motion", () => {
   assert.deepEqual(
     planCaptionStackMotion([], [{id: "row-0", top: 560}]),

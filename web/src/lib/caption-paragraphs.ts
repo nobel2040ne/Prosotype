@@ -148,7 +148,8 @@ export function selectStableCaptionStack(
  *
  * Text, color, and speaker revisions leave the same row IDs in the same order
  * and therefore return no motion. This keeps late attribution from moving
- * captions while allowing a newly created row to push the stack upward.
+ * captions while letting a newly created row enter, and letting the rows it
+ * displaces glide once the history cap starts evicting from the top.
  */
 export function planCaptionStackMotion(
   previous: CaptionStackPosition[],
@@ -206,5 +207,10 @@ export function planCaptionStackMotion(
       motions.push({id, kind: "shift", deltaY});
     }
   }
-  return motions.some(({kind}) => kind === "shift") ? motions : [];
+  // A new bottom row may legitimately move nothing: the stack is top-anchored,
+  // so retained rows only glide once the history cap starts evicting from the
+  // top. Requiring an accompanying shift here silently dropped the entry
+  // transition for every block before that cap was reached. Replay, removal,
+  // and same-membership revisions are already rejected by the guards above.
+  return motions;
 }

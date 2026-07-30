@@ -14,22 +14,134 @@
   font-display: swap;
 }
 
+/* TWO DESIGN SYSTEMS, ONE SCREEN. The studio CHROME follows the Apple analysis
+   in `.claude/skills` -- Action Blue as the only accent, ink/parchment surfaces,
+   the 0/5/8/11/18/pill radius scale, a 300/400/600/700 weight ladder, and no
+   shadows or gradients on UI. The CAPTIONS follow the CWI Design System V1.0,
+   which outranks it: Roboto Flex / Noto Sans KR with live variable axes, the CI
+   speaker palette, and the 2.2.3 motion cue. Chrome recedes so the captions can
+   speak -- which is exactly what both systems ask for. Never let Apple tokens
+   reach `.caption-word` and never let CWI tokens style a button. */
 :root {
-  --bg: #090a0b;
-  --surface: #0d0f11;
-  --surface-raised: #121416;
-  --surface-soft: #17191c;
-  --line: #25282c;
-  --line-strong: #35393e;
-  --text: #f3f4f1;
-  --muted: #8b9097;
-  --muted-2: #5f646b;
-  --accent: #e6ff2e;
+  /* Dark: Apple's near-black tile ladder (#272729 / #2a2a2c / #252527) over
+     true black, with Sky Link Blue -- Action Blue measures 2.68:1 on a dark
+     tile, which is why the analysis reserves a separate on-dark accent. */
+  --bg: #000000;
+  --surface: #272729;
+  --surface-raised: #2a2a2c;
+  --surface-soft: #252527;
+  --line: #37373a;
+  --line-strong: #48484c;
+  --text: #ffffff;
+  --muted: #cccccc;
+  --muted-2: #98989d;
+  --accent: #2997ff;
+  --focus: #0071e3;
   --good: #66e6a3;
   --warn: #ffca68;
   --danger: #ff6f7e;
-  --font-ui: Inter, "SF Pro Display", "Segoe UI", sans-serif;
+  /* Every hairline, inset highlight and grid line is a tint of this triplet, so
+     one token inverts all of them for the light stage. Alphas stay per-rule. */
+  --tint: 255 255 255;
+  --rail-bg: #1d1d1f;
+  --workspace-bg: #000000;
+  /* Not pure black: the CWI captions box is black at 94%, so it needs a tile to
+     read against. */
+  --stage-bg: #272729;
+  /* CWI 2.4.1: the captions box is black at 90% opacity. */
+  --caption-box: rgba(0, 0, 0, .94);
+  --caption-box-shadow: 0 0 0 1px rgb(var(--tint) / .025);
+  /* A word with no speaker evidence yet: plain text, not a speaker colour. */
+  --caption-unknown: #f4f3ef;
+  /* Text printed ON a speaker colour (the roster avatar). */
+  --on-speaker: #000000;
+  /* system-ui first so macOS/iOS resolve the real SF Pro; Inter is the
+     documented open-source substitute everywhere else. */
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    Inter, "Segoe UI", sans-serif;
   --font-caption: "Roboto Flex Local", "Arial Variable", Arial, sans-serif;
+  /* Apple radius scale. Nothing in between these steps. */
+  --r-xs: 5px;
+  --r-sm: 8px;
+  /* `--r-md` is the analysis's RARE Pearl Button step and has no caller here on
+     purpose: mixing it into dense rail cards was the "mixed radii grammar" the
+     Don'ts name. Compact chrome is `--r-sm`, large surfaces are `--r-lg`. */
+  --r-md: 11px;
+  --r-lg: 18px;
+  --r-pill: 9999px;
+  /* Row-width budget coefficients: worst-case row = N*linear + spread*sqrt(N) em.
+     See `rowBudgetEm` -- the per-word cost RISES as rows shorten, so a single
+     per-word constant is wrong. Fitted to the measured English worst cases
+     (2.93em/word at six words, 3.61em at three) plus ~8%. Korean is separate: a
+     Hangul 어절 is close to full-width. */
+  --word-em-linear: 1.40;
+  --word-em-spread: 4.30;
+  /* The resolved budget for the current row width. `planStageLayout` writes this
+     and `--stack-words` together; these are only what renders before the first
+     measurement (six words: 6*1.40 + 4.30*sqrt(6)). */
+  --row-budget-em: 18.93;
+  --stack-words: 6;
+  /* Ceiling on the caption type size as a fraction of the STAGE width, because
+     Stage rows do not wrap and an oversized row is clipped, not wrapped. This is
+     the term that BINDS -- it is what "fill the stage" means.
+     `.caption-feed` spans 93.6% of the stage's padding box and spends
+     `--caption-gutter-em` of that on its clip gutters, so `N` words fit exactly
+     when `N * --per-word-em + --caption-gutter-em` ems cover it. Keep
+     `--caption-gutter-em` equal to the feed's own `padding-left + padding-right`;
+     `planStageLayout` measures the real padding, so a drift between them shows up
+     as a row-count/type-size mismatch in the CDP probe. */
+  --caption-gutter-em: 2.38;
+  /* `--caption-width-cap` is NOT declared here -- see `.studio-shell`. */
+}
+
+/* Light stage. A DOCUMENTED DEVIATION from CWI 2.4.1 (90% black captions box)
+   and 2.1.1/2.1.2 (the CI speaker palette), toggled in Presentation settings so
+   the compliant dark stage stays one click away. Measured, the CI palette is
+   unreadable here -- #E5E517 is 1.19:1 on this surface, #17E517 1.52:1 -- so the
+   speaker colours come from `palette_light` in config.yaml, which preserves each
+   hue and darkens its value to >=4.5:1. See CLAUDE.md. */
+:root[data-theme="light"] {
+  /* Apple parchment page / white canvas. The alternation IS the divider -- the
+     stage needs no border or shadow to read as a distinct surface. */
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-soft: #fafafc;
+  --line: #e0e0e0;
+  --line-strong: #d2d2d7;
+  --text: #1d1d1f;
+  --muted: #333333;
+  /* #7a7a7a is the analysis's fine-print/disabled tone and measures 3.94:1 on
+     parchment. Secondary LABELS have to stay legible in a captioning tool, so
+     they use Apple's #6e6e73 (4.66:1) instead. */
+  --muted-2: #6e6e73;
+  --accent: #0066cc;
+  --focus: #0071e3;
+  --good: #0d6d3e;
+  --warn: #8a5b00;
+  --danger: #b3202f;
+  --tint: 0 0 0;
+  --rail-bg: #ffffff;
+  --workspace-bg: #f5f5f7;
+  /* Type sits DIRECTLY on this, so it is the surface every light speaker colour
+     in `palette_light` is measured against. Keep the two in step. */
+  --stage-bg: #ffffff;
+  /* NO CAPTIONS BOX on the light stage -- typography only. See the block
+     comment on `.caption-surface`. */
+  --caption-box: transparent;
+  --caption-box-shadow: none;
+  --caption-unknown: #1d1d1f;
+  --on-speaker: #ffffff;
+}
+
+/* Registered so it computes to a real length that `planStageLayout` can read
+   back. An unregistered custom property is a raw token, so `getComputedStyle`
+   would hand JS the literal string "clamp(20px, 16cqh, 64px)" and the layout
+   planner would have to duplicate the constant to use it. */
+@property --caption-height-cap {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 40px;
 }
 
 * {
@@ -65,21 +177,50 @@ a {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
+/* The system-wide press micro-interaction. Applied once, here, rather than
+   per-component. */
+button:active {
+  transform: scale(.95);
+}
+
+button {
+  transition: transform 120ms cubic-bezier(.2, .72, .24, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button:active { transform: none; }
+}
+
+/* Two columns, not three. The nav rail held "Live" (a button for the view you
+   are already in), "Legacy" (a diagnostics link, still reachable at /legacy) and
+   "Setup" (the topbar's own settings button), and charged 72px of stage width
+   for it. */
 .studio-shell {
-  --topbar-height: 64px;
-  --nav-width: 72px;
-  --rail-width: 354px;
+  /* DECLARED HERE, NOT ON `:root`, AND THAT IS LOAD-BEARING. A custom property
+     resolves its own `var()` references at computed-value time ON THE ELEMENT
+     THAT DECLARES IT -- only the relative UNITS (`cqw`) stay unresolved until
+     the value is used in a real property. Declared on `:root` this baked in
+     `:root`'s `--stack-words: 6`, so React's per-stage override on this element
+     changed the row width and left the type size at the six-word value: measured,
+     three-word rows still rendered at 24.2px instead of 44px and the stage stayed
+     half empty. This element is the one React writes `--stack-words` onto, and
+     `[data-language="ko"]`'s `--per-word-em` lands on it too. */
+  --caption-width-cap: calc(
+    93.6cqw / (var(--row-budget-em) + var(--caption-gutter-em))
+  );
+  --topbar-height: 56px;
+  --rail-width: 336px;
   width: 100%;
   height: 100dvh;
   display: grid;
   grid-template:
-    "topbar topbar topbar" var(--topbar-height)
-    "nav workspace signals" minmax(0, 1fr)
-    / var(--nav-width) minmax(0, 1fr) var(--rail-width);
+    "topbar topbar" var(--topbar-height)
+    "workspace signals" minmax(0, 1fr)
+    / minmax(0, 1fr) var(--rail-width);
   background: var(--bg);
   isolation: isolate;
 }
@@ -94,14 +235,36 @@ input:focus-visible {
      of snapping between the static weights exposed by a system fallback. */
   --font-caption: "Noto Sans KR Variable Local", "Apple SD Gothic Neo",
     "Noto Sans KR", "Malgun Gothic", "Arial Unicode MS", sans-serif;
+  /* Re-measured 2026-07-30 on the bundled ko sample: the widest six-어절 row is
+     20.9em -> 3.49em per 어절, not the ~18.6em recorded back when the height term
+     was smaller than the cap and it never had to be right. Hangul syllable blocks
+     are close to full-width, so the budget stays a per-language measurement
+     rather than a constant: sliding a window over the ko sample's real 어절 order
+     gives worst-case rows of 12.73 / 16.50 / 18.50 / 21.53 em at N = 3..6, which
+     fits linear 2.01 / spread 3.87. Shipped with ~10% on top (min slack 6% at
+     N=4) -- more than English's, because the Korean sample is only 65 어절 and its
+     worst cases are correspondingly less settled. */
+  --word-em-linear: 2.20;
+  --word-em-spread: 4.35;
 }
 
 .studio-shell[data-contrast="high"] {
-  --line: #3b4046;
-  --line-strong: #596069;
-  --muted: #b4b8bd;
-  --surface: #060708;
-  --surface-raised: #0a0b0c;
+  --line: #545458;
+  --line-strong: #6e6e73;
+  --muted: #ffffff;
+  --muted-2: #cccccc;
+  --surface: #1d1d1f;
+  --surface-raised: #252527;
+}
+
+/* Same intent inverted: deeper rules, darker secondary text. */
+:root[data-theme="light"] .studio-shell[data-contrast="high"] {
+  --line: #c7c7cc;
+  --line-strong: #8e8e93;
+  --muted: #1d1d1f;
+  --muted-2: #48484a;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
 }
 
 .topbar {
@@ -113,7 +276,7 @@ input:focus-visible {
   min-width: 0;
   padding: 0 18px 0 16px;
   border-bottom: 1px solid var(--line);
-  background: rgba(9, 10, 11, 0.96);
+  background: color-mix(in srgb, var(--bg) 96%, transparent);
   backdrop-filter: blur(22px);
 }
 
@@ -124,57 +287,20 @@ input:focus-visible {
   min-width: 0;
 }
 
-.brand-mark {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 35px;
-  height: 35px;
-  overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: 11px;
-  background: #111315;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
-}
-
-.brand-mark i {
-  position: absolute;
-  font-size: 7px;
-  font-style: normal;
-  font-weight: 700;
-  letter-spacing: -.03em;
-  color: var(--text);
-}
-
-.brand-mark i:first-child {
-  transform: translate(-6px, -4px);
-  color: var(--accent);
-}
-
-.brand-mark i:nth-child(2) {
-  transform: translate(0, 4px);
-}
-
-.brand-mark i:last-child {
-  transform: translate(7px, -3px);
-  color: var(--muted);
-}
-
 .brand > div {
   display: grid;
   gap: 2px;
 }
 
 .brand strong {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
-  letter-spacing: -.015em;
+  letter-spacing: -.224px;
 }
 
 .brand span:last-child {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.2;
 }
 
@@ -185,8 +311,8 @@ input:focus-visible {
   gap: 2px;
   padding: 3px;
   border: 1px solid var(--line);
-  border-radius: 9px;
-  background: #0c0e0f;
+  border-radius: var(--r-sm);
+  background: var(--surface);
 }
 
 .view-switcher button {
@@ -194,10 +320,10 @@ input:focus-visible {
   height: 29px;
   padding: 0 14px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: color 140ms ease, background 140ms ease;
@@ -206,7 +332,6 @@ input:focus-visible {
 .view-switcher button[data-active="true"] {
   background: var(--surface-soft);
   color: var(--text);
-  box-shadow: 0 1px 0 rgba(255,255,255,.04);
 }
 
 .topbar-actions {
@@ -223,10 +348,10 @@ input:focus-visible {
   height: 29px;
   padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  color: #cdd0d3;
-  font-size: 9px;
-  font-weight: 650;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
   letter-spacing: .02em;
 }
 
@@ -244,9 +369,9 @@ input:focus-visible {
   height: 29px;
   padding: 0 11px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   color: var(--muted);
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .10em;
@@ -279,122 +404,24 @@ input:focus-visible {
   height: 32px;
   padding: 0;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition:
-    background 140ms ease,
-    color 140ms ease,
-    border-color 140ms ease;
 }
 
-.icon-button:hover {
-  border-color: var(--line-strong);
-  background: var(--surface-soft);
-  color: var(--text);
-}
-
-.nav-rail {
-  grid-area: nav;
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  min-height: 0;
-  padding: 14px 8px;
-  border-right: 1px solid var(--line);
-  background: #0b0c0d;
-}
-
-.nav-button {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  width: 54px;
-  height: 51px;
-  padding: 0;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--muted-2);
-  font-size: 7px;
-  font-weight: 650;
-  text-decoration: none;
-  cursor: pointer;
-  transition: color 140ms ease, background 140ms ease;
-}
-
-.nav-button:hover {
-  background: var(--surface-soft);
-  color: var(--text);
-}
-
-.nav-button.active {
-  background: color-mix(in srgb, var(--accent) 9%, var(--surface-soft));
-  color: var(--accent);
-}
-
-.nav-spacer {
-  flex: 1;
-}
-
+/* Nothing but the stage lives here now. The workspace header ("CAPTURE 01 ›
+   FAST", a title repeating the Stage tab, and word/speaker/signal counts the
+   rail already reports) and the transport bar together cost ~135px of stage
+   height for text that duplicated other text. */
 .workspace {
   grid-area: workspace;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  padding: 18px 20px 16px;
-  background: #0b0c0e;
-}
-
-.workspace-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 24px;
-  height: 58px;
-  padding: 0 2px 14px;
-}
-
-.workspace-kicker {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 6px;
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 650;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-
-.workspace h1 {
-  margin: 0;
-  font-size: 19px;
-  line-height: 1;
-  font-weight: 590;
-  letter-spacing: -.035em;
-}
-
-.workspace-meta {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.workspace-meta span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
+  padding: 14px 16px;
+  background: var(--workspace-bg);
 }
 
 .caption-stage {
@@ -403,92 +430,40 @@ input:focus-visible {
   min-height: 300px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 15px;
-  background: #0d0f12;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.025),
-    0 18px 45px rgba(0,0,0,.18);
+  border-radius: var(--r-lg);
+  background: var(--stage-bg);
+  /* The caption size is bounded by this box in BOTH axes -- see `.caption-feed`.
+     `cqw`/`cqh` are the only units that track it: the signal rail toggles, so no
+     `vw` follows the width, and the stage no longer spans the window, so no `vh`
+     follows the height either.
+     `size`, not `inline-size`: `cqh` needs both axes. Safe here because every
+     child is absolutely positioned, so nothing inside contributes to the stage's
+     own size in the first place -- its height comes from `flex: 1` above. */
+  container-type: size;
 }
 
-.stage-grid {
-  position: absolute;
-  inset: 0;
-  opacity: .31;
-  background-image:
-    linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
-  background-size: 64px 64px;
-  mask-image: linear-gradient(to bottom, black, transparent 78%);
-  pointer-events: none;
-}
+/* Removed 2026-07-30: the framing grid, the four corner brackets and the
+   AUDIENCE VIEW / VOICE-SHAPED MOTION label. The light stage already hid the
+   first two -- with no captions box they were the thing still penning the text
+   in -- and the label named the view the topbar switcher already names. The
+   stage is now the captions and nothing else, in both themes. */
 
-.stage-grid::before {
-  content: "";
-  position: absolute;
-  inset: 10% 7%;
-  border: 1px solid rgba(255,255,255,.035);
-  border-radius: 8px;
-}
-
-.stage-corner {
-  position: absolute;
-  z-index: 2;
-  width: 19px;
-  height: 19px;
-  opacity: .58;
-}
-
-.stage-corner::before,
-.stage-corner::after {
-  content: "";
-  position: absolute;
-  background: var(--line-strong);
-}
-
-.stage-corner::before {
-  width: 19px;
-  height: 1px;
-}
-
-.stage-corner::after {
-  width: 1px;
-  height: 19px;
-}
-
-.stage-corner.top-left { top: 15px; left: 15px; }
-.stage-corner.top-right { top: 15px; right: 15px; transform: rotate(90deg); }
-.stage-corner.bottom-left { bottom: 15px; left: 15px; transform: rotate(-90deg); }
-.stage-corner.bottom-right { right: 15px; bottom: 15px; transform: rotate(180deg); }
-
-.stage-label {
-  position: absolute;
-  z-index: 4;
-  top: 16px;
-  left: 45px;
-  right: 45px;
-  display: flex;
-  justify-content: space-between;
-  color: var(--muted-2);
-  font-size: 7px;
-  font-weight: 650;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-}
-
+/* Sits below the caption block: it is a non-speech cue, and the top of the
+   stage now belongs to the first caption row. */
 .sound-chip {
   position: absolute;
   z-index: 8;
-  top: 44px;
+  bottom: 26px;
   left: 50%;
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 7px 11px;
   border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: rgba(18,20,22,.88);
-  color: #d7d9da;
-  font-size: 10px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+  color: var(--text);
+  font-size: 12px;
   font-style: italic;
   transform: translateX(-50%);
   backdrop-filter: blur(12px);
@@ -496,11 +471,13 @@ input:focus-visible {
 
 .empty-stage {
   position: absolute;
+  z-index: 6;
   inset: 0;
   display: grid;
   place-content: center;
   justify-items: center;
   text-align: center;
+  pointer-events: none;
 }
 
 .empty-mark {
@@ -513,50 +490,121 @@ input:focus-visible {
   border-radius: 50%;
   background: var(--surface);
   color: var(--muted);
-  box-shadow: 0 0 0 9px rgba(255,255,255,.012);
 }
 
 .empty-stage p {
   margin: 0 0 5px;
-  color: #d7d9d7;
-  font-size: 13px;
-  font-weight: 580;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .empty-stage > span {
   color: var(--muted-2);
-  font-size: 10px;
+  font-size: 12px;
 }
 
+/* Top-anchored: the block starts below the stage label and fills downward, so
+   the newest caption sits at eye level instead of hugging the bottom edge. The
+   six-block cap in selectStableCaptionStack bounds its height; `top`/`bottom`
+   bound the box. */
+/* Top-anchored while there is room, then it scrolls.
+   `height: auto` + `max-height` means the box hugs its content and stays pinned
+   at `top`, so a short stack sits high. Once the content exceeds `max-height`
+   the box stops growing and `justify-content: flex-end` puts the negative free
+   space at the TOP, so the OLDEST caption is what leaves the screen.
+   A plain `top`/`bottom` box with `flex-start` clipped the other end and ate
+   the newest caption the moment the stage filled. */
 .caption-feed {
   position: absolute;
   z-index: 5;
-  left: 6%;
-  right: 5%;
-  bottom: 7%;
+  left: 3.2%;
+  right: 3.2%;
+  top: 4%;
+  bottom: auto;
+  max-height: 92%;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: flex-end;
-  gap: 7px;
-  max-height: 84%;
+  /* THREE OF THESE FOUR PADDINGS ARE CLIP GUTTERS, NOT SPACING. `overflow`
+     clips at the PADDING box, so a padding strip is room INSIDE the clip that
+     layout does not consume -- which is the only way to keep a transform from
+     being cut off without letting it change where the words sit.
+     - right: the trailing voice orb, positioned .55em past its row's right edge
+       and .82em wide, used to push through the clip and lose half its sphere.
+     - left: a word's first-paint motion scales it up to 1.38 about
+       `transform-origin: 50% 100%`, so the FIRST word of every row grows
+       leftward past the row origin -- measured, the left edge of a wide first
+       word crossed the box and Chrome clipped the glyph mid-motion. Half of a
+       long word's 38% growth is the budget.
+     - top: the same scale grows upward, and the word carries up to .25em of
+       transient lift on top of that, which is more than the 1.38 line box's
+       leading. Without this the TOP row's motion was clipped flat.
+     - bottom: the box hugs its content, so the newest row's bottom edge IS the
+       content edge -- and the Stage FLIP entry starts that row at
+       `translateY(0.58em)`. Measured, the entering row and the voice orb riding
+       on it were cut off for the whole 620 ms entry. This gutter is the one the
+       eviction path never uses: `justify-content: flex-end` sends overflow to
+       the TOP, so the bottom strip stays free.
+     Capping the row with `max-width` instead resolved its `%` against a
+     shrink-wrapped `.caption-surface` and dragged the orb onto the last word.
+     The right gutter is a SUM, not a guess: orb offset (.78em) + orb width
+     (.82em) + the last word's own transient overhang, which is the scale
+     channel's (1.38-1)/2 of its half-width plus half its ink growth. Keep
+     `--caption-gutter-em` equal to left + right. */
+  padding: .40em 1.78em .66em .60em;
+  /* No gap: consecutive blocks are one continuous read, spaced only by the
+     caption's own leading. A gap turned every speaker turn and utterance
+     boundary into a visible section break, which is segmentation the reader
+     did not ask for -- speaker identity is already carried by colour. */
+  gap: 0;
   overflow: hidden;
   font-family: var(--font-caption);
-  font-size: calc(clamp(18px, 2.65vh, 34px) * var(--caption-scale, 1));
+  /* THE WIDTH TERM IS THE ONE THAT BINDS, AND THAT IS THE POINT. Rows do not
+     wrap, so the widest a row of `--stack-words` words may be is what decides the
+     type size -- `--caption-width-cap` is that budget, expressed against the
+     stage's own width. Above it `nowrap` does not wrap an oversized row, it
+     CLIPS it. Because words-per-row is itself chosen from the stage size
+     (`planStageLayout`), this is a real answer on any stage shape, not just a
+     wide one: the narrow window that produced 23.6px captions with six words per
+     row gets 44px with three.
+     The HEIGHT term is the ceiling on a single row (`cqh`, so it follows the
+     stage box rather than the viewport -- the stage no longer spans the window).
+     It used to be `4.6vh`, and it BOUND: measured at 1440x900 it asked for
+     37.4px against a width budget of 44.8px, so the captions ran 20% smaller
+     than the stage could carry and left a quarter of the row width unused. */
+  --caption-height-cap: clamp(20px, 16cqh, 64px);
+  font-size: min(
+    calc(var(--caption-height-cap) * var(--caption-scale, 1)),
+    var(--caption-width-cap)
+  );
   font-variation-settings: "opsz" 14, "wght" 400, "wdth" 100;
+  /* Display sizes need slightly tighter tracking than the body default, or the
+     letters read as spaced-out and loose. */
+  letter-spacing: -.012em;
 }
 
 .caption-paragraph {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  max-width: 95%;
+  width: 100%;
+  max-width: 100%;
   opacity: .8;
   transition: opacity 220ms ease;
 }
 
 .caption-paragraph[data-current="true"] {
   opacity: 1;
+}
+
+/* Stage is the audience view, and CWI 2.1 identifies a character by COLOUR --
+   the text label is a studio affordance, not part of the caption. Above every
+   block it read as five rows of "SPEAKER TRANSITION" competing with the words.
+   Transcript (the operator view) keeps it, with its timestamp. */
+.caption-feed .caption-paragraph header {
+  display: none;
 }
 
 .caption-paragraph header {
@@ -567,8 +615,8 @@ input:focus-visible {
   padding: 0 7px;
   color: color-mix(in srgb, var(--speaker-color) 72%, var(--muted));
   font-family: var(--font-ui);
-  font-size: 7px;
-  font-weight: 680;
+  font-size: 10px;
+  font-weight: 700;
   letter-spacing: .08em;
   text-transform: uppercase;
 }
@@ -584,21 +632,25 @@ input:focus-visible {
   place-items: center;
   min-width: 13px;
   height: 10px;
-  border-radius: 3px;
+  border-radius: var(--r-xs);
   background: color-mix(in srgb, var(--speaker-color) 16%, transparent);
   color: var(--speaker-color);
-  font-size: 6px;
+  font-size: 10px;
 }
 
+/* CWI 2.4.1 specifies a captions box at 90% black, and the dark stage renders
+   it. The light stage deliberately has NO box: on a light surface the plate
+   added an edge and a shadow around every line without adding contrast, and
+   what carries the caption there is the typography. Both come from
+   `--caption-box`/`--caption-box-shadow`, so the toggle restores the compliant
+   box. */
 .caption-surface {
   display: flex;
   align-items: center;
   min-width: 0;
   max-width: 100%;
-  background: rgba(0, 0, 0, .94);
-  box-shadow:
-    0 0 0 1px rgba(255,255,255,.025),
-    0 6px 20px rgba(0,0,0,.24);
+  background: var(--caption-box);
+  box-shadow: var(--caption-box-shadow);
 }
 
 .caption-words {
@@ -613,16 +665,60 @@ input:focus-visible {
   white-space: normal;
 }
 
+/* With no box there is nothing to inset the text from, so the left edge of
+   every row lines up with the one above it. */
+:root[data-theme="light"] .caption-words {
+  padding: 0;
+}
+
+/* STAGE ROWS DO NOT WRAP. A Stage block is already a fixed-width row of
+   `display.studio_stack_words_per_block` (six) words, so a second visual line
+   inside one block is a wrap accident, not a caption decision -- and it moved
+   every row below it whenever a verifier respelling changed a word's width.
+   Six words leave ~25% slack at the shipped type size, so the row fits on one
+   line at every scale the slider offers. Transcript still wraps: it is readable
+   history, where viewport width legitimately chooses the visual lines. */
+.caption-feed .caption-words {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  /* The box must hug its content so the trailing orb, which is positioned off the
+     box's right edge, always lands after the last word. The inherited
+     `max-width: 100%` capped the box while the words overflowed it, which parked
+     the sphere on top of the final word (measured -19px of overlap at 390px).
+     `flex: 0 0 auto` is the SAME BUG BY ANOTHER ROUTE, and it survived that fix:
+     this box is a flex ITEM of `.caption-surface`, so it inherited
+     `flex-shrink: 1` and was squeezed to the surface width whenever the row was
+     wider, while its own children (`flex: 0 0 auto`) refused to shrink and simply
+     overflowed it. The orb then attached to the SHRUNKEN right edge -- measured
+     84px on top of the last word -- and every probe that measured this box
+     under-reported the true row width, which is how an over-wide row read as
+     fitting. */
+  flex: 0 0 auto;
+  max-width: none;
+}
+
 .caption-word {
   position: relative;
   display: inline-block;
   flex: 0 0 auto;
-  margin-right: .24em;
+  margin-right: .30em;
+  /* THE INK GROWS FROM THE CENTRE, NOT FROM THE LEFT. The wrapper is frozen at
+     its resting width so the animating axes cannot reflow the row, which means a
+     heavier or wider ink necessarily overflows it -- measured, "without" rendered
+     159.4px of ink in a 142.6px box. Left-anchored (the inline default) all
+     11.8% of that went RIGHT, into the next word and, on the last word of a row,
+     into the trailing orb and the clip gutter. Centring splits it, which also
+     matches `transform-origin: 50% 100%` on the scale channel, so both the
+     transform and the axis growth are now symmetric about the same point. */
+  text-align: center;
   vertical-align: baseline;
   color: var(--speaker-color);
   font-size: 1em;
   font-variation-settings: "opsz" 14, "wght" 400, "wdth" 100;
-  line-height: 1.14;
+  /* Leading, not a text box: at this size 1.22 read as cramped. A word's
+     transient lift is up to 0.25 em, so the extra room also keeps a moving
+     word clear of the line above it. */
+  line-height: 1.38;
   opacity: 1;
 }
 
@@ -631,13 +727,20 @@ input:focus-visible {
 }
 
 .caption-word[data-status="unknown"] {
-  color: #f4f3ef;
+  color: var(--caption-unknown);
 }
 
 .caption-word[data-status="provisional"] {
-  color: color-mix(in srgb, var(--speaker-color) 62%, #f4f3ef);
-  text-decoration: underline dotted rgba(255,255,255,.42) .045em;
+  color: color-mix(in srgb, var(--speaker-color) 62%, var(--caption-unknown));
+  text-decoration: underline dotted rgb(var(--tint) / .42) .045em;
   text-underline-offset: .12em;
+}
+
+/* A dotted rule under 40px type is a lot of ink for "this may still change".
+   Recede the colour instead, the way the reference does. */
+:root[data-theme="light"] .caption-word[data-status="provisional"] {
+  color: color-mix(in srgb, var(--speaker-color) 55%, var(--muted));
+  text-decoration: none;
 }
 
 .word-glyph {
@@ -778,25 +881,31 @@ input:focus-visible {
   bottom: .08em;
   width: .34em;
   height: .045em;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: linear-gradient(90deg, currentColor, transparent);
   opacity: .52;
   transform-origin: 0 50%;
 }
 
+/* Sized to be READ, not just noticed. At .52em it measured 20.9px across on a
+   37px caption -- the pitch bead inside it was under 4px and the periodicity
+   ring under 1px, so the three channels it carries were below the resolution a
+   viewer could resolve at stage distance. .82em roughly doubles its area and
+   takes the bead to ~7px; the resting opacity comes up with it, because a .34
+   circle on a white stage reads as a smudge rather than an instrument. */
 .line-voice-orb {
   --orb-color: var(--active-color);
   position: relative;
   display: inline-block;
   flex: 0 0 auto;
-  width: .52em;
-  height: .52em;
+  width: .82em;
+  height: .82em;
   margin: 0 .11em 0 -.02em;
-  border: .035em solid var(--orb-color);
+  border: .05em solid var(--orb-color);
   border-radius: 50%;
-  background: #050607;
+  background: var(--stage-bg);
   color: var(--orb-color);
-  opacity: .34;
+  opacity: .52;
   transform:
     scale(var(--orb-scale))
     scaleX(var(--delivery-stretch-x))
@@ -812,10 +921,19 @@ input:focus-visible {
 
 .caption-words > .line-voice-orb {
   /* Attach the live indicator outside layout. It must never push the second
-     word onto another line or change a completed row's geometry. */
+     word onto another line or change a completed row's geometry. `right` plus
+     the orb's own width has to stay inside `.caption-feed`'s right padding, or
+     the sphere is clipped at the stage edge again. */
   position: absolute;
-  right: -.50em;
-  bottom: .30em;
+  /* `right` positions the orb's RIGHT edge, so this value is (clearance + the
+     orb's own .82em width) -- at -.78em the orb's LEFT edge actually sat .04em
+     INSIDE the row and the last word ran straight over it. Clearance is measured,
+     not guessed: the last word's ink reaches -0.005em past the row edge at rest
+     (p99) but up to **0.842em** while its scale channel is mid-motion, because
+     the scale grows the ink by (scale-1)/2 of the word's own width. 1.66em clears
+     that worst case, so a moving final word never reaches the sphere. */
+  right: -1.66em;
+  bottom: .24em;
   margin: 0;
 }
 
@@ -829,7 +947,7 @@ input:focus-visible {
   z-index: 2;
   left: 50%;
   top: var(--pitch-y);
-  width: 19%;
+  width: 22%;
   aspect-ratio: 1;
   border-radius: 50%;
   background: currentColor;
@@ -840,7 +958,7 @@ input:focus-visible {
 .line-voice-orb i {
   position: absolute;
   inset: 29% 18%;
-  border: 1px solid currentColor;
+  border: .028em solid currentColor;
   border-radius: 50%;
   opacity: var(--texture-opacity);
   transform:
@@ -854,7 +972,7 @@ input:focus-visible {
 }
 
 .caption-stage.is-transcript {
-  background: #0b0d0f;
+  background: var(--surface);
 }
 
 .transcript-feed {
@@ -891,98 +1009,26 @@ input:focus-visible {
   white-space: normal;
 }
 
-.transport-bar {
-  flex: 0 0 61px;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 18px;
-  padding: 10px 3px 0;
-}
-
-.transport-primary {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-}
-
+/* The one live reading the removed transport bar carried, now a topbar chip. */
 .mic-state {
-  display: grid;
-  place-items: center;
-  width: 33px;
-  height: 33px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 29px;
+  padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
+  background: transparent;
   color: var(--muted);
-  background: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .mic-state[data-good="true"] {
   border-color: color-mix(in srgb, var(--good) 28%, var(--line));
   color: var(--good);
-}
-
-.transport-primary > div {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.transport-primary strong {
-  font-size: 10px;
-  font-weight: 620;
-}
-
-.transport-primary div span {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.transport-status {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-  color: var(--muted);
-  font-size: 8px;
-}
-
-.transport-status span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-.transport-status i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--good);
-}
-
-.text-button {
-  justify-self: end;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
-  color: #d7d9d7;
-  font-size: 9px;
-  font-weight: 580;
-  cursor: pointer;
-}
-
-.text-button:hover {
-  border-color: var(--line-strong);
-  background: var(--surface-soft);
 }
 
 .signal-rail {
@@ -992,7 +1038,7 @@ input:focus-visible {
   min-height: 0;
   overflow: auto;
   border-left: 1px solid var(--line);
-  background: #0b0c0d;
+  background: var(--rail-bg);
   transition: opacity 180ms ease;
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
@@ -1019,26 +1065,29 @@ input:focus-visible {
 
 .eyebrow {
   color: var(--muted-2);
-  font-size: 7px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: .14em;
   text-transform: uppercase;
 }
 
+/* The eyebrow above each of these is gone -- it repeated the heading. Without
+   it the h2 is the section title, so it carries the weight. */
 .rail-heading h2,
 .settings-panel h2 {
-  margin: 5px 0 0;
-  font-size: 13px;
-  font-weight: 610;
-  letter-spacing: -.02em;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.24;
+  letter-spacing: -.374px;
 }
 
 .health-badge {
   padding: 4px 7px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   color: var(--muted);
-  font-size: 7px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: .07em;
   text-transform: uppercase;
@@ -1063,7 +1112,7 @@ input:focus-visible {
   flex: 1;
   height: calc(8% + var(--bar-height) * 84%);
   min-width: 2px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--active-color) calc(42% + var(--bar-height) * 58%), var(--line-strong));
   transition: height 90ms linear, background 140ms ease;
 }
@@ -1084,14 +1133,14 @@ input:focus-visible {
 }
 
 .metric-row strong {
-  font-size: 12px;
-  font-weight: 560;
+  font-size: 14px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .metric-row span {
   color: var(--muted-2);
-  font-size: 7px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: .06em;
 }
@@ -1109,34 +1158,26 @@ input:focus-visible {
   width: 124px;
   aspect-ratio: 1;
   margin: 4px;
-  border: 1px solid color-mix(in srgb, var(--orb-color) 62%, #fff);
+  border: 1px solid color-mix(in srgb, var(--orb-color) 62%, rgb(var(--tint)));
   border-radius: 50%;
   color: var(--orb-color);
   transform: scale(var(--orb-scale));
+  /* The halo is a DATA channel (periodicity), which is why a shadow is allowed
+     here at all. The second, inset shadow was decorative depth on chrome -- and
+     it was hardcoded black, so on the light stage it dropped a grey smudge
+     inside the dial instead of inverting with `--tint`. The border and the
+     radar rings carry the dimension. */
   box-shadow:
-    0 0 var(--orb-halo) color-mix(in srgb, var(--orb-color) 44%, transparent),
-    inset 0 0 34px rgba(0,0,0,.38);
+    0 0 var(--orb-halo) color-mix(in srgb, var(--orb-color) 44%, transparent);
   transition:
     transform 140ms cubic-bezier(.2,.72,.24,1),
     box-shadow 140ms ease,
     color 180ms ease;
 }
 
-.compass-front {
-  position: absolute;
-  left: 50%;
-  top: -12px;
-  color: var(--muted-2);
-  font-size: 6px;
-  font-weight: 700;
-  letter-spacing: .14em;
-  text-transform: uppercase;
-  transform: translateX(-50%);
-}
-
 .compass-radar-ring {
   position: absolute;
-  border: 1px solid rgba(255,255,255,.085);
+  border: 1px solid rgb(var(--tint) / .085);
   border-radius: 50%;
 }
 
@@ -1147,7 +1188,7 @@ input:focus-visible {
   position: absolute;
   left: 50%;
   top: 50%;
-  background: rgba(255,255,255,.07);
+  background: rgb(var(--tint) / .07);
   transform: translate(-50%, -50%);
 }
 
@@ -1227,15 +1268,15 @@ input:focus-visible {
 
 .compass-readout span {
   color: var(--muted-2);
-  font-size: 7px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: .06em;
 }
 
 .compass-readout strong {
-  color: #d8dad8;
-  font-size: 9px;
-  font-weight: 570;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1.25;
 }
 
@@ -1245,9 +1286,9 @@ input:focus-visible {
   min-width: 23px;
   height: 23px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1264,7 +1305,7 @@ input:focus-visible {
   min-height: 49px;
   padding: 7px 9px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--surface);
 }
 
@@ -1273,11 +1314,11 @@ input:focus-visible {
   place-items: center;
   width: 32px;
   height: 32px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: var(--speaker-color);
-  color: #08090a;
-  font-size: 9px;
-  font-weight: 750;
+  color: var(--on-speaker);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .speaker-card > div {
@@ -1287,14 +1328,14 @@ input:focus-visible {
 }
 
 .speaker-card strong {
-  font-size: 10px;
-  font-weight: 590;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .speaker-card div span {
   overflow: hidden;
   color: var(--muted);
-  font-size: 7px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1302,7 +1343,7 @@ input:focus-visible {
 .speaker-card > i {
   width: 4px;
   height: 24px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--speaker-color);
 }
 
@@ -1312,7 +1353,7 @@ input:focus-visible {
   gap: 12px;
   padding: 10px;
   border: 1px dashed var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
 }
 
 .speaker-empty > span {
@@ -1321,40 +1362,15 @@ input:focus-visible {
   width: 32px;
   height: 32px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   color: var(--muted-2);
 }
 
 .speaker-empty p {
   margin: 0;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1.45;
-}
-
-.system-section {
-  display: grid;
-  gap: 10px;
-}
-
-.system-line {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 8px;
-}
-
-.system-line span {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.system-line strong {
-  color: #c8cac8;
-  font-weight: 560;
 }
 
 .settings-scrim {
@@ -1379,9 +1395,8 @@ input:focus-visible {
   width: min(365px, calc(100vw - 24px));
   padding: 22px;
   border: 1px solid var(--line-strong);
-  border-radius: 16px;
-  background: #101214;
-  box-shadow: -20px 0 70px rgba(0,0,0,.36);
+  border-radius: var(--r-lg);
+  background: var(--surface-raised);
   animation: panel-enter 180ms cubic-bezier(.2,.72,.24,1) both;
 }
 
@@ -1398,8 +1413,8 @@ input:focus-visible {
   gap: 10px;
   padding: 17px 0;
   border-top: 1px solid var(--line);
-  color: #dadcda;
-  font-size: 10px;
+  color: var(--text);
+  font-size: 12px;
 }
 
 .range-control > span,
@@ -1411,7 +1426,7 @@ input:focus-visible {
 
 .range-control output {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1431,8 +1446,8 @@ input:focus-visible {
   border: 0;
   border-top: 1px solid var(--line);
   background: transparent;
-  color: #dadcda;
-  font-size: 10px;
+  color: var(--text);
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -1441,7 +1456,7 @@ input:focus-visible {
   width: 31px;
   height: 18px;
   border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--surface);
   transition: background 140ms ease, border-color 140ms ease;
 }
@@ -1475,7 +1490,7 @@ input:focus-visible {
   margin-top: 25px;
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--good) 18%, var(--line));
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--good) 5%, var(--surface));
   color: var(--good);
 }
@@ -1483,7 +1498,7 @@ input:focus-visible {
 .settings-note p {
   margin: 0;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1753,44 +1768,25 @@ input:focus-visible {
   place-items: center;
   overflow: auto;
   padding: 32px 20px;
-  background:
-    radial-gradient(circle at 50% 34%, rgba(230,255,46,.075), transparent 33%),
-    rgba(6, 7, 8, .97);
-  backdrop-filter: blur(24px);
+  /* NO decorative gradients: the analysis is explicit that atmosphere comes
+     from photography, and this system has no photography. A flat parchment
+     canvas with a white card is the whole treatment. */
+  background: var(--bg);
 }
 
+/* The glow, the gradient card fill, and the accent hairline above it were three
+   pieces of decorative chrome. Surface colour is the separation now. */
 .language-gate-glow {
-  position: absolute;
-  top: 14%;
-  left: 50%;
-  width: min(62vw, 720px);
-  aspect-ratio: 1.8;
-  border: 1px solid rgba(230,255,46,.08);
-  border-radius: 50%;
-  opacity: .7;
-  filter: blur(34px);
-  transform: translateX(-50%);
-  pointer-events: none;
+  display: none;
 }
 
 .language-gate-card {
   position: relative;
   width: min(100%, 720px);
   overflow: hidden;
-  border: 1px solid #30343a;
-  border-radius: 20px;
-  background:
-    linear-gradient(145deg, rgba(24,27,29,.98), rgba(11,13,14,.99) 68%);
-  box-shadow: 0 28px 90px rgba(0,0,0,.52), inset 0 1px rgba(255,255,255,.045);
-}
-
-.language-gate-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  opacity: .75;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
 }
 
 .language-gate-brand {
@@ -1808,13 +1804,13 @@ input:focus-visible {
 
 .language-gate-brand strong {
   color: var(--text);
-  font-size: 12px;
+  font-size: 14px;
   letter-spacing: -.01em;
 }
 
 .language-gate-brand div span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .language-gate-copy {
@@ -1831,19 +1827,20 @@ input:focus-visible {
 .language-gate-copy h1 {
   max-width: 590px;
   margin: 13px 0 11px;
-  color: #f6f7f3;
-  font-size: clamp(28px, 4.3vw, 45px);
-  font-weight: 520;
-  line-height: 1.04;
-  letter-spacing: -.045em;
+  color: var(--text);
+  font-size: clamp(34px, 4.6vw, 56px);
+  font-weight: 600;
+  line-height: 1.07;
+  letter-spacing: -.005em;
 }
 
 .language-gate-copy p {
   max-width: 570px;
   margin: 0;
-  color: #9da2a8;
-  font-size: 12px;
-  line-height: 1.65;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.47;
+  letter-spacing: -.374px;
 }
 
 .language-options {
@@ -1856,82 +1853,81 @@ input:focus-visible {
 .language-option {
   position: relative;
   display: grid;
+  /* Two rows, not three. The code chip used to own a row of its own, where a
+     26px chip sat in a 239px column and left the rest of the row blank; it now
+     rides inline with the name. `min-height: 174px` then forced 40px of dead
+     space below content that only needed 134px, and `align-self: end` on the
+     description pushed that emptiness into the middle of the card. The card
+     sizes to its content, like {component.store-utility-card}. */
   grid-template:
-    "code arrow" auto
     "name arrow" auto
-    "description description" auto
+    "description arrow" auto
     / minmax(0, 1fr) auto;
-  gap: 8px 12px;
-  min-height: 174px;
-  padding: 19px 20px;
-  border: 1px solid #30343a;
-  border-radius: 14px;
-  background: rgba(255,255,255,.018);
+  gap: 6px 12px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
-.language-option:hover {
-  border-color: color-mix(in srgb, var(--accent) 55%, #30343a);
-  background: rgba(230,255,46,.045);
-  transform: translateY(-2px);
-}
-
+/* Default and pressed only. The press state is the global
+   `button:active { scale(.95) }`; the hover lift and the sliding arrow that used
+   to live here were a second transform grammar and a decorative elevation, both
+   of which the analysis rules out. */
 .language-option > svg {
   grid-area: arrow;
   align-self: center;
   color: var(--muted);
-  transition: color 160ms ease, transform 160ms ease;
-}
-
-.language-option:hover > svg {
-  color: var(--accent);
-  transform: translateX(2px);
 }
 
 .language-code {
-  grid-area: code;
   width: fit-content;
-  padding: 4px 6px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  padding: 5px 8px;
+  border-radius: var(--r-xs);
+  background: var(--surface-soft);
   color: var(--muted);
-  font: 700 8px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  letter-spacing: .13em;
+  font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .08em;
 }
 
 .language-name {
   grid-area: name;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
+/* "English" / "한국어" is a BUTTON LABEL, not a caption sample, so it takes the
+   Apple UI face -- the boundary rule is that CWI type never styles a button. It
+   was on `--font-caption` (Roboto Flex) while the Korean option was already
+   overridden away to a system Hangul stack, so the two options did not even
+   match each other. `--font-ui` resolves Hangul through the same fallback. */
 .language-name strong {
-  font-family: var(--font-caption);
-  font-size: 25px;
-  font-weight: 560;
-  letter-spacing: -.03em;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -.28px;
 }
 
 .language-option[lang="ko"] .language-name strong {
-  font-family: "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
-  letter-spacing: -.045em;
+  /* Hangul at display size wants a touch more than the Latin ramp value. */
+  letter-spacing: -.4px;
 }
 
 .language-name small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .language-description {
   grid-area: description;
-  align-self: end;
-  color: #7e848b;
-  font-size: 9px;
-  line-height: 1.45;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.43;
+  letter-spacing: -.224px;
 }
 
 .language-loading {
@@ -1941,15 +1937,15 @@ input:focus-visible {
   margin: 0 42px 42px;
   padding: 18px 19px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255,255,255,.018);
+  border-radius: var(--r-sm);
+  background: rgb(var(--tint) / .018);
 }
 
 .language-loader {
   width: 30px;
   height: 30px;
   flex: 0 0 auto;
-  border: 2px solid #32363b;
+  border: 2px solid var(--line-strong);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: language-spin .9s linear infinite;
@@ -1961,18 +1957,18 @@ input:focus-visible {
 }
 
 .language-loading strong {
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .language-loading div span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .language-error {
   margin: -22px 42px 28px;
   color: var(--danger);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .language-gate-footer {
@@ -1981,8 +1977,8 @@ input:focus-visible {
   gap: 16px;
   padding: 15px 24px;
   border-top: 1px solid var(--line);
-  color: #686e75;
-  font-size: 8px;
+  color: var(--muted-2);
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: .09em;
 }
@@ -2019,38 +2015,26 @@ input:focus-visible {
   .studio-shell {
     --rail-width: 310px;
   }
-  .workspace-meta span:nth-child(2) {
-    display: none;
-  }
   .compass-layout {
     grid-template-columns: 1fr;
     justify-items: center;
   }
   .compass-readout {
     width: 100%;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
 @media (max-width: 940px) {
   .studio-shell {
-    --nav-width: 0px;
     --rail-width: 292px;
-  }
-  .nav-rail {
-    display: none;
   }
   .topbar {
     grid-template-columns: 1fr auto;
   }
-  .view-switcher {
-    display: none;
-  }
+  .view-switcher,
   .session-clock,
-  .topbar-actions .icon-button:not(.rail-toggle):not(.settings-button) {
-    display: none;
-  }
-  .workspace-meta {
+  .mic-state {
     display: none;
   }
 }
@@ -2094,21 +2078,14 @@ input:focus-visible {
     pointer-events: auto;
   }
   .workspace {
-    padding: 14px 12px 10px;
-  }
-  .workspace-header {
-    height: 52px;
-  }
-  .transport-bar {
-    grid-template-columns: 1fr auto;
-  }
-  .transport-status {
-    display: none;
+    padding: 12px 10px;
   }
   .caption-feed {
-    left: 4%;
+    left: 3%;
     right: 3%;
-    font-size: calc(clamp(16px, 4.5vw, 24px) * var(--caption-scale, 1));
+    /* The desktop rule already handles a phone: `--caption-width-cap` follows the
+       stage container and `planStageLayout` shortens the row rather than shrink
+       the type. A separate `vw` height term here only fought it. */
   }
   .caption-paragraph {
     width: 100%;
@@ -2117,20 +2094,14 @@ input:focus-visible {
   .caption-surface {
     max-width: 100%;
   }
-  .caption-words {
+  /* Transcript only -- the Stage rule above stays `nowrap` here too. At 390px the
+     stage font drops to `clamp(16px, 4.5vw, 24px)`, so six words plus the orb
+     measure ~306px inside a ~342px feed and still fit on one line. */
+  .transcript-feed .caption-words {
     flex-wrap: wrap;
     max-width: 100%;
     row-gap: .12em;
     white-space: normal;
-  }
-  .transport-bar .text-button {
-    display: none;
-  }
-  .transport-bar {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .stage-label span:last-child {
-    display: none;
   }
   .rail-toggle {
     display: none;

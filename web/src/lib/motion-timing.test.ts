@@ -4,6 +4,7 @@ import {
   acousticBacklogMs,
   adaptiveMotionDurationMs,
   characterMotionStepMs,
+  exceedsMotionBacklogCeiling,
   isHistoricalInsertion,
   naturalMotionDurationMs,
   recentAcousticGapMs,
@@ -100,4 +101,18 @@ test("an unpainted reservation has a bounded deadlock watchdog", () => {
   assert.equal(unpaintedReservationExpired(1_000, 1_249, 250), false);
   assert.equal(unpaintedReservationExpired(1_000, 1_250, 250), true);
   assert.equal(unpaintedReservationExpired(undefined, 2_000, 250), false);
+});
+
+test("a word far behind the acoustic frontier is history, not live speech", () => {
+  // Cold start: model loading buffered a deep queue, measured 12.7 s of clip
+  // time on the bundled sample. Those words settle instead of racing through
+  // the motion queue seconds after they were spoken.
+  assert.equal(exceedsMotionBacklogCeiling(12688, 1200), true);
+  // Ordinary decoder burst -- still live, still animates.
+  assert.equal(exceedsMotionBacklogCeiling(600, 1200), false);
+  assert.equal(exceedsMotionBacklogCeiling(1200, 1200), false);
+  // A disabled ceiling must never suppress motion.
+  assert.equal(exceedsMotionBacklogCeiling(99999, 0), false);
+  // Malformed readings fall back to animating rather than silently settling.
+  assert.equal(exceedsMotionBacklogCeiling(Number.NaN, 1200), false);
 });

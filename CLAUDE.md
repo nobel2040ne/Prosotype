@@ -34,8 +34,14 @@ AUTOCWI_FAST=1 .venv/bin/python -m autocwi live --file x.wav --once  # headless 
 .venv/bin/python scripts/fetch_streaming_model.py --speaker-only # ONNX speaker + native Sortformer
 .venv/bin/python scripts/fetch_streaming_model.py --sortformer-only # rebuild/prepare Core ML path
 .venv/bin/python -m autocwi live --sample --diarizer embedding # fallback comparison
-.venv/bin/python scripts/benchmark_streaming.py --stress # WER + full-stack RTF matrix
-.venv/bin/python scripts/benchmark_streaming.py --quiet-sweep  # recall vs input level
+.venv/bin/python scripts/fetch_fleurs.py --lang ko --count 300  # one-time eval-set download
+.venv/bin/python scripts/benchmark.py --lang ko    # THE benchmark: text + word timing
+.venv/bin/python scripts/benchmark.py --lang ko --stress      # + noise/reverb/1.15x
+.venv/bin/python scripts/benchmark.py --lang en --quiet-sweep # InputGain guard
+.venv/bin/python scripts/benchmark.py --audio assets/sample.mp4 --lang en # score-free
+.venv/bin/python scripts/benchmark.py --lang ko \
+  --backends local,speechmatics,soniox   # provider A/B (UPLOADS audio; needs keys)
+.venv/bin/python scripts/studio_probe.py --samples 60  # studio motion metrics (CDP)
 .venv/bin/python -m autocwi live --list-devices   # pick a mic if the default is wrong
 ```
 
@@ -43,8 +49,18 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
 
 ## Hard rules
 
-- **Everything local and offline.** No cloud inference, no telemetry. Only
-  permitted network: one-time model-weight/font downloads.
+- **Local and offline by default; cloud is opt-in and must stay fallback-safe.**
+  No telemetry. Permitted network: one-time model/font/eval-set downloads, plus
+  `live.verifier_backend: openai` (default `local`). Any cloud lane may supply
+  **text only** and must keep the local path as a mandatory fallback that runs
+  first, so a dead uplink degrades instead of dropping an utterance.
+  **The binding constraint is per-word `start`/`end`,** not locality: prosody,
+  `delivery_cache`, the motion clock, reveal gaps, and Sortformer coverage all
+  key off word spans. Never synthesize onsets from a transcript that lacks them
+  — that fabricates what CWI §2.2.2 is most explicit about. OpenAI's streaming
+  models return no word timestamps, which is why they sit at
+  `EndpointVerifier` (audio in, bare text out) and nowhere else. **Unmeasured:**
+  no A/B has shown that beats local Parakeet.
 - **`web/` is the product frontend; Python remains the runtime.** Build it with
   `npm --prefix web run build`. `output: "export"` emits `web/out`, and
   `autocwi.live` serves it, `/runtime-config.json`, `/session`,
@@ -80,12 +96,17 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   `abortedUnpaintedMotions` diagnoses this fallback.
 - **Stage is a stable caption stack, not a second live-text panel.**
   `selectStableCaptionStack()` flattens revisable speaker and utterance
-  partitions into fixed eight-word rows and retains the newest six without
+  partitions into fixed-width rows of **as many words as the stage can carry**
+  (`planStageLayout`, bounded by `display.studio_stack_words_min`…
+  `studio_stack_words_per_block`) and retains **as many rows as the stage can
+  actually hold** without
   hiding recognized provisional words. Transcript keeps complete turns and
-  speaker/utterance partitions. The reveal scheduler may run at most two
-  simultaneous word motions; never implement that concurrency cap by filtering
-  words from Stage.
-  Row keys derive from the first semantic word ID, so adding word nine or
+  speaker/utterance partitions. The reveal scheduler may run at most
+  `display.max_simultaneous_reveals` simultaneous word motions (`display.max_simultaneous_reveals`, THREE since
+  2026-07-30 — it is a throughput ceiling, not a taste setting); never
+  implement that concurrency cap by filtering words from Stage.
+  Row keys derive from the first semantic word ID, so overflowing into a new
+  row or
   correcting attribution/segmentation cannot remount the first eight words or
   replay their motion. `unknown`/`Attribution pending` must obey the same fixed
   row capacity and never create one-word rows. Only the first appearance of a
@@ -95,8 +116,118 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   both. The initial block gets the same entry; an initial replay containing
   multiple rows does not. Text/color/speaker updates with identical row IDs must return
   no stack motion; removal or reappearance of a seen row must also return none.
+  **THE ROW WIDTH AND THE RETAINED ROW COUNT ARE BOTH MEASURED, NOT CONFIGURED
+  (2026-07-30).** `useStageLayout` reads the feed's real width, gutters, height
+  term and a rendered row's height, calls `planStageLayout`, and passes BOTH
+  answers to `selectStableCaptionStack` (see the words-per-row entry below);
+  `display.studio_stage_paragraph_history` is now only the pre-measurement
+  fallback and the floor of the clamp. As a constant it was SIX, and measured at
+  1440×900 six rows filled **52%** of the stage — so the seventh row evicted the
+  first while half the surface sat empty and the stack visibly scrolled for no
+  reason. The same window now holds **9 rows light / 8 dark** (dark adds .22em of
+  row padding, which is a whole row over a full stack — so the THEME is a
+  dependency of the hook; a ResizeObserver on the stage cannot see a theme swap).
+  Measured fill is now 0.87 light / 0.895 dark. Read the row height off a
+  rendered `.caption-paragraph`, not from a constant, and note that Chrome
+  reports a percentage `max-height` as the literal string `"83%"` rather than
+  resolving it — it has to be resolved against the stage box by hand.
+  **The stack is TOP-ANCHORED (2026-07-30):** `.caption-feed` starts near the top
+  of the stage and fills downward, so the newest caption sits at eye level rather
+  than hugging the bottom edge. A new bottom row therefore displaces nothing
+  until the capacity starts evicting from the top, and
+  `planCaptionStackMotion` must return that lone `enter` — requiring an
+  accompanying `shift` silently dropped the entry transition for every block
+  before the cap was reached.
+  **Anchoring is `top` + `max-height` + `justify-content: flex-end`, and all
+  three are load-bearing.** `height: auto` lets the box hug its content and stay
+  pinned at `top`, so a short stack sits high; once the content passes
+  `max-height` the box stops growing and `flex-end` puts the negative free space
+  at the TOP, so the OLDEST caption leaves the screen. A plain `top`/`bottom`
+  box with `flex-start` clips the other end — measured, the newest caption
+  vanished the moment the stage filled, which is the whole failure this
+  arrangement exists to prevent. Verify by forcing `--caption-width-cap` far past
+  its measured value (the Caption scale slider can no longer overflow the stage —
+  see below) and confirming `OLDEST_clipped`, never the newest.
   Keep the selector tests whenever changing
   reducer order, finality, or paragraph identity.
+- **THE STAGE IS THE ONLY THING IN THE WORKSPACE (2026-07-30, at the user's
+  request).** Removed: the nav rail (a "Live" button for the view you are already
+  in, a `/legacy` link, and a "Setup" button duplicating the topbar's settings
+  icon — 72px of stage width); the workspace header (`CAPTURE 01 › FAST`, a title
+  repeating the Stage tab, and word/speaker/signal counts the rail already
+  reports); the transport bar (three static `Local processing / No cloud / Stream
+  active` badges — its one live reading, input dBFS, is a topbar chip now); the
+  `AUDIENCE VIEW / VOICE-SHAPED MOTION` stage label, the stage grid and the four
+  corner brackets (the light stage already hid the last two); the rail's fourth
+  "system" section (a hardcoded string, the settings slider's own value, and the
+  compass readout again); and the compass's `Hardware: Mono input`, which said
+  what `Direction: Awaiting array` says one line above it. Measured at 1440×900
+  the stage went 974×596 → **1072×729** and the caption type 37.4 → **47.1px**.
+- **TWO DESIGN SYSTEMS, AND THE BOUNDARY IS THE WORD.** (2026-07-30.) The
+  studio CHROME follows the Apple design analysis skill; the CAPTIONS follow
+  CWI, which outranks it. The dividing line is literal: anything inside
+  `.caption-word` is CWI, everything else is Apple.
+  * **Apple, for chrome:** one accent and one only — Action Blue `#0066cc` on
+    light, Sky Link Blue `#2997ff` on dark (Action Blue measures **2.68:1** on a
+    dark tile, which is why the analysis reserves a separate on-dark accent).
+    Ink `#1d1d1f` on parchment `#f5f5f7` / canvas `#ffffff`; the near-black tile
+    ladder `#272729`/`#2a2a2c`/`#252527` on black. Radius only on the
+    0/5/8/11/18/pill scale (`--r-*`), and **`--r-md` (11px) has no caller on
+    purpose** — the analysis calls it the rare Pearl Button step, so dense rail
+    cards are `--r-sm` and large surfaces are `--r-lg`; five `--r-md` callers was
+    the "mixed radii grammar" the Don'ts name. Weight ladder 300/400/600/700 —
+    **500 is deliberately absent**, so no 560/590/650/680. No shadows on chrome
+    and no decorative gradients: surface-colour alternation is the divider. A
+    shadow on chrome is allowed only where it is a DATA channel (the voice orb /
+    compass halo carries periodicity); `.voice-compass` also had a hardcoded
+    `inset 0 0 34px rgba(0,0,0,.38)` that was pure decoration and, being black,
+    smudged the dial on the light stage instead of inverting with `--tint`.
+    Focus ring `#0071e3`; `button:active { transform: scale(.95) }` once,
+    globally, and it is the system's ONLY transform micro-interaction — no hover
+    lift, no sliding arrow. Default and active states only: the analysis
+    documents no hover, so the studio has none.
+    **Tracking is subtle.** The ramp's entire negative range is
+    `-.12px .. -.374px` (≈ -.005em .. -.011em), so `-.035em` on a 21px title and
+    `-.03em` on a 28px label were 3× tighter than anything in it and read as
+    cramped. Prefer the literal px ramp values over hand-rolled em.
+  * **CWI, for captions:** Roboto Flex / Noto Sans KR with live variable axes,
+    the CI speaker palette (or `palette_light`), and the §2.2.3 motion cue.
+    Never let an Apple token reach `.caption-word`, and never let a CWI token
+    style a button. Apple's "UI recedes so the product can speak" is why the
+    captions carry no box, no frame, and no per-block label — here the captions
+    ARE the product. The language gate's `English`/`한국어` is a BUTTON LABEL, not
+    a caption sample: it sat on `--font-caption` (Roboto Flex) while the Korean
+    option was separately overridden to a system Hangul stack, so the two options
+    did not even match each other. Both are `--font-ui` now.
+  * The analysis's 17px body is a marketing-page pace and does not transplant
+    onto a dense studio rail. What did transplant is its FLOOR: every label
+    below the 10px micro-legal rung was lifted onto 10/12/14, which is most of
+    what made the UI more readable.
+- **The light stage is a toggle-gated, MEASURED deviation from the PDF.**
+  (Added 2026-07-30 from a reference the user supplied.) `Settings → Light stage`
+  defaults ON and writes `data-theme` onto `document.documentElement`; every
+  studio surface is a token, and `--tint` inverts all 14 hairline/inset/grid
+  tints at once. **It has NO captions box at all** — `--caption-box` and
+  `--caption-box-shadow` are `transparent`/`none`, type sits directly on
+  `--stage-bg`, and the per-block speaker label is hidden on Stage, so what
+  carries the caption is typography. It therefore contradicts **§2.4.1**
+  (captions box black at 90%) outright, and consequently **§2.1.1/§2.1.2**,
+  because the CI palette is built for that black
+  box: measured against the light stage `#FAFAF8`, CI Yellow is
+  **1.19:1**, Green **1.52:1**, Blue **1.39:1** — invisible, not merely weak.
+  Speaker identity is then carried by COLOUR alone, which is what §2.1
+  specifies anyway; the rail's Active speakers panel still names them, and
+  Transcript keeps the per-paragraph label and timestamp.
+  `--stage-bg` is the surface `palette_light` is measured against — change one
+  and re-derive the other.
+  `palette_light`/`palette_support_light` in `config.yaml` keep each CI HUE and
+  darken only its VALUE to ≥4.5:1; CI Red `#E51717` already passed and is
+  unchanged. Do not hardcode either palette in CSS or TSX — both arrive through
+  `/runtime-config.json`, and `speakerColor()` returns `var(--caption-unknown)` /
+  `var(--accent)` rather than literals so the fallbacks follow the theme too.
+  Turning the toggle off must restore the exact CI values and the black box.
+  `autocwi cc` and the legacy diagnostics page are NOT themed: `cc` is the
+  design-system reference renderer and §2.4.1 applies to it literally.
 - **Language is a pre-capture model decision.** With no `--lang`, the Next
   studio POSTs exactly one `en`/`ko` choice before Python loads ASR or iterates
   the mic/file source. `LiveLanguageSession` then locks it for the capture.
@@ -157,6 +288,97 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     See `resolveCCLine`/`motionTick`/`settleWord`/`playWordMotion` in
     `livepage.py`. Verify with `scratchpad`-style sweep probes and
     `scripts/live_render_probe.py`.
+  * **MEASURED 2026-07-30 via `scripts/studio_probe.py` (sample.mp4, 60
+    samples).** Peak simultaneous motions **2** (the cap was 2 then; it is 3 now);
+    `motionsWithoutPaint` / `abortedUnpaintedMotions` /
+    `freshWordsWithoutMotion` all **0**; `motionStarts == motionPaintStarts`
+    (58), so every reserved slot painted. But **presentation backlog peaked at
+    3.4 s single-pass and 7.6 s looped, against a 600 ms target**, with
+    `minimumMotionDurationMs` bottomed out at the 320 ms floor — the adaptive
+    clock ran out of room and still could not keep up. Conversational English on
+    this clip has ~160 ms median onset spacing (vs 520 ms for FLEURS Korean),
+    i.e. ~6.2 words/s, which is exactly the two-slot queue's ceiling at the
+    320 ms floor. **Do not lower the 320 ms floor to fix this** — below it the
+    motion stops reading as motion.
+  * **RESOLVED 2026-07-30, and the max was the wrong statistic.**
+    `presentationBacklogMs` is `newest − current` in ACOUSTIC time, so its
+    peak is dominated by whatever was buffered when the browser attached. It
+    read an identical 3211 ms across runs with different settings, which is the
+    tell. Sampled as a SERIES it decays to 0 by ~7 s and stays there — there
+    was never steady-state lag. Two real causes, two fixes:
+    1. `max_simultaneous_reveals` **2 → 3**. N slots at the 320 ms floor cap
+       throughput at N/0.32 words/s, so two slots (6.25 w/s) sat exactly on
+       conversational English's 6.2 w/s. Three gives 9.4 w/s of headroom.
+    2. `display.word_motion_backlog_ceiling_s` (**1.20**) — the actual fix.
+       Cold start takes ~7.6 s while the source keeps running, so the first
+       browser to attach inherited a measured 12.7–18.2 s / 28–53-word queue
+       and spent ~7 s animating words that were spoken seconds ago. The
+       adaptive clock cannot help: it shortens a motion, it cannot make one
+       free. A word past the ceiling is HISTORY — it reveals settled and
+       un-paced (`gap: 0`), exactly like every other historical insertion.
+       Measured on an 18.2 s backlog: 57 words settled, catch-up finished in
+       **4.1 s**, the 3 words inside the ceiling animated normally, and every
+       integrity counter stayed 0. `staleSettledWords` in
+       `window.__cwiStudio.report()` makes the path observable.
+    **Sample the backlog as a time series, never as a max.** The max answers
+    "how deep was the buffer at attach", which is not the question.
+  * **`--dump-dom` cannot read the studio.** It serializes at the load event,
+    before hydration and before any SSE word, returning essentially the raw
+    `web/out/index.html` shell. `live_render_probe.py`'s document.title trick
+    works only for the legacy non-React page. Use `scripts/studio_probe.py`,
+    which drives CDP over a websocket and calls `window.__cwiStudio.report()` on
+    a live page. Screenshots still work (they wait for paint) but give pixels,
+    not metrics.
+  * **THERE IS NO TRIGGER THRESHOLD ON AMPLITUDE (2026-07-30).** How much
+    measured voice reaches the screen is CONTINUOUS in the acoustics —
+    `deliveryExpressiveness()` in `web/src/lib/voice-sensitivity.ts`. It replaced
+    a lookup keyed on the discrete `delivery_profile`, which was a threshold in
+    the amplitude path: measured on the bundled sample, 78% of words (46/59)
+    classified `steady` and every one kept exactly 30% of its excursion, so a
+    word just under the classifier's cut-off was attenuated as hard as a flat
+    one. Amplitude now takes 43 distinct values where it took 3, and those 46
+    formerly identical words span 0.34–0.82. `delivery_profile` still selects the
+    motion FAMILY (a discrete choice) but may never gate amplitude again.
+    Three calibration traps, all found by measuring, not by eye:
+    (a) only `contour` and `attack` have a definitional neutral. Centring
+    `force`/`flow`/`texture` at 0.5 scored ordinary words as near-maximal
+    (an unremarkable "You" has `flow` 0.028) and inflated every word to ~0.79;
+    `force` is measured against a configured typical level and flow/texture are
+    excluded from the magnitude. (b) `force == 0` means the estimator produced
+    nothing, not silence — untreated it scored 0.618, MORE than a typical word.
+    (c) Mean amplitude still rises 0.368 → 0.607, so verify in `autocwi tune`
+    before a booth run; the old deadband existed because motion on every word
+    reads as constant movement.
+  * **Axis response is expanded around the speaker's own centre, not linear.**
+    `expandAroundCenter`/`expandPitch` apply a gamma below 1 to the deviation
+    from the median (loudness) or per-speaker baseline (pitch) with BOTH
+    ENDPOINTS PINNED, so small changes separate without widening the reachable
+    extremes. A 0.45→0.55 loudness swing went from 3.19% to 7.65% of scale.
+    SCALE expands upward only: it may never fall below the constant 10% sync pop,
+    so `max(sync, …)` already flattens sub-median words and expanding downward
+    pushed more onto that same floor (2.26% → 0.02%). LIFT gets the full
+    symmetric expansion and is the only channel that can express
+    "quieter than median" at all (0.9 → 16.4 milli-em).
+  * **THE WEIGHT CHANNEL WAS THE ONE DOING THE LEAST (2026-07-30, at the user's
+    request).** Measured over 92 words of the bundled sample, `--active-weight`
+    deviated from Regular 400 by a median of **102** units and a maximum of 170 —
+    and 400→500 on Roboto Flex is Regular→Medium, very nearly invisible at caption
+    size. Two things held it down and BOTH had to move: the rendered band was
+    hardcoded 180..700, so pitch had to reach the 80/250 Hz domain edges to spend
+    it, and the shared `delivery_axis_gain_floor` then halved what was left.
+    `live_sync.weight_range` (**100..900** — the full usable axis of both caption
+    faces; Roboto Flex reaches 1000, Noto Sans KR stops at 900) and
+    `live_sync.weight_gain` (**1.75**, multiplying the weight channel ALONE) take
+    the median deviation to **276–300** with 90–230 distinct values. It multiplies
+    only the deviation from 400, so the word still lands on exactly Regular 400 at
+    rest, and it does not touch the constant §2.2.3 cue, size, width, or lift.
+    **A wider weight axis makes the ink physically wider, and the wrapper is
+    frozen**, so `.caption-word` needs `text-align: center`: left-anchored (the
+    inline default) all of the growth went RIGHT — measured, "without" rendered
+    159.4px of ink in a 142.6px box — into the next word and, on the last word of
+    a row, into the trailing orb and the clip gutter. Centring splits it and
+    matches `transform-origin: 50% 100%` on the scale channel, so both the
+    transform and the axis growth are symmetric about the same point.
   * **Prosody is transient, but it is not one generic pulse.** Loudness controls
     the temporary scale excursion; it also scales vertical lift continuously.
     Pitch controls temporary weight; the available pitch/harmonics proxy
@@ -243,7 +465,7 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     the piled-up glyph corruption seen in the 2026-07-24 sample.
   * **The caption invariant is visual-first-paint, once only.** Decoder batches
     reveal in acoustic order (140 ms base blended with 80–260 ms measured
-    onset gaps), with at most two active words. Deadlines stay anchored to the
+    onset gaps), bounded by the configured concurrency. Deadlines stay anchored to the
     planned sequence; never replace them with `performance.now() + gap`, which
     compounds latency after every late frame. Keep the 60 ms catch-up floor.
     If both motion slots are occupied, a fresh word stays hidden until a slot
@@ -284,11 +506,121 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     falling/forceful must never start already at peak displacement. Character
     handoff uses a still-subordinate 0.085 em / 3% ribbon;
     keep its upward-only, zero-slope path so it cannot become a second ziggle.
-    The word wrapper freezes its normal `offsetWidth` before paint.
+    **The word wrapper freezes its resting layout width before paint, IN em —
+    never in px.** (Fixed 2026-07-30.) The freeze exists so the animating
+    weight/width axes cannot reflow the row, but the stage font-size is
+    `min(clamp(20px, 16cqh, 64px) * --caption-scale, --caption-width-cap)`, so a
+    pixel box goes stale the
+    instant the window is resized or the Caption scale slider moves: the glyphs
+    re-render at the new size against the old box. Measured at scale 1.8, every
+    word spilled its own box — 15px on "a", 43px on "tab" — and the words
+    overlapped each other. Glyph advances are linear in font-size and the word
+    inherits the feed's size at 1em, so an em width tracks them exactly and never
+    needs re-measuring; max spill after the fix is 0.9px (sub-pixel slack). A
+    change of FACE, not size, would still need a re-measure, but the caption font
+    is locked before the first word arrives. Measure with
+    `getBoundingClientRect().width`, not `offsetWidth`, which rounds down and
+    clipped the last letter of every word the previous time this was done in
+    integers. A descendant's transform never affects the wrapper's own border box,
+    so reading it mid-motion is safe.
     All four channels return to identity/Regular 400/100% width, and only the
     wrapper animation calls `completeMotion()` to release the reveal queue.
-    The stage resting size is intentionally `clamp(18px, 2.65vh, 34px)` with
-    1.14 line-height so six retained caption blocks remain readable.
+    The stage resting size is `min(clamp(20px, 16cqh, 64px) * scale,
+    --caption-width-cap)` — measured **47.1px** at 1440×900 — with **1.38**
+    line-height and `-.012em` tracking (raised 2026-07-30 from
+    `clamp(18px, 2.65vh, 34px)`/1.14 when the light stage dropped the captions
+    box, the frame, and the per-block speaker label). Leading is not decoration
+    here: a word's transient lift reaches 0.25 em, so tight leading puts a
+    moving word into the line above it. **Type size and
+    `display.studio_stack_words_per_block` are one decision.** At this size
+    eight words sat exactly on the wrap boundary, so a verifier respelling that
+    changed a word's width flipped a row between one and two visual lines and
+    the whole stack below it jumped; six words leave ~25% slack and a
+    correction lands in place. Re-check a full six-row stack at 1440×900 and
+    390×844, with a long-word utterance, before changing either.
+    **STAGE ROWS DO NOT WRAP (2026-07-30, at the user's request).** A Stage block
+    is already a fixed-width row of six words, so a second visual line inside one
+    block was a wrap accident that moved every row beneath it whenever a verifier
+    respelling changed a word's width. `.caption-feed .caption-words` is
+    `nowrap` + `max-width: none`; Transcript still wraps, because there viewport
+    width legitimately chooses the visual lines.
+    Two consequences, both load-bearing:
+    1. **WORDS-PER-ROW AND TYPE SIZE ARE ONE CALCULATION (2026-07-30, second
+       pass).** `min(clamp(20px, 16cqh, 64px) * scale, var(--caption-width-cap))`
+       where `--caption-width-cap` is
+       `93.6cqw / (--row-budget-em + --caption-gutter-em)`, with `.caption-stage`
+       as a **`size`** container so both `cqw` and `cqh` track it. Without the cap
+       `nowrap` does not wrap an oversized row, it CLIPS it.
+       Holding words-per-row at SIX hands the caption size to the window's aspect
+       ratio, and that was the whole bug. Measured: 1440×900 → 47px type, 86% of
+       the stage filled; **862×998 → 23.6px type, 40% of the stage EMPTY**, because
+       six words still had to cross a 538px stage. `planStageLayout`
+       (`web/src/lib/stage-layout.ts`) now picks BOTH: the largest type whose stack
+       still shows `display.studio_stack_min_rows` (10) rows, over
+       `studio_stack_words_min`(3)…`studio_stack_words_per_block`(6). The narrow
+       window gets **3 words at 35.8px and 91% fill**; 1440 keeps 6 at 47px. Both
+       terms are load-bearing: maximise type alone and a wide stage collapses to
+       three-word rows at the height ceiling using 65% of its width; require rows
+       alone and you are back at 23.6px.
+       **`rowBudgetEm` is `N*linear + spread*√N`, NOT `N * perWord`.** The per-word
+       cost RISES as rows shorten — a short row cannot average a long word away.
+       Measured by sliding a window over the recognizer's real word order: English
+       worst-case rows are 10.82 / 12.92 / 15.26 / 17.60 em at N = 3…6, i.e.
+       **3.61em per word at three but 2.93em at six**, so a constant fitted to
+       six-word rows under-budgets a three-word row by 19% — which is exactly how
+       the first attempt shipped rows that overflowed. Fitting N=3 and N=6 gives
+       linear 1.31 / spread 3.98 and predicts the unfitted N=4/N=5 rows to within
+       2%. Shipped +8%: **en 1.40/4.30, ko 2.20/4.35** (ko measured 12.73/16.50/
+       18.50/21.53 em, +10% because that sample is only 65 어절). Do NOT budget by
+       IID-sampling the word-width distribution: real text does not put three long
+       words together at random, and sampling predicted 15.5em for a three-word row
+       against a measured 10.8em.
+       **Declare `--caption-width-cap` on `.studio-shell`, never on `:root`.** A
+       custom property resolves its own `var()`s at computed-value time ON THE
+       ELEMENT THAT DECLARES IT; only relative UNITS (`cqw`) stay unresolved until
+       use. On `:root` it baked in `:root`'s `--stack-words: 6`, so React's
+       per-stage override changed the row width and left the type at the six-word
+       value — measured, three-word rows still rendered at 24.2px.
+       Because the cap binds at 100%, **the Caption scale slider only reduces**
+       (0.6–1.0): 100% is the largest type that still fits a full row.
+    2. **THREE OF `.caption-feed`'s FOUR PADDINGS ARE CLIP GUTTERS, NOT SPACING.**
+       `overflow` clips at the PADDING box, so a padding strip is room *inside* the
+       clip that layout does not consume — the only way to keep a transform from
+       being cut off without moving where the words sit. Current value
+       `.40em 1.50em .66em .60em`:
+       * **right** — clears the trailing orb, whose `right: -1.66em` positions its
+         RIGHT edge, so that number is (clearance + the orb's own .82em width).
+         Clearance is MEASURED: the last word's ink reaches −0.005em past the row
+         edge at rest (p99) but **0.842em** while its scale channel is mid-motion,
+         because scale grows the ink by (scale−1)/2 of the word's own width. At
+         −.78em the orb's LEFT edge sat .04em INSIDE the row and the moving word
+         ran straight over it.
+       * **`.caption-feed .caption-words` must also be `flex: 0 0 auto`.** It is a
+         flex ITEM of `.caption-surface`, so it inherited `flex-shrink: 1` and got
+         squeezed to the surface width whenever the row was wider, while its own
+         children (`flex: 0 0 auto`) refused to shrink and simply overflowed it.
+         The orb then attached to the SHRUNKEN right edge — measured 84px on top of
+         the last word — and every probe that measured this box under-reported the
+         true row width, so an over-wide row read as fitting. Same failure as the
+         earlier `max-width: none` fix (measured −19px overlap at 390px), arriving
+         by a second route: the box has to hug its content for the orb to trail it.
+       * **left** — a first-paint motion scales a word to 1.38 about
+         `transform-origin: 50% 100%`, so the FIRST word of every row grows
+         LEFTWARD past the row origin and Chrome clipped it mid-motion. This was
+         the reported "when the word gets large it overflows on the left side";
+         `padding-left` was 0.
+       * **bottom** — the box hugs its content, so the newest row's bottom edge IS
+         the content edge, and the Stage FLIP entry starts that row at
+         `translateY(0.58em)`. Measured, the entering row and its orb were cut off
+         for the whole 620 ms entry. Safe to spend: `flex-end` sends eviction
+         overflow to the TOP, so the bottom strip is never used by it.
+       * **top** — the same scale grows upward, plus up to .25em of transient lift,
+         which exceeds the 1.38 line box's leading.
+    Verify all of this with the CDP probe, not by eye: sweep theme × 1440×900 /
+    390×844 × scale, and assert wrapped rows 0, no glyph past ANY edge of the clip
+    box while motions are active, and the orb neither clipped nor overlapping the
+    last word. Drive the theme through the real settings toggle, not by stamping
+    `data-theme` on the DOM — the latter bypasses `useStackCapacity`.
   * **Diarization must consume speech, not synthetic verifier slots.** A
     verifier-confirmed post-punctuation suffix whose claimed slots are quiet
     while stronger speech follows is moved onto the first substantial activity
@@ -310,12 +642,22 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   those with RMS. The line-edge `.intent-circle` (legacy) /
   `.line-voice-orb` (Next) sits immediately after the active caption and maps
   radius=volume, bead height=F0, oval width=brightness,
-  opacity/halo=periodicity. Rolling delivery force/attack/contour/flow/texture
+  opacity/halo=periodicity. **It has to be big enough to READ those three
+  channels (2026-07-30).** At `.52em` it measured 20.9px across on a 37px
+  caption, which put the F0 bead under 4px and the periodicity ring under 1px —
+  the instrument was present and unresolvable, which is what "the small sphere
+  isn't readable" meant. It is `.82em` now (~28–42px, bead 22%), and its resting
+  opacity went .34 → .52 because a .34 circle on the light stage reads as a
+  smudge rather than a readout. Rolling delivery force/attack/contour/flow/texture
   also tilt/stretch the line orb and shape the compass's inner resonance;
   `delivery_profile` is a descriptive acoustic readout, not an emotion
   classifier. The side-grid `.voice-compass` mirrors them at a
   larger scale and reserves direction for `direction_deg`/`azimuth_deg`.
-  Current mono input must say `awaiting array`; never fabricate direction.
+  Current mono input must say `awaiting array`; never fabricate direction. The
+  compass carries **no `front` label** (removed 2026-07-30): with direction
+  reserved there is no bearing to orient, so the word was labelling an axis the
+  instrument does not yet report. The rail's `DIRECTION / Awaiting array` readout
+  is what states that.
   Keep these signals outside glyphs; completed captions must never shake
   because a later audio block arrived. Do not infer or label emotion.
 - **Korean caption motion requires the local variable font.** Roboto Flex has
@@ -375,7 +717,7 @@ a deterministic UI-only two-speaker/voice-signal preview and
 motion engine. Review both 1440×900 and a narrow 390×844 viewport; mobile may
 wrap at word boundaries, and desktop paragraphs must wrap too. One ASR
 utterance/speaker turn is one semantic paragraph; viewport width—not an
-eight-word constant—chooses its visual lines.
+words-per-row constant—chooses its visual lines.
 
 ## Gotchas
 
@@ -530,10 +872,42 @@ eight-word constant—chooses its visual lines.
   text, gated by `motion.syllable_fill` to drawn-out words (~7% of words).
   Never make it a typewriter reveal — progressive appearance destroys the
   read-ahead in 2.2.1.
-- Recognizer choice is measured, not assumed: the 2026-06-11 Nemotron 3.5 was
-  A/B'd and scored 3.25% vs 2.27% matrix WER on English (worse), so English
-  live stays on the 2026-04-25 English model. A/B with
-  `benchmark_streaming.py --streaming-model` before swapping any checkpoint.
+- **THERE IS EXACTLY ONE BENCHMARK: `scripts/benchmark.py` on FLEURS.** Do not
+  add a second. FLEURS (Conneau et al., 102 languages, CC BY 4.0) is the
+  standard multilingual ASR set and the one published Korean/English numbers are
+  measured against, so a score is comparable to the literature. Fetch it once
+  with `scripts/fetch_fleurs.py`; `--stress`/`--quiet-sweep` are *conditions on
+  that set*, not separate benchmarks. Removed 2026-07-30: `benchmark_streaming.py`
+  and `benchmark_asr.py`, which overlapped and scored the sherpa model's own
+  3-clip demo audio (circular; one edit moved it 1.30 points).
+  **Never quote `0/77 clean` — that number came from the vendor's demo clips.**
+  Recognizer choice is still measured, not assumed: the 2026-06-11 Nemotron 3.5
+  A/B'd worse on English (3.25% vs 2.27%), so English stays on the 2026-04-25
+  model. Re-run that A/B on FLEURS before swapping any checkpoint.
+- **MEASURED 2026-07-30: Korean is ~12.5% CER, not ~0%.** 44/351 chars on 8
+  FLEURS ko_kr clips; the ~0% came from one easy bundled clip. Much of it is
+  **number formatting** (it writes `2011년` as `이천십일년`) — a convention, not an
+  error, which will rig a provider A/B toward whichever backend matches FLEURS'
+  style. **Write a shared text normalizer before comparing providers.**
+- The benchmark scores **timing as well as text** — a backend with better words
+  and worse spans is a downgrade here. It reports onset-gap distributions
+  (FLEURS ko: median 520 ms, p10 320 / p90 920; conversational English
+  sample.mp4: median 160 ms) and pairwise onset agreement. FLEURS carries no
+  word alignment, so these are distributions, not accuracy.
+- **A language flag alone does not switch languages.** Setting `live.lang`
+  loaded the ENGLISH models and transcribed Korean as "Terrika" at 100% CER.
+  `_configure_live_language()` is what swaps `streaming_model_dir` and disables
+  the `draft`/`verifier` English sidecars.
+- **`assets/sample.mp4` has NO reference transcript**, so it cannot be scored —
+  only compared across backends (`benchmark.py --audio`). Do not derive a
+  reference from a model's own output; that is the circularity the bundled sets
+  already suffered from. It is still the most booth-like audio in the repo
+  (34.5 s, conversational, two speakers, 59 durable words, S1/S2).
+- **Collapse word revisions by `word_id` when consuming SSE events.** A word is
+  re-emitted under the same id when endpoint text or later speaker evidence
+  revises it. Counting every `type: "word"` event duplicated whole phrases on
+  sample.mp4 the moment diarization was enabled (59 → 64 words, "You know where
+  1640 River?" twice). See `collapse_revisions()` in `scripts/asr_backends.py`.
 - **`autocwi cc` is the motion REFERENCE, live mode is the compromise.** With
   the text known in advance the full CWI system is exact: real read-ahead (a
   line legible in white before its first word), the colour turn sweeping
@@ -791,6 +1165,28 @@ eight-word constant—chooses its visual lines.
   word. `ccprosody.fit_spec_prosody` therefore solves each word's offset and
   re-centres, exactly and without iterating; an earlier iterate-the-median
   version oscillated forever.
+- **THE DERIVATION IS REPRODUCIBLE — verified 2026-07-30.** Re-deriving
+  `synchronization` reproduced the committed
+  `assets/reference_specs/synchronization.json` exactly: same 18 words, identical
+  text, **0.0 ms** start/end delta, 0.0000 loudness delta, 10 distinct loudness
+  values both. Only `pitch_hz` moved, by ≤0.58 Hz, from passing fps 57.126
+  instead of 57.13. The committed fixtures are current and the pipeline is
+  deterministic, so a future mismatch means a real change, not noise. The
+  incantation (473 frames, 8.28 s):
+  `ffmpeg -i docs/reference/synchronization.mov -vf "crop=3456:210:0:1075"
+  -vsync 0 /tmp/sync/n_%04d.png`, then `derive_reference_spec.py --frames
+  "/tmp/sync/n_*.png" --fps 57.126 --transcript
+  docs/reference/synchronization.txt --rotate 3`. Residuals were 6–29 ms and the
+  documented sanity check holds: synchronization demonstrates TIMING, so its
+  emphasis is essentially uniform (0.94–1.06) apart from the animated
+  `Synchronization` heading at 1.18 and the held `is` at 0.87.
+- **The reference-replay regression test already exists** —
+  `test_derived_reference_specs_replay_the_recordings` in `tests/test_live.py`,
+  NOT `test_reference.py` (which only covers Python↔JS forward-map parity). It
+  loads the four checked-in specs and never decodes a video. Do not add a second
+  one; it already asserts caption-line reconstruction, monotone non-degenerate
+  timings, ≥3 distinct loudness values, and ≥70% of words carrying equal-length
+  measured motion arrays.
 - **Deriving a reference spec: READ the transcript off the frames, never guess
   it.** `scripts/derive_reference_spec.py --list-groups sheet.png` renders one
   frame per caption instance. Guessing cost two rounds: the sync recording also
@@ -1052,7 +1448,8 @@ eight-word constant—chooses its visual lines.
   nothing (fires with the endpoint) and commits truncated spellings — a lone
   word reaches the screen through fast mode's white tail instead.
 - Live presentation is intentionally stacked: left-aligned text-hugging boxes
-  grow upward, but product Stage is always bounded to four fixed eight-word
+  fill downward from the top of the stage, and product Stage is always bounded
+  to fixed-width
   rows. Older rows remain in Transcript; do not let them accumulate behind
   the active caption. The line-edge voice circle is on: volume changes its outer radius,
   F0 moves the bead vertically, and periodicity/brightness shape its restrained
@@ -1089,7 +1486,7 @@ eight-word constant—chooses its visual lines.
   verification, and speaker correction are colour/text-only and can never
   start or restart geometry. A decoder batch is revealed in timestamp order,
   using a 140 ms base gap blended with bounded 80–260 ms acoustic onset gaps,
-  with at most two words moving. Preserve the planned reveal deadline and its
+  bounded by the configured concurrency. Preserve the planned reveal deadline and its
   60 ms catch-up floor; using `now + gap` at each start accumulates latency.
   A current word waits hidden for a free slot instead of skipping its motion.
   Each motion lasts 520–720 ms and returns

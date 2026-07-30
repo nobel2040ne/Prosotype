@@ -22,6 +22,7 @@ import {
   acousticTimeMs,
   acousticBacklogMs,
   adaptiveMotionDurationMs,
+  exceedsMotionBacklogCeiling,
   isHistoricalInsertion,
   naturalMotionDurationMs,
   recentAcousticGapMs,
@@ -56,11 +57,17 @@ export interface LanguageSession {
 
 export interface RuntimeConfig {
   palette: string[];
+  /** Speaker colors for the light stage: same hues, darkened to >=4.5:1. */
+  paletteLight: string[];
   displayMode: string;
   maxWords: number;
   paragraphWordLimit: number;
   stageParagraphHistory: number;
   stageWordsPerBlock: number;
+  /** Floor on words per Stage row; below this a row stops reading as a phrase. */
+  stageWordsMin: number;
+  /** Rows the stack must fit before a shorter row (larger type) is preferred. */
+  stageMinRows: number;
   revealGapMs: number;
   revealGapMinMs: number;
   revealGapMaxMs: number;
@@ -72,6 +79,8 @@ export interface RuntimeConfig {
   wordMotionSpanStretch: number;
   wordMotionMinMs: number;
   wordMotionBacklogTargetMs: number;
+  /** Above this acoustic backlog a word settles instead of animating. */
+  motionBacklogCeilingMs: number;
   wordMotionRateHeadroom: number;
   wordMotionCatchupScale: number;
   syncPop: number;
@@ -87,8 +96,15 @@ export interface RuntimeConfig {
   deliveryTextureGlowPx: number;
   deliveryIntonationLiftGain: number;
   deliveryAxisGainFloor: number;
+  /** Transient wght band a word may travel through before landing on 400. */
+  weightRange: [number, number];
+  /** Multiplier on the weight channel alone, on top of the shared axis gain. */
+  weightGain: number;
+  /** <1 steepens voice-axis response near the speaker's median; 1 disables. */
+  voiceSensitivityGamma: number;
+  /** Lowest continuous expressiveness a flat word gets. Not a threshold. */
+  deliveryExpressivenessFloor: number;
   deliveryMinConfidence: number;
-  deliveryProfileGains: Record<string, number>;
   languages: LiveLanguageOption[];
   selectedLanguage: string | null;
   languageSelectionRequired: boolean;
@@ -96,22 +112,26 @@ export interface RuntimeConfig {
 
 export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   palette: ["#e6ff2e", "#56e39f", "#55d7ff", "#c387ff", "#ff667d", "#ffb84d"],
+  paletteLight: ["#6d7816", "#31805a", "#307b91", "#895fb4", "#bd4c5d", "#936a2c"],
   displayMode: "fast",
   maxWords: 8,
   paragraphWordLimit: 0,
   stageParagraphHistory: 6,
-  stageWordsPerBlock: 8,
+  stageWordsPerBlock: 6,
+  stageWordsMin: 3,
+  stageMinRows: 10,
   revealGapMs: 140,
   revealGapMinMs: 80,
   revealGapMaxMs: 260,
   revealTimingStrength: 0.75,
   catchupGapMs: 60,
-  maxActiveMotions: 2,
+  maxActiveMotions: 3,
   wordMotionBaseMs: 520,
   wordMotionMaxMs: 720,
   wordMotionSpanStretch: 0.42,
   wordMotionMinMs: 320,
   wordMotionBacklogTargetMs: 600,
+  motionBacklogCeilingMs: 1200,
   wordMotionRateHeadroom: 0.90,
   wordMotionCatchupScale: 0.82,
   syncPop: 0.10,
@@ -127,16 +147,11 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   deliveryTextureGlowPx: 6,
   deliveryIntonationLiftGain: 0.35,
   deliveryAxisGainFloor: 0.50,
+  weightRange: [100, 900],
+  weightGain: 1.75,
+  voiceSensitivityGamma: 0.62,
+  deliveryExpressivenessFloor: 0.34,
   deliveryMinConfidence: 0.38,
-  deliveryProfileGains: {
-    steady: 0.30,
-    gentle: 0.48,
-    textured: 0.58,
-    rising: 0.76,
-    falling: 0.76,
-    sustained: 0.70,
-    forceful: 0.90,
-  },
   languages: [
     {
       id: "en",
@@ -298,6 +313,11 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
   const discoveryFrontierTimeRef = useRef(Number.NEGATIVE_INFINITY);
   const maxPresentationBacklogRef = useRef(0);
   const adaptiveMotionStartsRef = useRef(0);
+  // Peak simultaneous motions. `activeMotions` is instantaneous, so a headless
+  // sample almost never lands on the peak; the concurrency cap can only be
+  // verified against a running maximum.
+  const maxActiveMotionsRef = useRef(0);
+  const staleSettledRef = useRef(0);
   const minimumMotionDurationRef = useRef(Number.POSITIVE_INFINITY);
   const deadlineRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -540,7 +560,19 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       schedulePump(0);
       return;
     }
-    const animate = pendingRevealCanAnimate(
+    // Measured BEFORE the animate decision: a word far enough behind the
+    // acoustic frontier is history, and history settles rather than racing
+    // through the motion queue long after it was spoken.
+    const backlogMs = acousticBacklogMs(
+      modelRef.current.words,
+      pending.id,
+      modelRef.current.order.at(-1),
+    );
+    const isStale = exceedsMotionBacklogCeiling(
+      backlogMs,
+      runtime.motionBacklogCeilingMs,
+    );
+    const animate = !isStale && pendingRevealCanAnimate(
       pending.intent,
       reducedMotion,
       motionStartedRef.current.has(pending.id),
@@ -551,11 +583,6 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
         modelRef.current.words,
         modelRef.current.order,
         pending.id,
-      );
-      const backlogMs = acousticBacklogMs(
-        modelRef.current.words,
-        pending.id,
-        modelRef.current.order.at(-1),
       );
       const naturalDurationMs = naturalMotionDurationMs(word, runtime);
       const durationMs = adaptiveMotionDurationMs(
@@ -591,9 +618,14 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       // Reserve the concurrency slot immediately, but do not start its clock
       // until the word's layout effect confirms the first real browser paint.
       activeRef.current.set(pending.id, Number.POSITIVE_INFINITY);
+      maxActiveMotionsRef.current = Math.max(
+        maxActiveMotionsRef.current,
+        activeRef.current.size,
+      );
       unpaintedReservationsRef.current.set(pending.id, performance.now());
       schedulePump(UNPAINTED_RESERVATION_TIMEOUT_MS);
     } else {
+      if (isStale) staleSettledRef.current += 1;
       motionEligibleRef.current.delete(pending.id);
     }
     setReveal((current) => ({...current, [pending.id]: nextState}));
@@ -609,8 +641,10 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     const acoustic = Number.isFinite(from) && Number.isFinite(to) && to > from
       ? clamp((to - from) * 1000, runtime.revealGapMinMs, runtime.revealGapMaxMs)
       : runtime.revealGapMs;
-    const gap = runtime.revealGapMs +
-      (acoustic - runtime.revealGapMs) * runtime.revealTimingStrength;
+    const gap = isStale
+      ? 0
+      : runtime.revealGapMs +
+        (acoustic - runtime.revealGapMs) * runtime.revealTimingStrength;
     deadlineRef.current = nextRevealDeadline(
       deadlineRef.current || now,
       performance.now(),
@@ -716,6 +750,8 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
         visible: modelRef.current.order
           .filter((id) => revealRef.current[id] !== "hidden").length,
         activeMotions: activeRef.current.size,
+        maxActiveMotions: maxActiveMotionsRef.current,
+        staleSettledWords: staleSettledRef.current,
         pendingReveals: pendingRef.current.length,
         motionStarts: motionStartedRef.current.size,
         motionPaintStarts: motionPaintStartedRef.current.size,
@@ -759,6 +795,23 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       delete window.__cwiStudio;
     };
   }, [connection, dispatch, reducedMotion]);
+
+  // `?probe=1` publishes report() into document.title so headless Chrome can
+  // read it with --dump-dom, matching how `scripts/live_render_probe.py` reads
+  // the legacy renderer. Without this the studio's metrics are only reachable
+  // from a devtools console, so motion could not be verified numerically --
+  // --dump-dom alone returns the pre-hydration static shell.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("probe") !== "1") return;
+    const publish = () => {
+      const report = window.__cwiStudio?.report();
+      if (report) document.title = `CWI_STUDIO_PROBE ${JSON.stringify(report)}`;
+    };
+    publish();
+    const timer = window.setInterval(publish, 250);
+    return () => window.clearInterval(timer);
+  }, []);
 
   return {
     model,

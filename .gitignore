@@ -34,6 +34,10 @@ assets/phoneme-onset-en/
 native/sortformer/.build/
 native/sortformer/.swiftpm/
 
+# FLEURS evaluation audio, fetched by scripts/fetch_fleurs.py (CC BY 4.0).
+# Attribution stays in each set's SOURCE.md, which is not ignored.
+assets/eval-fleurs-*/test_wavs/
+
 # Audio-tagging model weights, fetched by scripts/fetch_streaming_model.py.
 assets/audio-tagging-en/*.onnx
 

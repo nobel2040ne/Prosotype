@@ -104,11 +104,17 @@ In every mode, a word that has settled is protected from stale rollback.
 
 Live captions use a stable, left-aligned stack that grows upward:
 
-- Each row holds up to eight words. Completed rows stay put while the active row
-  grows; older rows move into the Transcript view rather than piling up on
-  screen.
-- The stack keeps the newest **six rows** visible. Every currently recognized
-  word stays visible in that stack.
+- Each row holds as many words as the stage can carry at a legible size (three
+  to six, measured — a narrow window takes shorter rows and larger type rather
+  than shrinking the captions to fit six across). Completed rows stay put while
+  the active row grows; older rows move into the Transcript view rather than
+  piling up on screen.
+- The stack keeps **as many rows as the stage can actually hold** — measured in
+  the browser from the stage's own height and a real row's height, so the
+  captions fill the surface instead of scrolling while it is half empty
+  (measured at 1440×900: nine rows on the light stage, eight on the dark one,
+  which puts extra padding on every row). Every currently recognized word stays
+  visible in that stack.
 - Row identity comes from the first word's stable ID, so adding a ninth word or
   correcting a speaker **cannot remount earlier words or replay their motion**.
 - Neither provisional utterance segmentation nor diarization controls row

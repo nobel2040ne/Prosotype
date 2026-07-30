@@ -28,5 +28,11 @@ Pillow==11.0.0
 # Live caption mode (microphone capture)
 sounddevice==0.5.1
 
+# WebSocket client. Two uses, both outside the offline capture path:
+#   - scripts/studio_probe.py drives Chrome DevTools Protocol to read the Next
+#     studio's motion metrics (--dump-dom captures pre-hydration, so it cannot).
+#   - the opt-in Speechmatics/Soniox arms in scripts/asr_backends.py.
+websockets==17.0
+
 # Tests
 pytest==8.3.4

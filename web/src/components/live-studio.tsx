@@ -1,26 +1,20 @@
 "use client";
 
 import {
-  Activity,
   AudioWaveform,
   Captions,
   Check,
   ChevronRight,
   CircleGauge,
-  Expand,
   Eye,
-  Gauge,
   Globe2,
-  Headphones,
-  Maximize2,
   Mic2,
   Navigation,
   PanelRightClose,
   PanelRightOpen,
-  Radio,
-  Settings2,
   SlidersHorizontal,
   Sparkles,
+  Sun,
   X,
 } from "lucide-react";
 import {
@@ -53,6 +47,12 @@ import {
   characterMotionStepMs,
   naturalMotionDurationMs,
 } from "@/lib/motion-timing";
+import {planStageLayout, rowBudgetEm} from "@/lib/stage-layout";
+import {
+  deliveryExpressiveness,
+  expandAroundCenter,
+  expandPitch,
+} from "@/lib/voice-sensitivity";
 
 type CSSVars = CSSProperties & Record<`--${string}`, string | number>;
 type ViewMode = "stage" | "transcript";
@@ -70,6 +70,7 @@ interface SettingsState {
   motionIntensity: number;
   reducedMotion: boolean;
   highContrast: boolean;
+  lightStage: boolean;
 }
 
 const clamp = (value: number, min: number, max: number) =>
@@ -144,15 +145,18 @@ function speakerNumber(speaker: string | null): string {
   return String(match ? Number(match[0]) : 1).padStart(2, "0");
 }
 
+// Both fallbacks are CSS variables rather than literals: they have to follow the
+// stage theme, and every consumer of the returned string writes it straight into
+// a custom property, so the indirection resolves for free.
 function speakerColor(
   speaker: string | null,
   status: string,
   palette: string[],
 ): string {
-  if (!speaker || status === "unknown") return "#f4f3ef";
+  if (!speaker || status === "unknown") return "var(--caption-unknown)";
   let hash = 0;
   for (const char of speaker) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return palette[hash % palette.length] ?? "#e6ff2e";
+  return palette[hash % palette.length] ?? "var(--accent)";
 }
 
 function useElapsed(startedAt: number): string {
@@ -219,13 +223,17 @@ const MotionWord = memo(function MotionWord({
   const deliveryProfile = deliveryEnabled
     ? String(motionWord.delivery_profile ?? "steady")
     : "steady";
-  const profileGain = clamp(
-    number(
-      runtime.deliveryProfileGains[deliveryProfile],
-      runtime.deliveryProfileGains.steady ?? 0.30,
-    ),
-    0,
-    1,
+  // NO GATE in the amplitude path. This used to be a lookup on the discrete
+  // `delivery_profile`, where `steady` -- 78% of words, measured -- kept only
+  // 30% of its excursion, so a word just under the classifier's cut-off was
+  // attenuated exactly as hard as a flat one. The magnitude is now continuous in
+  // the measured acoustics, so a small change in the voice produces a small but
+  // real change on screen instead of nothing. `delivery_profile` still selects
+  // the motion family below; it no longer decides how much voice gets through.
+  const profileGain = deliveryExpressiveness(
+    {force, attack, contour, flow, texture},
+    runtime.deliveryExpressivenessFloor,
+    runtime.voiceSensitivityGamma,
   );
   const motionFamily = motionFamilyForDelivery({
     profile: deliveryProfile,
@@ -242,18 +250,46 @@ const MotionWord = memo(function MotionWord({
     profileGain,
     deliveryEnabled ? runtime.deliveryAxisGainFloor : 0.30,
   );
-  const pitch = number(motionWord.pitch_hz, pitchBaseline) || pitchBaseline;
+  const rawPitch = number(motionWord.pitch_hz, pitchBaseline) || pitchBaseline;
+  // Expand each axis around the speaker's own centre before mapping it. Real
+  // speech occupies a narrow band around the median, and a linear map spent
+  // almost none of the visual range on it -- small voice changes were measured
+  // and then discarded in presentation. Endpoints stay pinned, so the reachable
+  // extremes are unchanged and this cannot fabricate whispers or shouts.
+  const gamma = runtime.voiceSensitivityGamma;
+  const pitch = expandPitch(rawPitch, pitchBaseline, gamma);
+  // SCALE expands only ABOVE the median. Scale may never fall below the constant
+  // 10% sync pop, so `max(sync, …)` already flattens sub-median words; expanding
+  // downward as well pushed MORE of them onto that same floor and removed the
+  // gradient that exists today (measured 2.26% -> 0.02% between loudness 0.30
+  // and 0.45). Above the median there is real headroom, and the spread over a
+  // 0.45->0.55 swing goes from 3.19% to 7.65%.
+  const scaleLoudness = loudness > 0.5
+    ? expandAroundCenter(loudness, 0.5, gamma)
+    : loudness;
+  // LIFT has headroom in BOTH directions and is therefore the only channel that
+  // can express "quieter than the median" at all. It gets the full symmetric
+  // expansion, which is what makes a small drop in the voice visible (measured
+  // 0.9 -> 16.4 milli-em between loudness 0.30 and 0.45).
+  const liftLoudness = expandAroundCenter(loudness, 0.5, gamma);
+  // CWI 2.3.9: weight is inverted pitch over an 80..250 Hz domain. The RENDERED
+  // band is config (`live_sync.weight_range`), because the old hardcoded 180..700
+  // was the main reason the weight channel barely showed: measured, it produced a
+  // median deviation of only 102 units from Regular 400, and 400->500 on Roboto
+  // Flex is Regular->Medium. The word still lands on exactly 400 at rest.
+  const [weightFloor, weightCeiling] = runtime.weightRange;
   const activeWeight = clamp(
-    180 + ((250 - clamp(pitch, 80, 250)) / 170) * 520,
-    180,
-    700,
+    weightFloor +
+      ((250 - clamp(pitch, 80, 250)) / 170) * (weightCeiling - weightFloor),
+    weightFloor,
+    weightCeiling,
   );
   const activeWidth = clamp(
     88 + ((190 - clamp(pitch, 80, 250)) / 110) * 18,
     85,
     115,
   );
-  const rawScale = clamp(0.78 + loudness * 0.58, 0.82, 1.34);
+  const rawScale = clamp(0.78 + scaleLoudness * 0.58, 0.82, 1.34);
   // Synchronization is the always-legible CWI timing cue. The delivery
   // profile gain affects only the voice-shaped deviation, not this base cue.
   const intonationScale = 1 + (rawScale - 1) * axisIntensity;
@@ -271,11 +307,15 @@ const MotionWord = memo(function MotionWord({
     synchronizationScale,
     1.38,
   );
+  // Deviation magnitude from the symmetric channel, so a word BELOW the median
+  // lifts differently from one above it rather than both collapsing to the pop.
+  const liftIntonation = 1
+    + (clamp(0.78 + liftLoudness * 0.58, 0.82, 1.34) - 1) * axisIntensity;
   const activeLift = Math.max(
     runtime.syncElevationEm * intensity,
     (
       runtime.syncElevationEm
-        + Math.abs(intonationScale - 1)
+        + Math.abs(liftIntonation - 1)
           * runtime.deliveryIntonationLiftGain
           * familyGain.lift
     ) * intensity,
@@ -294,10 +334,15 @@ const MotionWord = memo(function MotionWord({
   );
   const style: CSSVars = {
     "--speaker-color": color,
+    // `weightGain` lifts the weight channel ALONE. It multiplies only the
+    // deviation from 400, so a word with no measured pitch deviation still
+    // renders Regular and the rest still land back on exactly 400 -- this
+    // changes how far the transient travels, not where it ends.
     "--active-weight": String(Math.round(clamp(
-      400 + (activeWeight - 400) * axisIntensity * familyGain.weight,
-      180,
-      700,
+      400 + (activeWeight - 400) *
+        axisIntensity * familyGain.weight * runtime.weightGain,
+      weightFloor,
+      weightCeiling,
     ))),
     "--active-width": `${
       Math.round(clamp(
@@ -340,9 +385,24 @@ const MotionWord = memo(function MotionWord({
     const element = wordRef.current;
     if (!element) return;
     element.style.width = "";
-    // offsetWidth ignores the transient transform, freezing the word at its
-    // normal-font layout width while the inner glyph changes weight/scale.
-    element.style.width = `${Math.ceil(element.offsetWidth)}px`;
+    // Freeze the box at its resting layout width so the inner glyph's weight and
+    // width axes cannot reflow the row. offsetWidth/getBoundingClientRect on the
+    // WRAPPER report layout width, which a descendant's transform never touches.
+    //
+    // FREEZE IT IN em, NOT px. The stage font-size is
+    // `clamp(20px, 4.6vh, 50px) * --caption-scale`, so a pixel box goes stale the
+    // moment the window is resized or the Caption scale slider moves: the glyphs
+    // re-render at the new size while the box keeps the old one. Measured at
+    // scale 1.8, every word spilled its box (15px on "a", 43px on "tab") and the
+    // words overlapped each other. Glyph advances are linear in font-size and the
+    // word inherits the feed's size at 1em, so an em width tracks them exactly
+    // and never needs re-measuring. (A change of FACE -- not size -- would still
+    // need one, but the caption font is locked before the first word arrives.)
+    const fontSize = parseFloat(getComputedStyle(element).fontSize) || 1;
+    // Fractional, then a hair of slack: offsetWidth rounds down, which clipped
+    // the last letter of every word the last time this was measured in integers.
+    const restingWidth = element.getBoundingClientRect().width;
+    element.style.width = `${(restingWidth / fontSize + 0.01).toFixed(4)}em`;
     const phaseStartedAt = state === "active" && motionSnapshot
       ? onMotionPaint(id, duration)
       : performance.now();
@@ -484,7 +544,6 @@ function VoiceOrb({
       aria-label={`Voice compass: ${label}`}
       style={style}
     >
-      <span className="compass-front">front</span>
       <span className="compass-radar-ring ring-one" />
       <span className="compass-radar-ring ring-two" />
       <span className="compass-crosshair horizontal" />
@@ -630,16 +689,9 @@ function CaptionFeed({
     stackAnimations.current.clear();
   }, []);
 
-  if (!paragraphs.length) {
-    return (
-      <div className="empty-stage">
-        <div className="empty-mark"><AudioWaveform size={26} strokeWidth={1.5} /></div>
-        <p>Ready for a voice</p>
-        <span>Speech will appear here as it is understood.</span>
-      </div>
-    );
-  }
-
+  // The feed container is rendered even while empty: it is the element the stage
+  // measures to decide how many rows fit (`useStackCapacity`), and that answer is
+  // needed BEFORE the first word arrives. The empty state is a sibling.
   return (
     <div className={transcript ? "transcript-feed" : "caption-feed"}>
       {paragraphs.map((paragraph, paragraphIndex) => {
@@ -708,6 +760,97 @@ function CaptionFeed({
   );
 }
 
+/**
+ * Resolve the stage's two coupled unknowns: words per row, and rows retained.
+ *
+ * Neither can be a constant. `studio_stack_words_per_block` was six and
+ * `studio_stage_paragraph_history` was six, and between them they handed the
+ * caption size to the window's aspect ratio. Measured at 1440x900 that gave
+ * 47px type and an 86%-full stage; measured at 862x998 -- the same studio in a
+ * narrower window -- the identical settings gave **23.6px** type on a stage that
+ * was **40% empty**, because six words still had to fit across a 538px stage.
+ *
+ * Everything the planner needs is read off the live DOM rather than restated
+ * here: the feed's real width and clip gutters, the height term
+ * (`--caption-height-cap`, registered with `@property` so it computes to px), the
+ * per-language `--per-word-em` budget, and a rendered row's true height, which
+ * the dark stage inflates with .22em of padding the light stage does not have.
+ */
+function useStageLayout(
+  stage: React.RefObject<HTMLDivElement | null>,
+  runtime: RuntimeConfig,
+  hasRows: boolean,
+  captionScale: number,
+  view: ViewMode,
+  // A ResizeObserver on the stage cannot see a theme swap, and the theme changes
+  // a row's height, so it has to be an explicit dependency.
+  theme: string,
+): {wordsPerRow: number; rows: number; rowBudgetEm: number} {
+  const [layout, setLayout] = useState(() => ({
+    wordsPerRow: runtime.stageWordsPerBlock,
+    rows: runtime.stageParagraphHistory,
+    rowBudgetEm: rowBudgetEm(runtime.stageWordsPerBlock, 1.40, 4.30),
+  }));
+  useEffect(() => {
+    const node = stage.current;
+    if (!node || view !== "stage") return;
+    const measure = () => {
+      const feed = node.querySelector<HTMLElement>(".caption-feed");
+      if (!feed) return;
+      const styles = getComputedStyle(feed);
+      const fontSize = parseFloat(styles.fontSize);
+      const stageHeight = node.clientHeight;
+      if (!fontSize || !stageHeight) return;
+      // Chrome reports a percentage `max-height` as the literal "92%" instead of
+      // resolving it, so recover the fraction rather than parsing a px value.
+      const maxHeightFraction = styles.maxHeight.endsWith("%")
+        ? parseFloat(styles.maxHeight) / 100
+        : (parseFloat(styles.maxHeight) || stageHeight) / stageHeight;
+      // A rendered row is exact; before the first word its line box is the only
+      // estimate there is.
+      const row = feed.querySelector<HTMLElement>(".caption-paragraph");
+      const rowHeightEm = row
+        ? row.getBoundingClientRect().height / fontSize
+        : 1.38;
+      const next = planStageLayout({
+        feedWidthPx: feed.getBoundingClientRect().width,
+        stageHeightPx: stageHeight,
+        gutterEm: (parseFloat(styles.paddingLeft) +
+          parseFloat(styles.paddingRight)) / fontSize,
+        verticalGutterEm: (parseFloat(styles.paddingTop) +
+          parseFloat(styles.paddingBottom)) / fontSize,
+        wordEmLinear: parseFloat(styles.getPropertyValue("--word-em-linear")),
+        wordEmSpread: parseFloat(styles.getPropertyValue("--word-em-spread")),
+        rowHeightEm,
+        maxHeightFraction,
+        heightCapPx:
+          parseFloat(styles.getPropertyValue("--caption-height-cap")) *
+          captionScale,
+        minWords: runtime.stageWordsMin,
+        maxWords: runtime.stageWordsPerBlock,
+        minRows: runtime.stageMinRows,
+      });
+      const budget = rowBudgetEm(
+        next.wordsPerRow,
+        parseFloat(styles.getPropertyValue("--word-em-linear")) || 1.40,
+        parseFloat(styles.getPropertyValue("--word-em-spread")) || 4.30,
+      );
+      setLayout((current) => (
+        current.wordsPerRow === next.wordsPerRow &&
+        current.rows === next.rows &&
+        current.rowBudgetEm === budget
+          ? current
+          : {wordsPerRow: next.wordsPerRow, rows: next.rows, rowBudgetEm: budget}
+      ));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [stage, runtime, hasRows, captionScale, view, theme]);
+  return layout;
+}
+
 function SignalWaveform({values}: {values: number[]}) {
   return (
     <div className="signal-waveform" aria-label="Recent input level">
@@ -749,9 +892,6 @@ function LanguageGate({
       <div className="language-gate-glow" aria-hidden="true" />
       <div className="language-gate-card">
         <header className="language-gate-brand">
-          <span className="brand-mark" aria-hidden="true">
-            <i>C</i><i>W</i><i>I</i>
-          </span>
           <div>
             <strong>AutoCWI</strong>
             <span>Live caption setup</span>
@@ -791,8 +931,8 @@ function LanguageGate({
                 onClick={() => onSelect(language.id)}
                 type="button"
               >
-                <span className="language-code">{language.id.toUpperCase()}</span>
                 <span className="language-name">
+                  <span className="language-code">{language.id.toUpperCase()}</span>
                   <strong>{language.nativeLabel}</strong>
                   {language.nativeLabel !== language.label && (
                     <small>{language.label}</small>
@@ -835,10 +975,7 @@ function SettingsPanel({
   return (
     <aside className="settings-panel" aria-label="Presentation settings">
       <header>
-        <div>
-          <span className="eyebrow">Local preferences</span>
-          <h2>Presentation</h2>
-        </div>
+        <h2>Presentation</h2>
         <button className="icon-button" onClick={close} aria-label="Close settings">
           <X size={17} />
         </button>
@@ -847,10 +984,14 @@ function SettingsPanel({
       <label className="range-control">
         <span><Captions size={15} /> Caption scale</span>
         <output>{Math.round(settings.captionScale * 100)}%</output>
+        {/* 100% is now the LARGEST size that still fits a full row across the
+            stage, not an arbitrary middle. The width cap is a hard bound -- rows
+            do not wrap, so anything above it is clipped, not wrapped -- which is
+            why the slider only reduces. */}
         <input
           type="range"
-          min="0.8"
-          max="1.35"
+          min="0.6"
+          max="1"
           step="0.05"
           value={settings.captionScale}
           onChange={(event) => setSettings({
@@ -900,6 +1041,18 @@ function SettingsPanel({
         <i data-on={settings.highContrast ? "true" : "false"} />
       </button>
 
+      <button
+        className="toggle-row"
+        aria-pressed={settings.lightStage}
+        onClick={() => setSettings({
+          ...settings,
+          lightStage: !settings.lightStage,
+        })}
+      >
+        <span><Sun size={15} /> Light stage</span>
+        <i data-on={settings.lightStage ? "true" : "false"} />
+      </button>
+
       <div className="settings-note">
         <Check size={15} />
         <p>These controls affect presentation only. Recognition and speaker evidence stay untouched.</p>
@@ -914,6 +1067,7 @@ export function LiveStudio() {
     motionIntensity: 1,
     reducedMotion: false,
     highContrast: false,
+    lightStage: true,
   });
   const [view, setView] = useState<ViewMode>("stage");
   const [railOpen, setRailOpen] = useState(true);
@@ -940,6 +1094,7 @@ export function LiveStudio() {
     (language) => language.id === session.language,
   );
 
+  const stageRef = useRef<HTMLDivElement>(null);
   const paragraphs = useMemo(
     () => buildCaptionParagraphs(
       model.words,
@@ -949,17 +1104,21 @@ export function LiveStudio() {
     ),
     [model.words, model.order, reveal, runtime.paragraphWordLimit],
   );
+  const stageLayout = useStageLayout(
+    stageRef,
+    runtime,
+    paragraphs.length > 0,
+    settings.captionScale,
+    view,
+    settings.lightStage ? "light" : "dark",
+  );
   const stageParagraphs = view === "stage"
     ? selectStableCaptionStack(
       paragraphs,
-      runtime.stageParagraphHistory,
-      runtime.stageWordsPerBlock,
+      stageLayout.rows,
+      stageLayout.wordsPerRow,
     )
     : paragraphs;
-  const visibleWords = paragraphs.reduce(
-    (total, paragraph) => total + paragraph.words.length,
-    0,
-  );
   const speakers = useMemo(() => {
     const bySpeaker = new Map<string, CaptionWord>();
     for (const paragraph of paragraphs) {
@@ -972,9 +1131,16 @@ export function LiveStudio() {
     );
   }, [paragraphs]);
   const currentParagraph = paragraphs.at(-1);
+  // The CI palette (CWI 2.1.1) is built for the black captions box and measures
+  // as low as 1.19:1 on the light stage, so the light theme draws speakers from
+  // `palette_light` -- same hues, darkened to >=4.5:1. Both arrive from
+  // config.yaml via /runtime-config.json; neither is hardcoded here.
+  const palette = settings.lightStage && runtime.paletteLight.length
+    ? runtime.paletteLight
+    : runtime.palette;
   const activeColor = currentParagraph
-    ? speakerColor(currentParagraph.speaker, currentParagraph.status, runtime.palette)
-    : runtime.palette[0];
+    ? speakerColor(currentParagraph.speaker, currentParagraph.status, palette)
+    : palette[0];
   const direction = number(level.direction_deg ?? level.azimuth_deg, Number.NaN);
   const directionKnown = Number.isFinite(direction);
   const inputGood = level.status === "good";
@@ -982,17 +1148,27 @@ export function LiveStudio() {
     "--caption-scale": settings.captionScale,
     "--motion-intensity": settings.motionIntensity,
     "--active-color": activeColor,
+    // The CSS width cap is derived from this, so the type size and the row width
+    // can never disagree about how many words a row holds.
+    "--stack-words": stageLayout.wordsPerRow,
+    "--row-budget-em": stageLayout.rowBudgetEm.toFixed(3),
   };
 
-  const requestFullscreen = () => {
-    document.documentElement.requestFullscreen?.().catch(() => undefined);
-  };
+  // The theme lives on the document element, not on the shell: `html`/`body`
+  // carry `background: var(--bg)`, so anything the shell does not cover --
+  // fullscreen backdrop, overscroll edge -- has to see it too.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = settings.lightStage ? "light" : "dark";
+    root.style.colorScheme = settings.lightStage ? "light" : "dark";
+  }, [settings.lightStage]);
 
   return (
     <main
       className="studio-shell"
       data-rail={railOpen ? "open" : "closed"}
       data-contrast={settings.highContrast ? "high" : "normal"}
+      data-theme={settings.lightStage ? "light" : "dark"}
       data-reduced-motion={settings.reducedMotion ? "true" : "false"}
       data-language={session.language ?? "pending"}
       lang={session.language === "ko" ? "ko" : "en"}
@@ -1000,9 +1176,6 @@ export function LiveStudio() {
     >
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <i>C</i><i>W</i><i>I</i>
-          </span>
           <div>
             <strong>AutoCWI</strong>
             <span>Expressive caption studio</span>
@@ -1025,6 +1198,14 @@ export function LiveStudio() {
         </nav>
 
         <div className="topbar-actions">
+          {/* The transport bar under the stage carried this, plus three static
+              "Local processing / No cloud / Stream active" badges. The badges said
+              nothing that changes; the input level does, so it moves up here and
+              the stage gets the 61px back. */}
+          <span className="mic-state" data-good={inputGood ? "true" : "false"}>
+            <Mic2 size={14} />
+            {number(level.rms_db, -72).toFixed(1)} dBFS
+          </span>
           {activeLanguage && (
             <span className="language-pill">
               <Globe2 size={13} />
@@ -1044,13 +1225,6 @@ export function LiveStudio() {
             <SlidersHorizontal size={17} />
           </button>
           <button
-            className="icon-button"
-            onClick={requestFullscreen}
-            aria-label="Enter fullscreen"
-          >
-            <Maximize2 size={17} />
-          </button>
-          <button
             className="icon-button rail-toggle"
             onClick={() => setRailOpen((value) => !value)}
             aria-label={railOpen ? "Close signal rail" : "Open signal rail"}
@@ -1060,54 +1234,11 @@ export function LiveStudio() {
         </div>
       </header>
 
-      <aside className="nav-rail" aria-label="Application sections">
-        <button className="nav-button active" aria-label="Live studio">
-          <Radio size={18} />
-          <span>Live</span>
-        </button>
-        <a className="nav-button" href="/legacy" aria-label="Legacy diagnostics">
-          <Activity size={18} />
-          <span>Legacy</span>
-        </a>
-        <div className="nav-spacer" />
-        <button
-          className="nav-button"
-          onClick={() => setSettingsOpen(true)}
-          aria-label="Settings"
-        >
-          <Settings2 size={18} />
-          <span>Setup</span>
-        </button>
-      </aside>
-
       <section className="workspace">
-        <header className="workspace-header">
-          <div>
-            <div className="workspace-kicker">
-              <span className="live-dot" />
-              Capture 01
-              <ChevronRight size={12} />
-              {runtime.displayMode}
-            </div>
-            <h1>{view === "stage" ? "Live caption stage" : "Session transcript"}</h1>
-          </div>
-          <div className="workspace-meta">
-            <span><Captions size={14} /> {visibleWords} words</span>
-            <span><Headphones size={14} /> {speakers.length || "—"} speakers</span>
-            <span><Gauge size={14} /> {inputGood ? "signal ready" : level.status ?? "waiting"}</span>
-          </div>
-        </header>
-
-        <div className={`caption-stage ${view === "transcript" ? "is-transcript" : ""}`}>
-          <div className="stage-grid" aria-hidden="true" />
-          <div className="stage-corner top-left" />
-          <div className="stage-corner top-right" />
-          <div className="stage-corner bottom-left" />
-          <div className="stage-corner bottom-right" />
-          <div className="stage-label">
-            <span>{view === "stage" ? "Audience view" : "Readable history"}</span>
-            <span>{settings.reducedMotion ? "Motion reduced" : "Voice-shaped motion"}</span>
-          </div>
+        <div
+          className={`caption-stage ${view === "transcript" ? "is-transcript" : ""}`}
+          ref={stageRef}
+        >
           {model.sound && (
             <div className="sound-chip">
               <AudioWaveform size={13} />
@@ -1116,7 +1247,7 @@ export function LiveStudio() {
           )}
           <CaptionFeed
             paragraphs={stageParagraphs}
-            palette={runtime.palette}
+            palette={palette}
             level={level}
             pitchBaseline={pitchBaseline}
             intensity={settings.motionIntensity}
@@ -1128,37 +1259,24 @@ export function LiveStudio() {
             transcript={view === "transcript"}
             reducedMotion={settings.reducedMotion}
           />
-        </div>
-
-        <footer className="transport-bar">
-          <div className="transport-primary">
-            <span className="mic-state" data-good={inputGood ? "true" : "false"}>
-              <Mic2 size={15} />
-            </span>
-            <div>
-              <strong>{inputGood ? "Listening" : "Input standby"}</strong>
-              <span>{number(level.rms_db, -72).toFixed(1)} dBFS · {number(level.gain_db).toFixed(1)} dB gain</span>
+          {!stageParagraphs.length && (
+            <div className="empty-stage">
+              <div className="empty-mark">
+                <AudioWaveform size={26} strokeWidth={1.5} />
+              </div>
+              <p>Ready for a voice</p>
+              <span>
+                {lastEventAt ? "Speech will appear here as it is understood." : model.bootStage}
+              </span>
             </div>
-          </div>
-          <div className="transport-status">
-            <span><i /> Local processing</span>
-            <span><i /> No cloud</span>
-            <span><i /> {lastEventAt ? "Stream active" : model.bootStage}</span>
-          </div>
-          <button className="text-button" onClick={requestFullscreen}>
-            <Expand size={14} />
-            Audience view
-          </button>
-        </footer>
+          )}
+        </div>
       </section>
 
       <aside className="signal-rail" aria-label="Live signal intelligence">
         <section className="rail-section signal-section">
           <header className="rail-heading">
-            <div>
-              <span className="eyebrow">Input signal</span>
-              <h2>Voice activity</h2>
-            </div>
+            <h2>Voice activity</h2>
             <span className="health-badge" data-good={inputGood ? "true" : "false"}>
               {level.status ?? "idle"}
             </span>
@@ -1173,10 +1291,7 @@ export function LiveStudio() {
 
         <section className="rail-section compass-section">
           <header className="rail-heading">
-            <div>
-              <span className="eyebrow">Spatial voice</span>
-              <h2>Voice compass</h2>
-            </div>
+            <h2>Voice compass</h2>
             <Navigation size={16} />
           </header>
           <div className="compass-layout">
@@ -1202,26 +1317,21 @@ export function LiveStudio() {
                     }`
                 }</strong>
               </div>
-              <div>
-                <span>Hardware</span>
-                <strong>{directionKnown ? "Array online" : "Mono input"}</strong>
-              </div>
+              {/* "Hardware: Mono input" said the same thing as "Direction:
+                  Awaiting array" one line above it. */}
             </div>
           </div>
         </section>
 
         <section className="rail-section speakers-section">
           <header className="rail-heading">
-            <div>
-              <span className="eyebrow">Attribution</span>
-              <h2>Active speakers</h2>
-            </div>
+            <h2>Active speakers</h2>
             <span className="section-count">{speakers.length}</span>
           </header>
           <div className="speaker-list">
             {speakers.length ? speakers.map(([speaker, word]) => {
               const status = speakerStatus(word);
-              const color = speakerColor(speaker, status, runtime.palette);
+              const color = speakerColor(speaker, status, palette);
               return (
                 <div className="speaker-card" key={speaker}>
                   <span className="speaker-avatar" style={{"--speaker-color": color} as CSSVars}>
@@ -1243,20 +1353,9 @@ export function LiveStudio() {
           </div>
         </section>
 
-        <section className="rail-section system-section">
-          <div className="system-line">
-            <span><Activity size={14} /> Recognition</span>
-            <strong>Accurate stream</strong>
-          </div>
-          <div className="system-line">
-            <span><Sparkles size={14} /> Expression</span>
-            <strong>{Math.round(settings.motionIntensity * 100)}%</strong>
-          </div>
-          <div className="system-line">
-            <span><Navigation size={14} /> Direction</span>
-            <strong>{directionKnown ? "Online" : "Reserved"}</strong>
-          </div>
-        </section>
+        {/* A fourth "system" section listed Recognition (a hardcoded string),
+            Expression (the settings slider's own value) and Direction (the
+            compass readout, again). None of it was a signal. */}
       </aside>
 
       {settingsOpen && (

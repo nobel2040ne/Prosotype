@@ -7,15 +7,21 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  colorScheme: "dark",
-  themeColor: "#090a0b",
+  colorScheme: "light dark",
+  // Apple parchment -- the same `--bg` the default (light) stage paints, so the
+  // browser chrome matches the page instead of the off-palette cream that used
+  // to sit here. The stage theme is a data-attribute toggle, not
+  // prefers-color-scheme, so this is one value rather than a media list.
+  themeColor: "#f5f5f7",
 };
 
 export default function RootLayout({
   children,
 }: Readonly<{children: React.ReactNode}>) {
+  // The light stage is the default, so the exported HTML carries it and the
+  // first paint is already correct. LiveStudio's toggle rewrites this attribute.
   return (
-    <html lang="en">
+    <html lang="en" data-theme="light">
       <body>{children}</body>
     </html>
   );

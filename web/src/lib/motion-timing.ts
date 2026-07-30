@@ -182,3 +182,27 @@ export function characterMotionStepMs(
     Math.max(0, durationMs) * 0.42 / (characterCount - 1),
   );
 }
+
+/**
+ * Is this word so far behind the newest one that it is history, not speech?
+ *
+ * The adaptive clock can shorten a motion, but it cannot make one free, so a
+ * deep queue still has to play every word through the concurrency slots. That
+ * is fine for a decoder burst and wrong for a cold start: model loading takes
+ * seconds while the source keeps running, so the first browser to attach can
+ * inherit a backlog of tens of words spanning MEASURED 12.7 s of clip time.
+ * Animating those is the late-motion defect in slow motion -- the caption
+ * races, arrives seconds after the sound, and reads as choppy.
+ *
+ * A word this far behind the acoustic frontier already missed its moment. It
+ * still appears, in order, as readable text; it just does not pretend to be
+ * live. Live words -- inside the ceiling -- animate exactly as before.
+ */
+export function exceedsMotionBacklogCeiling(
+  backlogMs: number,
+  ceilingMs: number,
+): boolean {
+  if (!Number.isFinite(backlogMs) || !Number.isFinite(ceilingMs)) return false;
+  if (ceilingMs <= 0) return false;
+  return backlogMs > ceilingMs;
+}

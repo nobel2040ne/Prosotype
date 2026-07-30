@@ -9,6 +9,8 @@ declare global {
         words: number;
         visible: number;
         activeMotions: number;
+        maxActiveMotions: number;
+        staleSettledWords: number;
         pendingReveals: number;
         motionStarts: number;
         motionPaintStarts: number;
