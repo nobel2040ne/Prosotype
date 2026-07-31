@@ -3,10 +3,10 @@ import test from "node:test";
 import {
   acousticBacklogMs,
   adaptiveMotionDurationMs,
-  characterMotionStepMs,
   exceedsMotionBacklogCeiling,
   isHistoricalInsertion,
   naturalMotionDurationMs,
+  nextActiveMotionDelayMs,
   recentAcousticGapMs,
   unpaintedReservationExpired,
   type MotionDurationSettings,
@@ -79,12 +79,6 @@ test("source timing estimates cadence and backlog across a decoder batch", () =>
   assert.equal(acousticBacklogMs(words, "w4", "w11"), 1_400);
 });
 
-test("a shortened word clock still reaches every character hand-off", () => {
-  const step = characterMotionStepMs(320, 20);
-  assert.ok(step < 8);
-  assert.ok(step * 19 <= 320 * 0.42);
-  assert.equal(characterMotionStepMs(720, 5), 18);
-});
 
 test("a word inserted behind the presented frontier cannot move late", () => {
   assert.equal(
@@ -101,6 +95,16 @@ test("an unpainted reservation has a bounded deadlock watchdog", () => {
   assert.equal(unpaintedReservationExpired(1_000, 1_249, 250), false);
   assert.equal(unpaintedReservationExpired(1_000, 1_250, 250), true);
   assert.equal(unpaintedReservationExpired(undefined, 2_000, 250), false);
+});
+
+test("painted motion schedules a logical return-to-rest fallback", () => {
+  assert.equal(
+    nextActiveMotionDelayMs([Number.POSITIVE_INFINITY, 1_800, 1_450], 1_000),
+    450,
+  );
+  assert.equal(nextActiveMotionDelayMs([900], 1_000), 0);
+  assert.equal(nextActiveMotionDelayMs([Number.POSITIVE_INFINITY], 1_000), null);
+  assert.equal(nextActiveMotionDelayMs([], 1_000), null);
 });
 
 test("a word far behind the acoustic frontier is history, not live speech", () => {

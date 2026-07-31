@@ -352,7 +352,8 @@ never presents that profile as the speaker's inner emotion. Each expressive
 profile owns a different zero-to-rest path: rising develops its crest late,
 falling crests early and resolves downward, sustained holds, forceful travels
 farther from a measured attack, gentle eases through a smaller arc, and
-textured adds a soft resonance halo without shaking letters.
+textured uses its own timing without shaking letters (its halo was removed;
+the caption carries no shadow).
 
 The first implementation reused the 64 ms real-time orb pitch samples for word
 contour and accepted only two voiced samples with a ±0.25 threshold. Octave

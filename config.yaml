@@ -228,16 +228,15 @@ display:
   # the cap prevents an abandoned/reconnecting tab from retaining indefinitely.
   render_queue_limit: 512
 # Guiding The Eye With Motion. PDF §2.2.3 supplies the full +15% type-size pop
-# and 25% elevation used by CC. Live is a persistent stacked transcript, so its
-# separate `motion.live_sync` adaptation below is deliberately calmer; changing
-# it never changes CC. Late colour decisions are colour-only and cannot start
-# geometry; a decision arriving during real-time motion waits for geometry rest.
+# and 25% elevation used by CC. The Next studio uses those same constants in
+# `motion.live_sync.studio`; changing the legacy live values never changes CC.
+# Late colour decisions are colour-only and cannot start geometry; a decision
+# arriving during real-time motion waits for geometry rest.
 # The official After Effects template is also a calm reference; its inventory is:
 #     16x ADBE Text Position 3D, 8x ADBE Text Fill Color
 # There is NO scale/size/tracking/rotation/opacity animator anywhere in it.
-# Live implements its reduced pop as a temporary transform, never by rewriting
-# `font-size`, so loudness remains a separate settled intonation channel
-# (§§2.3.3-2.3.6).
+# Live paints motion on a temporary overlaid glyph. The normal layout sizer is
+# never rewritten, and all §2.3 axes return to normal with the motion.
 #
 # The template drives color and lift from one index-unit Range Selector, one
 # word wide, with Ease High/Low set - so neighbouring words are partially
@@ -299,15 +298,11 @@ motion:
   # These values affect LIVE ONLY. Changing them never changes `autocwi cc`.
   live_sync:
     enabled: true
-    # Move live visibly toward the authored +15% / 25% CC reference while
-    # retaining enough headroom for the voice-shaped channels to differ.
-    # Earlier 10% / 0.16em looked uniform because lift was fixed and prosody was
-    # heavily compressed; lift and intonation now vary independently.
+    # These are the LEGACY diagnostics renderer's values. The Next studio reads
+    # the `studio:` sub-block further down, which overrides any of them -- the
+    # two presentations deliberately do not share tuning.
     sync_pop: 0.10
     sync_elevation_em: 0.20
-    # Timing/easing are implementation choices: the PDF fixes amplitude and
-    # per-word scope but does not prescribe a curve. Smoothstep gives zero
-    # velocity at the attack/release endpoints.
     rise_s: 0.18              # slower attack; avoids the angry jab
     peak_s: 0.14              # calm, readable emphasis
     fall_s: 0.34              # longer release back to rest
@@ -355,26 +350,12 @@ motion:
     lift_min_gain: 0.28
     lift_max_gain: 1.40
     emphasis_deadband: 0.02
-    # RESOLUTION, not amplitude. Real speech clusters in a narrow band around
-    # the speaker's running median, but loudness->scale and pitch->weight/width
-    # were LINEAR across their whole domain, so that band used almost none of
-    # the visual range and its variation vanished under the constant 10% CWI
-    # sync pop. A measured 0.45->0.55 loudness swing reached the screen as ~3%
-    # of scale. This gamma steepens each axis around its own centre (median word
-    # for loudness, per-speaker baseline for pitch) with BOTH ENDPOINTS PINNED,
-    # so small changes become visible while the reachable extremes are
-    # unchanged — it cannot recreate the fabricated whisper/shout failure.
-    # Applies to INTONATION (2.3.3–2.3.6) only, never to the constant
-    # synchronization cue (2.2.3), whose amplitude is identical for every word.
-    # 1.0 disables. Lower = more sensitive; below ~0.45 ordinary speech starts
-    # to look busy.
-    voice_sensitivity_gamma: 0.62
-    # Amplitude is CONTINUOUS in the measured voice — there is no trigger
-    # threshold and no dead zone. This is the smallest excursion a genuinely
-    # flat word receives, not a gate: nothing is snapped to it, and a barely
-    # inflected word lands just above it. Raise it and ordinary speech moves
-    # more; lower it and only clearly shaped delivery reads.
-    delivery_expressiveness_floor: 0.34
+    # REMOVED 2026-07-31: `voice_sensitivity_gamma` (0.62) and
+    # `delivery_expressiveness_floor` (0.34). The gamma re-centred each word on
+    # the speaker's running median, destroying 2.3.5's absolute size baseline
+    # and 2.3.8's 160-200 Hz neutral band. The motion crest now uses the PDF's
+    # absolute anchors directly; see `live_sync.studio` below and
+    # `web/src/lib/caption-motion.ts`.
     # WEBSITE SYNCHRONIZATION LAYER. `intonation.mov` changes a stressed word
     # uniformly; `synchronization.mov` hands a *continuous* motion boundary
     # through the word. Adjacent samples are blended into one ribbon: isolated
@@ -382,8 +363,29 @@ motion:
     character_wave_enabled: true
     # Strong enough to read as the synchronization reference's travelling
     # alphabet ribbon, while staying upward-only and neighbour-smoothed.
+    # LIFT is calibrated and should stay. Measured like-for-like with the pixel
+    # method against docs/reference/synchronization.mov, the per-letter baseline
+    # spread inside one row is median 8.8% of glyph height on the reference and
+    # 11.9% here -- already at or slightly above it, once the wave was actually
+    # allowed to travel (see `character_wave_overlap`).
     character_wave_lift_em: 0.085
-    character_wave_pop: 0.030
+    # POP is the channel still under the reference. The fitted per-character size
+    # on the recordings is 1.13; 1.03 was barely a differentiation at all between
+    # neighbouring letters. 0.055 roughly doubles it while staying clearly
+    # subordinate to the word-level 15% cue that CWI 2.2.3 actually specifies --
+    # the character ribbon must stay a hand-off, not a second word-level pop.
+    character_wave_pop: 0.05
+    # How many letters of a word are in flight at once. This is what makes the
+    # alphabet hand-off a WAVE rather than a synchronous word-level pulse: the
+    # per-letter step and bump are both derived from it
+    # (`characterWaveTiming`), so the hand-off always finishes exactly on the
+    # word's own clock however long the word is.
+    # The old model had a hard 18ms step cap that fired for every word up to 13
+    # characters, and ran each letter for the FULL word clock -- measured, the
+    # letters of a word differed by 0.017em, i.e. 0.8px at 47px type. At 3.0 a
+    # 520ms word steps 87ms on a four-letter word and 46ms on a nine-letter one,
+    # inside the 53-110ms letter spacing measured on the reference recording.
+    character_wave_overlap: 4.5
     character_wave_crouch_em: 0.0
     character_wave_lead_s: 0.18
     character_wave_peak_s: 0.18
@@ -436,6 +438,61 @@ motion:
     delivery_flow_duration_ms: 90
     delivery_texture_glow_px: 6
     delivery_min_confidence: 0.38
+    # =====================================================================
+    # THE NEXT STUDIO'S MOTION, STRICTLY FROM THE DESIGN SYSTEM PDF.
+    # (2026-07-31. Overrides any key above; the legacy diagnostics renderer keeps
+    # the values it was tuned against.)
+    #
+    # `docs/cwi-design-system-v1.0.pdf` pp.26-41 describes THREE things:
+    #   2.2.2  the word turns the speaker colour at its spoken onset;
+    #   2.2.3  as it turns, it undergoes "a 15% increase in type size before
+    #          returning to its original size" -- the diagram labels the rise
+    #          "25% elevation", and its inset shows the popped word both LARGER
+    #          and RAISED off its neighbours' baseline;
+    #   2.3    volume -> type SIZE, pitch -> type WEIGHT, harmonics -> type
+    #          WIDTH during the word's one live interpretation window.
+    #
+    # The live lifecycle is explicit: normal -> voice-shaped crest + the fixed
+    # synchronization cue -> normal. Normal 5% / Regular 400 / width 100 type
+    # owns layout; an overlaid glyph carries both transient layers, so no
+    # JavaScript width measurement or retained animation style is required.
+    # =====================================================================
+    studio:
+      # 2.2.3, verbatim.
+      sync_pop: 0.15
+      # 2.2.3 diagram. 25% of the word's own type size.
+      sync_elevation_em: 0.25
+      # ------------------------------------------------------------------
+      # 2.3 VOICE-SHAPED CREST. Every anchor is absolute; do not re-centre one
+      # on the speaker's running median. The CSS animation returns all three
+      # axes to normal at both endpoints.
+      # ------------------------------------------------------------------
+      # 2.3.6: the design system's authored range is 0.6x..2.4x around the 5%
+      # baseline. Because live returns to normal after each transient, using that
+      # whole range would make neighboring words collide or reserve poster-sized
+      # gaps. The voice layer is therefore limited to 0.90x..1.20x; composed
+      # with 2.2.3's independent 1.15 pop, the largest crest is 1.38x.
+      voice_scale_range: [0.90, 1.20]
+      # How much of the 2.3.6 excursion survives, applied ABOUT the baseline so
+      # 2.3.5's anchor is exact at any value. This is the live narrowing lever,
+      # and it is NOT the clamp: clamping alone flattens the top of the
+      # distribution into one indistinguishable size, while this stays monotone.
+      # 1.0 is the literal PDF range before the live clamp.
+      voice_scale_response: 0.25
+      # 2.3.8: 160-200 Hz is Regular 400 -- a BAND, not a pivot, so ordinary F0
+      # jitter must not move the weight at all. 2.3.9: 80 Hz -> heavy,
+      # 250 Hz -> light. The design system reaches 100..1000; live narrows it
+      # for the same reason `expression.wght_range` does, because a voice at the
+      # edge of the domain rendering hairline or black beside ordinary text is
+      # legible in a poster and not in a live caption.
+      weight_range: [200, 760]
+      # 2.3.9/2.3.10: rich low harmonics read wider, thin high harmonics
+      # condensed. Centred on 100% so the CONDENSED half is reachable -- the
+      # previous mapping summed two always-positive terms and measured width
+      # never once fell below 100%. Bounded well inside Roboto Flex's 25..151
+      # wdth axis.
+      width_range: [82, 124]
+
     neighbor_push: false      # past written captions never move again
     # Open-caption adaptation: a word cannot be visible before ASR supplies it,
     # so its first paint is its visual activation. Run the same fixed §2.2.3
@@ -962,6 +1019,13 @@ closed_caption:
   # FULLY, ONE BY ONE" -- syllable-at-a-time is the documented exception, not
   # the default. So the pop and the elevation are word-level, never per letter.
   sync_pop: 0.15              # +15% type size at the turn, then back (2.2.3)
+  # UNRESOLVED, and deliberately left as-is: live re-read "25% elevation" as 25%
+  # of GLYPH HEIGHT (0.132 em) after measuring all three reference recordings,
+  # where the median word travels ~25% of a glyph. `cc` still spends 0.25 em,
+  # which is ~1.9x that. `cc` is the authored reference renderer and plays through
+  # rather than accumulating, so a larger excursion is defensible there -- but if
+  # the glyph-height reading is right, this is simply too big. Re-derive against
+  # docs/reference before changing it.
   sync_elevation_em: 0.25     # 25% elevation at the turn, then back (2.2.3)
   # Shape only -- the design system gives the amplitudes, the recordings give
   # the timing of the same event (rise 70-100 ms, peak +70-100 ms past the

@@ -89,8 +89,11 @@
      when `N * --per-word-em + --caption-gutter-em` ems cover it. Keep
      `--caption-gutter-em` equal to the feed's own `padding-left + padding-right`;
      `planStageLayout` measures the real padding, so a drift between them shows up
-     as a row-count/type-size mismatch in the CDP probe. */
-  --caption-gutter-em: 2.38;
+     as a row-count/type-size mismatch in the CDP probe.
+     Motion never changes the row budget: normal type owns layout and the
+     transient glyph is overlaid. The gutter covers only visual overhang and the
+     trailing orb. */
+  --caption-gutter-em: 2.50;
   /* `--caption-width-cap` is NOT declared here -- see `.studio-shell`. */
 }
 
@@ -533,11 +536,8 @@ button {
      being cut off without letting it change where the words sit.
      - right: the trailing voice orb, positioned .55em past its row's right edge
        and .82em wide, used to push through the clip and lose half its sphere.
-     - left: a word's first-paint motion scales it up to 1.38 about
-       `transform-origin: 50% 100%`, so the FIRST word of every row grows
-       leftward past the row origin -- measured, the left edge of a wide first
-       word crossed the box and Chrome clipped the glyph mid-motion. Half of a
-       long word's 38% growth is the budget.
+     - left: the overlaid first word grows about `transform-origin: 50% 100%`,
+       so the clip needs room for the configured voice shape and 15% pop.
      - top: the same scale grows upward, and the word carries up to .25em of
        transient lift on top of that, which is more than the 1.38 line box's
        leading. Without this the TOP row's motion was clipped flat.
@@ -549,11 +549,9 @@ button {
        the TOP, so the bottom strip stays free.
      Capping the row with `max-width` instead resolved its `%` against a
      shrink-wrapped `.caption-surface` and dragged the orb onto the last word.
-     The right gutter is a SUM, not a guess: orb offset (.78em) + orb width
-     (.82em) + the last word's own transient overhang, which is the scale
-     channel's (1.38-1)/2 of its half-width plus half its ink growth. Keep
-     `--caption-gutter-em` equal to left + right. */
-  padding: .40em 1.78em .66em .60em;
+     The right gutter covers the orb plus the last word's transient overhang.
+     Keep `--caption-gutter-em` equal to left + right. */
+  padding: .40em 1.90em .66em .60em;
   /* No gap: consecutive blocks are one continuous read, spaced only by the
      caption's own leading. A gap turned every speaker turn and utterance
      boundary into a visible section break, which is segmentation the reader
@@ -662,6 +660,8 @@ button {
   max-width: 100%;
   padding: .08em .16em .14em .18em;
   row-gap: .12em;
+  /* Motion is painted on an overlay and never participates in layout. */
+  line-height: 1.38;
   white-space: normal;
 }
 
@@ -697,28 +697,24 @@ button {
   max-width: none;
 }
 
+/* NORMAL TYPE OWNS LAYOUT.
+   The invisible `.word-sizer` stays at 5% / Regular 400 / width 100. The
+   visible glyph is absolutely overlaid and may follow CWI 2.3 during its one
+   motion window without changing this box. This replaces the old
+   getBoundingClientRect -> inline-width freeze: the return state is structural,
+   not something recovered by measuring pixels. */
 .caption-word {
   position: relative;
-  display: inline-block;
+  display: inline-grid;
   flex: 0 0 auto;
   margin-right: .30em;
-  /* THE INK GROWS FROM THE CENTRE, NOT FROM THE LEFT. The wrapper is frozen at
-     its resting width so the animating axes cannot reflow the row, which means a
-     heavier or wider ink necessarily overflows it -- measured, "without" rendered
-     159.4px of ink in a 142.6px box. Left-anchored (the inline default) all
-     11.8% of that went RIGHT, into the next word and, on the last word of a row,
-     into the trailing orb and the clip gutter. Centring splits it, which also
-     matches `transform-origin: 50% 100%` on the scale channel, so both the
-     transform and the axis growth are now symmetric about the same point. */
   text-align: center;
   vertical-align: baseline;
   color: var(--speaker-color);
   font-size: 1em;
-  font-variation-settings: "opsz" 14, "wght" 400, "wdth" 100;
-  /* Leading, not a text box: at this size 1.22 read as cramped. A word's
-     transient lift is up to 0.25 em, so the extra room also keeps a moving
-     word clear of the line above it. */
-  line-height: 1.38;
+  font-variation-settings: "opsz" 14;
+  font-weight: 400;
+  font-stretch: 100%;
   opacity: 1;
 }
 
@@ -743,135 +739,67 @@ button {
   text-decoration: none;
 }
 
+.word-sizer {
+  grid-area: 1 / 1;
+  visibility: hidden;
+  white-space: pre;
+}
+
+.word-sizer-crest {
+  /* Reserve the real motion footprint with CSS typography, not a pixel read.
+     The grid track takes max(normal sizer, crest sizer), while zero line-height
+     keeps this width-only reservation from changing row height. */
+  font-size: calc(1em * var(--motion-footprint-scale));
+  font-weight: var(--voice-weight);
+  font-stretch: var(--voice-width);
+  line-height: 0;
+}
+
 .word-glyph {
-  position: relative;
-  display: inline-block;
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  display: block;
+  width: max-content;
   transform-origin: 50% 100%;
+  transform: translate3d(-50%, 0, 0) scale(1);
   white-space: nowrap;
   will-change: transform;
 }
 
 .caption-word.is-active .word-glyph {
-  animation: word-size-motion var(--motion-duration) cubic-bezier(.42,0,.22,1) both;
+  animation: word-sync-pop var(--motion-duration) cubic-bezier(.42,0,.22,1);
   animation-delay: var(--motion-phase-delay);
 }
 
-.caption-word[data-motion="rising"].is-active .word-glyph {
-  animation-name: word-delivery-rising;
-}
-
-.caption-word[data-motion="falling"].is-active .word-glyph {
-  animation-name: word-delivery-falling;
-}
-
-.caption-word[data-motion="sustained"].is-active .word-glyph {
-  animation-name: word-delivery-sustained;
-}
-
-.caption-word[data-motion="forceful"].is-active .word-glyph {
-  animation-name: word-delivery-forceful;
-}
-
-.caption-word[data-motion="gentle"].is-active .word-glyph {
-  animation-name: word-delivery-gentle;
-}
-
-.caption-word[data-motion="textured"].is-active .word-glyph {
-  animation-name: word-delivery-textured;
-}
-
-.word-glyph::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: .12em -.10em .02em;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0;
-  filter: blur(var(--delivery-glow));
-  pointer-events: none;
-}
-
-.caption-word.is-active .word-glyph::before {
-  animation:
-    word-resonance-motion var(--motion-duration)
-    cubic-bezier(.42,0,.22,1) both;
-  animation-delay: var(--motion-phase-delay);
-}
+/* REMOVED 2026-07-31 (user request): the `textured` delivery family drew a
+   blurred `currentColor` ellipse behind the word for the length of its motion.
+   It was the only shadow anywhere inside `.caption-word`, and CWI gives the
+   caption no glow -- the design system's word cue is size and position, and
+   colour belongs to speaker identity. Texture still reaches the screen through
+   the weight/width axes and the `textured` motion family's own timing. */
 
 .word-ink {
   display: inline-block;
-  font-variation-settings: "opsz" 14;
+  transform-origin: 50% 100%;
+  transform: scale(1);
   font-weight: 400;
   font-stretch: 100%;
-  will-change: font-weight, font-stretch;
+  will-change: transform, font-weight, font-stretch;
 }
 
 .caption-word.is-active .word-ink {
-  animation:
-    word-intonation-steady var(--motion-duration)
-    cubic-bezier(.42,0,.22,1) both;
+  animation: word-voice-shape var(--motion-duration) cubic-bezier(.42,0,.22,1);
   animation-delay: var(--motion-phase-delay);
 }
 
-.caption-word[data-motion="rising"].is-active .word-ink {
-  animation-name: word-intonation-rising;
-}
-
-.caption-word[data-motion="falling"].is-active .word-ink {
-  animation-name: word-intonation-falling;
-}
-
-.caption-word[data-motion="sustained"].is-active .word-ink {
-  animation-name: word-intonation-sustained;
-}
-
-.caption-word[data-motion="forceful"].is-active .word-ink {
-  animation-name: word-intonation-forceful;
-}
-
-.caption-word[data-motion="gentle"].is-active .word-ink {
-  animation-name: word-intonation-gentle;
-}
-
-.caption-word[data-motion="textured"].is-active .word-ink {
-  animation-name: word-intonation-textured;
-}
-
+/* `animation-fill-mode` is deliberately left at its default `none`. Even if an
+   animationend event is lost, the browser drops the animated values and these
+   explicit normal declarations win. Removing `.is-active` is logical cleanup;
+   it is not required to recover the pixels. */
 .caption-word.is-settled .word-glyph,
-.caption-word.is-settled .word-ink,
-.caption-word.is-settled .caption-character {
+.caption-word.is-settled .word-ink {
   animation: none;
-  transform: none;
-  font-weight: 400;
-  font-stretch: 100%;
-}
-
-.caption-word.is-settled .word-glyph::before {
-  animation: none;
-  opacity: 0;
-}
-
-.caption-character {
-  display: inline-block;
-  position: relative;
-  transform-origin: 50% 100%;
-  white-space: pre;
-  will-change: transform;
-}
-
-.caption-word.is-active .caption-character {
-  animation:
-    character-handoff var(--motion-duration)
-    cubic-bezier(.42,0,.22,1) both;
-  animation-delay:
-    calc(var(--motion-phase-delay) + var(--char-index) * var(--character-step));
-}
-
-.caption-word.is-active
-  .caption-character[data-revision-added="true"] {
-  animation: none;
-  transform: none;
 }
 
 .caption-word[data-sustain="true"] .word-glyph::after {
@@ -1502,259 +1430,45 @@ button {
   line-height: 1.5;
 }
 
-@keyframes word-size-motion {
+/* THE SYNCHRONIZATION LAYER -- CWI 2.2.3, verbatim:
+   "Caption with Intention adds a motion element to each word as it changes
+   color. Each word should undergo a 15% increase in type size before returning
+   to its original size, creating a 'pop' motion effect."
+   The diagram on the same page labels the rise "25% elevation", and its inset
+   ("we need to talk") shows the popped word both LARGER and RAISED off the
+   baseline of its neighbours.
+   One path, on the whole word, once. `transform`, not `font-size`, keeps the cue
+   transient and out of layout. The permanent -50% X translation centres the
+   overlaid glyph on the normal-type sizer beneath it. */
+@keyframes word-sync-pop {
   0% {
-    opacity: .72;
-    transform:
-      translate3d(0, var(--delivery-start-drop), 0)
-      scale(.985);
+    transform: translate3d(-50%, 0, 0) scale(1);
   }
-  48% {
-    opacity: 1;
-    transform: translate3d(0, calc(-1 * var(--active-lift)), 0) scale(var(--active-scale));
-  }
-  72% {
-    opacity: 1;
+  42% {
     transform:
-      translate3d(0, calc(-1 * var(--delivery-release-lift)), 0)
-      scale(var(--delivery-hold-scale));
+      translate3d(-50%, calc(-1 * var(--sync-elevation)), 0)
+      scale(var(--sync-pop));
   }
   100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(-50%, 0, 0) scale(1);
   }
 }
 
-/* Delivery paths describe observable acoustics. Every path reaches exactly the
-   same rest state; speaker/color or verifier updates cannot replay one. */
-@keyframes word-delivery-rising {
-  0% {
-    opacity: .72;
-    transform:
-      translate3d(0, var(--delivery-start-drop), 0)
-      scale(.985);
-  }
-  44% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-.42 * var(--active-lift)), 0)
-      scale(var(--delivery-hold-scale));
-  }
-  70% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-1 * var(--delivery-release-lift)), 0)
-      scale(var(--active-scale));
-  }
-  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-}
-
-@keyframes word-delivery-falling {
-  0% {
-    opacity: .72;
-    transform:
-      translate3d(0, var(--delivery-start-drop), 0)
-      scale(.985);
-  }
-  36% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-1 * var(--active-lift)), 0)
-      scale(var(--active-scale));
-  }
-  68% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-.28 * var(--delivery-release-lift)), 0)
-      scale(var(--delivery-hold-scale));
-  }
-  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-}
-
-@keyframes word-delivery-sustained {
-  0% {
-    opacity: .72;
-    transform:
-      translate3d(0, var(--delivery-start-drop), 0)
-      scale(.985);
-  }
-  42% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-1 * var(--active-lift)), 0)
-      scale(var(--active-scale));
-  }
-  72% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-1 * var(--delivery-release-lift)), 0)
-      scale(var(--delivery-hold-scale));
-  }
-  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-}
-
-@keyframes word-delivery-forceful {
-  0% {
-    opacity: .66;
-    transform:
-      translate3d(0, var(--delivery-start-drop), 0)
-      scale(.975);
-  }
-  40% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-1 * var(--active-lift)), 0)
-      scale(var(--active-scale));
-  }
-  68% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-1 * var(--delivery-release-lift)), 0)
-      scale(var(--delivery-hold-scale));
-  }
-  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-}
-
-@keyframes word-delivery-gentle {
-  0% {
-    opacity: .82;
-    transform: translate3d(0, 0, 0) scale(.992);
-  }
-  42% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-.38 * var(--active-lift)), 0)
-      scale(var(--delivery-hold-scale));
-  }
-  68% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-1 * var(--active-lift)), 0)
-      scale(var(--active-scale));
-  }
-  84% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-.32 * var(--delivery-release-lift)), 0)
-      scale(var(--delivery-hold-scale));
-  }
-  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-}
-
-@keyframes word-delivery-textured {
-  0% {
-    opacity: .74;
-    transform:
-      translate3d(0, var(--delivery-start-drop), 0)
-      scale(.985);
-  }
-  38% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-.56 * var(--active-lift)), 0)
-      scale(var(--delivery-hold-scale));
-  }
-  64% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-1 * var(--active-lift)), 0)
-      scale(var(--active-scale));
-  }
-  82% {
-    opacity: 1;
-    transform:
-      translate3d(0, calc(-.44 * var(--delivery-release-lift)), 0)
-      scale(var(--delivery-hold-scale));
-  }
-  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-}
-
-@keyframes word-resonance-motion {
-  0%, 20% { opacity: 0; transform: scale(.78); }
-  54% {
-    opacity: var(--delivery-resonance-opacity);
+/* THE INTONATION LAYER -- CWI 2.3.
+   Volume supplies size, pitch supplies weight, and harmonics supply width at
+   the crest. This live presentation makes those qualities transient: both
+   endpoints are exactly the normal caption type, and the visible glyph is
+   overlaid so the axis excursion cannot move neighbouring words. */
+@keyframes word-voice-shape {
+  0%, 100% {
     transform: scale(1);
+    font-weight: 400;
+    font-stretch: 100%;
   }
-  100% { opacity: 0; transform: scale(1.12); }
-}
-
-/* Intonation is not a second copy of the synchronization pop. Weight and width
-   articulate on independent profile-specific clocks, matching the reference's
-   visibly different "sizes", "weights", "animation", and "louder" examples. */
-@keyframes word-intonation-steady {
-  0%, 16% { font-weight: 400; font-stretch: 100%; }
-  36% { font-weight: var(--active-weight); font-stretch: 100%; }
-  54% { font-weight: var(--active-weight); font-stretch: var(--active-width); }
-  74% { font-weight: 400; font-stretch: var(--active-width); }
-  100% { font-weight: 400; font-stretch: 100%; }
-}
-
-@keyframes word-intonation-rising {
-  0%, 24% { font-weight: 400; font-stretch: 100%; }
-  48% { font-weight: var(--active-weight); font-stretch: 100%; }
-  70%, 82% {
-    font-weight: var(--active-weight);
-    font-stretch: var(--active-width);
-  }
-  100% { font-weight: 400; font-stretch: 100%; }
-}
-
-@keyframes word-intonation-falling {
-  0%, 10% { font-weight: 400; font-stretch: 100%; }
-  28%, 40% {
-    font-weight: var(--active-weight);
-    font-stretch: var(--active-width);
-  }
-  62% { font-weight: 400; font-stretch: var(--active-width); }
-  100% { font-weight: 400; font-stretch: 100%; }
-}
-
-@keyframes word-intonation-sustained {
-  0%, 18% { font-weight: 400; font-stretch: 100%; }
-  38%, 76% {
-    font-weight: var(--active-weight);
-    font-stretch: var(--active-width);
-  }
-  100% { font-weight: 400; font-stretch: 100%; }
-}
-
-@keyframes word-intonation-forceful {
-  0%, 12% { font-weight: 400; font-stretch: 100%; }
-  32% { font-weight: var(--active-weight); font-stretch: 100%; }
-  50%, 72% {
-    font-weight: var(--active-weight);
-    font-stretch: var(--active-width);
-  }
-  100% { font-weight: 400; font-stretch: 100%; }
-}
-
-@keyframes word-intonation-gentle {
-  0%, 28% { font-weight: 400; font-stretch: 100%; }
-  56%, 74% {
-    font-weight: var(--active-weight);
-    font-stretch: var(--active-width);
-  }
-  100% { font-weight: 400; font-stretch: 100%; }
-}
-
-@keyframes word-intonation-textured {
-  0%, 16% { font-weight: 400; font-stretch: 100%; }
-  38% { font-weight: var(--active-weight); font-stretch: 100%; }
-  62%, 82% { font-weight: 400; font-stretch: var(--active-width); }
-  100% { font-weight: 400; font-stretch: 100%; }
-}
-
-@keyframes character-handoff {
-  0%, 20% {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  52% {
-    transform:
-      translate3d(0, calc(-1 * var(--character-lift)), 0)
-      scale(var(--character-scale));
-  }
-  100% {
-    transform: translate3d(0, 0, 0) scale(1);
+  42% {
+    transform: scale(var(--voice-scale));
+    font-weight: var(--voice-weight);
+    font-stretch: var(--voice-width);
   }
 }
 
@@ -2003,7 +1717,7 @@ button {
 
 @keyframes status-pulse {
   0%, 100% { opacity: .35; transform: scale(.76); }
-  50% { opacity: 1; transform: scale(1); }
+  50% { opacity: 1; font-size: 1em; }
 }
 
 @keyframes panel-enter {
@@ -2140,12 +1854,15 @@ button {
 }
 
 .studio-shell[data-reduced-motion="true"] .caption-word,
-.studio-shell[data-reduced-motion="true"] .word-glyph,
-.studio-shell[data-reduced-motion="true"] .word-ink,
-.studio-shell[data-reduced-motion="true"] .caption-character {
+.studio-shell[data-reduced-motion="true"] .word-ink {
   animation: none !important;
   transform: none !important;
   font-variation-settings: "opsz" 14 !important;
   font-weight: 400 !important;
   font-stretch: 100% !important;
+}
+
+.studio-shell[data-reduced-motion="true"] .word-glyph {
+  animation: none !important;
+  transform: translate3d(-50%, 0, 0) scale(1) !important;
 }

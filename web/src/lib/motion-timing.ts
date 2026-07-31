@@ -124,6 +124,23 @@ export function unpaintedReservationExpired(
 }
 
 /**
+ * Fallback wake-up for logical cleanup when a browser drops `animationend`.
+ *
+ * Infinite expiries are unpainted reservations and have their own watchdog.
+ * A null result means there is no painted motion to revisit.
+ */
+export function nextActiveMotionDelayMs(
+  expiries: Iterable<number>,
+  nowMs: number,
+): number | null {
+  let next = Number.POSITIVE_INFINITY;
+  for (const expiry of expiries) {
+    if (Number.isFinite(expiry)) next = Math.min(next, expiry);
+  }
+  return Number.isFinite(next) ? Math.max(0, next - nowMs) : null;
+}
+
+/**
  * Keep the two-word presentation lane sustainable at the measured speech rate.
  *
  * At ordinary cadence the authored 520–720 ms clock is untouched. Faster
@@ -172,15 +189,53 @@ export function adaptiveMotionDurationMs(
   );
 }
 
-export function characterMotionStepMs(
+export interface CharacterWaveTiming {
+  /** Delay between one letter's bump and the next. */
+  stepMs: number;
+  /** How long ONE letter's bump lasts -- not the whole word's clock. */
+  bumpMs: number;
+}
+
+/**
+ * Time the alphabet-level hand-off so it actually TRAVELS across the word.
+ *
+ * A wave exists only if the letters of one word are at DIFFERENT phases at the
+ * same instant. Two things have to be true for that, and the previous model had
+ * neither:
+ *
+ *   1. The step was `min(18ms, duration * 0.42 / (n - 1))`, and that 18ms cap
+ *      fired for every word up to 13 characters -- i.e. essentially always. A
+ *      seven-letter word spread its letters over 108ms.
+ *   2. Every letter animated for the WHOLE word clock (520-720ms). Offsetting a
+ *      520ms bump by 18ms leaves the letters ~97% in phase, so even a large
+ *      amplitude reads as one synchronous word-level pulse.
+ *
+ * Measured on the running studio, the result was a median phase spread across a
+ * word of **0.017em** -- 0.8px at 47px type. The alphabet motion was present in
+ * the DOM and invisible on screen.
+ *
+ * So both come from one constraint instead: `overlap` letters should be in
+ * flight at once, and the hand-off must finish exactly when the word's own clock
+ * does (a character animation outliving the wrapper would be cut off mid-air
+ * when `.is-settled` lands). With `bump = overlap * step` and
+ * `(n - 1) * step + bump = duration`, that is `step = duration / (n - 1 + overlap)`.
+ *
+ * At overlap 3 a 520ms word gives 87ms steps on a four-letter word and 46ms on a
+ * nine-letter one -- inside the 53-110ms letter-to-letter spacing measured on the
+ * reference recording -- and a long word compresses gracefully instead of losing
+ * the hand-off entirely.
+ */
+export function characterWaveTiming(
   durationMs: number,
   characterCount: number,
-): number {
-  if (characterCount <= 1) return 0;
-  return Math.min(
-    18,
-    Math.max(0, durationMs) * 0.42 / (characterCount - 1),
-  );
+  overlap: number,
+): CharacterWaveTiming {
+  const duration = Math.max(0, durationMs);
+  const letters = Math.max(1, Math.floor(characterCount));
+  if (letters <= 1) return {stepMs: 0, bumpMs: duration};
+  const inFlight = clamp(finite(overlap, 3), 1, letters);
+  const stepMs = duration / (letters - 1 + inFlight);
+  return {stepMs, bumpMs: stepMs * inFlight};
 }
 
 /**

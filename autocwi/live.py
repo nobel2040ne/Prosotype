@@ -130,12 +130,11 @@ def _delivery_profile(
 ) -> str:
     """Name an audible delivery shape without inferring an inner emotion.
 
-    DIAGNOSTIC ONLY. This label selects which motion FAMILY a word uses, but it
-    must never gate how much of the word's measured voice reaches the screen --
-    that is continuous (see `deliveryExpressiveness` in
-    `web/src/lib/voice-sensitivity.ts`). Thresholds here are unavoidable because
-    a family is a discrete choice; amplitude is not, and must not inherit their
-    dead zone.
+    DIAGNOSTIC ONLY, and it must never choose a caption motion family. CWI 2.2.3
+    gives every word the same cue, while the continuous type axes in
+    `web/src/lib/caption-motion.ts` read the acoustics directly. Thresholds here
+    are unavoidable because a label is discrete; the type axes are not and must
+    not inherit their dead zone.
     """
 
     profile = dict(cfg.get("profile", {}) or {})
@@ -4608,6 +4607,10 @@ def _studio_runtime_config(
 ) -> dict:
     display = cfg.get("display", {}) or {}
     live_sync = cfg.get("motion", {}).get("live_sync", {}) or {}
+    # The Next studio's motion is its own: `studio:` overrides any shared key,
+    # so the legacy diagnostics renderer keeps the values it was tuned against.
+    # See the block comment on `studio:` in config.yaml.
+    live_sync = {**live_sync, **(live_sync.get("studio") or {})}
     return {
         "palette": list(cfg.get("palette", []))
         + list(cfg.get("palette_support", [])),
@@ -4667,47 +4670,26 @@ def _studio_runtime_config(
         "wordMotionCatchupScale": display.get(
             "word_motion_catchup_scale", 0.82
         ),
-        "syncPop": live_sync.get("sync_pop", 0.10),
-        "syncElevationEm": live_sync.get("sync_elevation_em", 0.20),
-        "characterWaveLiftEm": live_sync.get(
-            "character_wave_lift_em", 0.085
-        ),
-        "characterWavePop": live_sync.get("character_wave_pop", 0.030),
-        "deliveryMotionEnabled": live_sync.get("delivery_enabled", True),
-        "deliveryContourLiftEm": live_sync.get(
-            "delivery_contour_lift_em", 0.055
-        ),
-        "deliveryForceLiftEm": live_sync.get(
-            "delivery_force_lift_em", 0.045
-        ),
-        "deliveryAttackDropEm": live_sync.get(
-            "delivery_attack_drop_em", 0.025
-        ),
-        "deliveryFlowHoldEm": live_sync.get(
-            "delivery_flow_hold_em", 0.035
-        ),
-        "deliveryIntonationLiftGain": live_sync.get(
-            "delivery_intonation_lift_gain", 0.35
-        ),
-        "deliveryAxisGainFloor": live_sync.get(
-            "delivery_axis_gain_floor", 0.50
-        ),
-        "weightRange": [
-            float(v) for v in live_sync.get("weight_range", [100, 900])
+        "syncPop": live_sync.get("sync_pop", 0.15),
+        "syncElevationEm": live_sync.get("sync_elevation_em", 0.25),
+        "voiceScaleRange": [
+            float(v) for v in live_sync.get(
+                "voice_scale_range", [0.90, 1.20]
+            )
         ],
-        "weightGain": float(live_sync.get("weight_gain", 1.75)),
-        "voiceSensitivityGamma": live_sync.get(
-            "voice_sensitivity_gamma", 0.62
+        "voiceScaleResponse": float(
+            live_sync.get("voice_scale_response", 0.25)
         ),
-        "deliveryExpressivenessFloor": live_sync.get(
-            "delivery_expressiveness_floor", 0.34
-        ),
+        "widthRange": [
+            float(v) for v in live_sync.get("width_range", [82, 124])
+        ],
+        "deliveryMotionEnabled": live_sync.get("delivery_enabled", True),
         "deliveryFlowDurationMs": live_sync.get(
             "delivery_flow_duration_ms", 90
         ),
-        "deliveryTextureGlowPx": live_sync.get(
-            "delivery_texture_glow_px", 6
-        ),
+        "weightRange": [
+            float(v) for v in live_sync.get("weight_range", [200, 760])
+        ],
         "deliveryMinConfidence": live_sync.get(
             "delivery_min_confidence", 0.38
         ),

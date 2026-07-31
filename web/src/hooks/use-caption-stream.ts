@@ -25,6 +25,7 @@ import {
   exceedsMotionBacklogCeiling,
   isHistoricalInsertion,
   naturalMotionDurationMs,
+  nextActiveMotionDelayMs,
   recentAcousticGapMs,
   unpaintedReservationExpired,
 } from "@/lib/motion-timing";
@@ -85,25 +86,21 @@ export interface RuntimeConfig {
   wordMotionCatchupScale: number;
   syncPop: number;
   syncElevationEm: number;
-  characterWaveLiftEm: number;
-  characterWavePop: number;
   deliveryMotionEnabled: boolean;
-  deliveryContourLiftEm: number;
-  deliveryForceLiftEm: number;
-  deliveryAttackDropEm: number;
-  deliveryFlowHoldEm: number;
+  /** A drawn-out word holds its 2.2.3 cue slightly longer. */
   deliveryFlowDurationMs: number;
-  deliveryTextureGlowPx: number;
-  deliveryIntonationLiftGain: number;
-  deliveryAxisGainFloor: number;
-  /** Transient wght band a word may travel through before landing on 400. */
+  /** Settled wght band. CWI 2.3.9: low pitch heavy, high pitch light. */
   weightRange: [number, number];
-  /** Multiplier on the weight channel alone, on top of the shared axis gain. */
-  weightGain: number;
-  /** <1 steepens voice-axis response near the speaker's median; 1 disables. */
-  voiceSensitivityGamma: number;
-  /** Lowest continuous expressiveness a flat word gets. Not a threshold. */
-  deliveryExpressivenessFloor: number;
+  /** Settled wdth band. CWI 2.3.9/2.3.10: rich harmonics wider. */
+  widthRange: [number, number];
+  /** Transient voice-size band around the baseline. CWI 2.3.6. */
+  voiceScaleRange: [number, number];
+  /**
+   * How much of CWI 2.3.6's size excursion is used at the motion crest, applied
+   * about the 2.3.5 baseline so a normal speaking voice stays at exactly 1.
+   * 1 is the design system's literal 3%..12%.
+   */
+  voiceScaleResponse: number;
   deliveryMinConfidence: number;
   languages: LiveLanguageOption[];
   selectedLanguage: string | null;
@@ -134,23 +131,14 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   motionBacklogCeilingMs: 1200,
   wordMotionRateHeadroom: 0.90,
   wordMotionCatchupScale: 0.82,
-  syncPop: 0.10,
-  syncElevationEm: 0.20,
-  characterWaveLiftEm: 0.085,
-  characterWavePop: 0.030,
+  syncPop: 0.15,
+  syncElevationEm: 0.25,
   deliveryMotionEnabled: true,
-  deliveryContourLiftEm: 0.055,
-  deliveryForceLiftEm: 0.045,
-  deliveryAttackDropEm: 0.025,
-  deliveryFlowHoldEm: 0.035,
   deliveryFlowDurationMs: 90,
-  deliveryTextureGlowPx: 6,
-  deliveryIntonationLiftGain: 0.35,
-  deliveryAxisGainFloor: 0.50,
-  weightRange: [100, 900],
-  weightGain: 1.75,
-  voiceSensitivityGamma: 0.62,
-  deliveryExpressivenessFloor: 0.34,
+  weightRange: [200, 760],
+  widthRange: [82, 124],
+  voiceScaleRange: [0.90, 1.20],
+  voiceScaleResponse: 0.25,
   deliveryMinConfidence: 0.38,
   languages: [
     {
@@ -191,15 +179,6 @@ interface PendingReveal {
 
 interface StreamOptions {
   reducedMotion: boolean;
-}
-
-function median(values: number[]): number {
-  if (!values.length) return 180;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2
-    ? sorted[middle]
-    : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -296,12 +275,10 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     useState<Record<string, MotionSnapshot>>({});
   const [startedAt] = useState(() => Date.now());
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
-  const [pitchBaseline, setPitchBaseline] = useState(180);
 
   const modelRef = useRef(model);
   const revealRef = useRef(reveal);
   const levelRef = useRef(level);
-  const pitchHistoryRef = useRef<number[]>([]);
   const pendingRef = useRef<PendingReveal[]>([]);
   const knownRef = useRef(new Set<string>());
   const activeRef = useRef(new Map<string, number>());
@@ -344,16 +321,6 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       const incoming = event as unknown as LevelEvent;
       setLevel(incoming);
       setWaveform((values) => [...values.slice(-31), Number(incoming.rms_db)]);
-      if (
-        Number(incoming.pitch_hz) > 0 &&
-        Number(incoming.pitch_confidence ?? 0) >= 0.32
-      ) {
-        pitchHistoryRef.current = [
-          ...pitchHistoryRef.current.slice(-31),
-          Number(incoming.pitch_hz),
-        ];
-        setPitchBaseline(median(pitchHistoryRef.current));
-      }
       return;
     }
     setModel((current) => reduceCaptionEvent(current, event, id));
@@ -540,6 +507,11 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     }
     if (!pendingRef.current.length) {
       deadlineRef.current = 0;
+      const cleanupDelay = nextActiveMotionDelayMs(
+        activeRef.current.values(),
+        now,
+      );
+      if (cleanupDelay !== null) schedulePump(cleanupDelay);
       return;
     }
     if (now < deadlineRef.current) {
@@ -826,7 +798,6 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     motionSnapshots,
     confirmMotionPaint,
     completeMotion,
-    pitchBaseline,
     startedAt,
     lastEventAt,
     dispatch,

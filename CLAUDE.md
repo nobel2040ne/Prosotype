@@ -252,10 +252,15 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   — never model objects. Extend the schema with optional fields; breaking
   changes require a version bump.
 - **All mapping values live in `config.yaml`**, never hardcoded. They follow
-  the official CWI Design System V1.0 — cite section numbers in comments
-  (see `docs/DESIGN.md` for the extracted values;
-  `docs/RESEARCH.md` maps prior DHH-captioning research onto design
-  decisions here).
+  the official CWI Design System V1.0 — cite section numbers in comments.
+  **READ THE NUMBERS OUT OF `docs/cwi-design-system-v1.0.pdf` ITSELF, NOT OUT OF
+  `docs/DESIGN.md` (the user's instruction, 2026-07-31: "it is wrong").** That
+  file mixes the PDF's stated values with derivations fitted to
+  `docs/reference/*.mov`, and where the two disagree the fitted material has
+  been wrong every time — the recordings are the project's *website*, not the
+  spec. Treat `docs/DESIGN.md` as a changelog of superseded interpretation.
+  `docs/RESEARCH.md` maps prior DHH-captioning research onto design decisions
+  here and is unaffected.
 - **ALL PRESENTATIONS SHARE THE CWI MOTION SEMANTICS.** (Current live contract
   updated 2026-07-24.) The legacy live diagnostics consume
   `autocwi/cwi_motion_core.js`; the Next product UI expresses the same
@@ -329,105 +334,165 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     which drives CDP over a websocket and calls `window.__cwiStudio.report()` on
     a live page. Screenshots still work (they wait for paint) but give pixels,
     not metrics.
-  * **THERE IS NO TRIGGER THRESHOLD ON AMPLITUDE (2026-07-30).** How much
-    measured voice reaches the screen is CONTINUOUS in the acoustics —
-    `deliveryExpressiveness()` in `web/src/lib/voice-sensitivity.ts`. It replaced
-    a lookup keyed on the discrete `delivery_profile`, which was a threshold in
-    the amplitude path: measured on the bundled sample, 78% of words (46/59)
-    classified `steady` and every one kept exactly 30% of its excursion, so a
-    word just under the classifier's cut-off was attenuated as hard as a flat
-    one. Amplitude now takes 43 distinct values where it took 3, and those 46
-    formerly identical words span 0.34–0.82. `delivery_profile` still selects the
-    motion FAMILY (a discrete choice) but may never gate amplitude again.
-    Three calibration traps, all found by measuring, not by eye:
-    (a) only `contour` and `attack` have a definitional neutral. Centring
-    `force`/`flow`/`texture` at 0.5 scored ordinary words as near-maximal
-    (an unremarkable "You" has `flow` 0.028) and inflated every word to ~0.79;
-    `force` is measured against a configured typical level and flow/texture are
-    excluded from the magnitude. (b) `force == 0` means the estimator produced
-    nothing, not silence — untreated it scored 0.618, MORE than a typical word.
-    (c) Mean amplitude still rises 0.368 → 0.607, so verify in `autocwi tune`
-    before a booth run; the old deadband existed because motion on every word
-    reads as constant movement.
-  * **Axis response is expanded around the speaker's own centre, not linear.**
-    `expandAroundCenter`/`expandPitch` apply a gamma below 1 to the deviation
-    from the median (loudness) or per-speaker baseline (pitch) with BOTH
-    ENDPOINTS PINNED, so small changes separate without widening the reachable
-    extremes. A 0.45→0.55 loudness swing went from 3.19% to 7.65% of scale.
-    SCALE expands upward only: it may never fall below the constant 10% sync pop,
-    so `max(sync, …)` already flattens sub-median words and expanding downward
-    pushed more onto that same floor (2.26% → 0.02%). LIFT gets the full
-    symmetric expansion and is the only channel that can express
-    "quieter than median" at all (0.9 → 16.4 milli-em).
-  * **THE WEIGHT CHANNEL WAS THE ONE DOING THE LEAST (2026-07-30, at the user's
-    request).** Measured over 92 words of the bundled sample, `--active-weight`
-    deviated from Regular 400 by a median of **102** units and a maximum of 170 —
-    and 400→500 on Roboto Flex is Regular→Medium, very nearly invisible at caption
-    size. Two things held it down and BOTH had to move: the rendered band was
-    hardcoded 180..700, so pitch had to reach the 80/250 Hz domain edges to spend
-    it, and the shared `delivery_axis_gain_floor` then halved what was left.
-    `live_sync.weight_range` (**100..900** — the full usable axis of both caption
-    faces; Roboto Flex reaches 1000, Noto Sans KR stops at 900) and
-    `live_sync.weight_gain` (**1.75**, multiplying the weight channel ALONE) take
-    the median deviation to **276–300** with 90–230 distinct values. It multiplies
-    only the deviation from 400, so the word still lands on exactly Regular 400 at
-    rest, and it does not touch the constant §2.2.3 cue, size, width, or lift.
-    **A wider weight axis makes the ink physically wider, and the wrapper is
-    frozen**, so `.caption-word` needs `text-align: center`: left-anchored (the
-    inline default) all of the growth went RIGHT — measured, "without" rendered
-    159.4px of ink in a 142.6px box — into the next word and, on the last word of
-    a row, into the trailing orb and the clip gutter. Centring splits it and
-    matches `transform-origin: 50% 100%` on the scale channel, so both the
-    transform and the axis growth are symmetric about the same point.
-  * **Prosody is transient, but it is not one generic pulse.** Loudness controls
-    the temporary scale excursion; it also scales vertical lift continuously.
-    Pitch controls temporary weight; the available pitch/harmonics proxy
-    controls temporary width. `liveChannelEnvelopes()` gives those axes
-    independent zero-velocity trajectories over the first-paint clock: weight
-    articulates first (30% attack), size breathes through the middle (42%),
-    and width follows later (50%). Weight also releases before size/width, so
-    a frame cannot mistake three different acoustic values for one canned
-    animation. Live clamps and compresses the axes around a 10% / 0.20 em base
-    cue, then returns every word to `scale(1)`, Regular 400, width 100. The
-    quiet/grounded/bright/strong/neutral labels are diagnostics for these
-    continuous values, not five discrete animations. Nothing is baked into
-    settled `font-size` or font axes.
-  * **Delivery dynamics are observable acoustics, not emotion labels.**
-    `_word_delivery_features()` measures force, attack, first-to-last F0
-    contour, voiced flow, texture, and confidence from the true word span for
-    both English and Korean. Durable contour MUST use Praat's 10 ms track, not
-    the immediate 64 ms orb estimator: require at least five voiced frames and
-    30% coverage, reject values outside 1.6× of the word median, use seven
-    semitones as full scale, and keep the ±0.45 profile deadband. The former
-    two-frame estimator octave-jumped and marked 86–93% of ordinary sample
-    words expressive. A quiet source level alone also cannot mean `gentle`;
-    force/attack and texture must all pass their config gates.
-    `delivery_cache` freezes that complete signature
-    by `("§slot", utterance, round(start*20))` on its first event; endpoint
-    audio, respelling, speaker colour, and verification may never remeasure or
-    replace it. The primary diagnostic profile selects a distinct temporary
-    path: rising crests late, falling crests early and resolves, sustained holds,
-    forceful travels farther, gentle eases through a smaller arc, and textured
-    uses the base geometry plus a soft resonance halo. Continuous dimensions
-    still modify each path. These words describe delivery only—never display
-    them as claims that the person is angry/happy/sad. Every family returns to
-    exact identity/Regular 400/width 100/zero halo, and reduced/replay
-    words settle directly. `delivery_profile_gains` is a second presentation
-    deadband for the **voice-shaped deviation only**: `steady` keeps 30% of that
-    extra excursion. It must never attenuate the constant first-paint
-    synchronization cue (`sync_pop: 0.10`, `sync_elevation_em: 0.20`), and the
-    final active scale may not fall below that 10% pop. Do not restore full
-    pitch/scale deviation on every ordinary word.
-  * **Synchronization also has a character-local website layer.**
-    `intonation.mov` is word-wide; `synchronization.mov` visibly places
-    different letters of one word at different lift/pop phases. Live therefore
-    composes the wrapper cue with `charLiftOf`/`charScaleOf`, clamps the
-    character lift upward, and spatially blends adjacent phases: zero pre-turn
-    crouch, up to 0.085 em lift and 3% pop, then exact `none`. Do not restore
-    alternating above/below-baseline phases; that was the visible zipper/ziggle
-    failure. All characters are visible before this starts. Do not confuse it
-    with `character_entry_enabled`, the separate opacity/slide typewriter
-    experiment that remains off.
+  * **THE SETTLED-TYPE ANCHORS ARE ABSOLUTE. NEVER RE-CENTRE THEM ON THE
+    SPEAKER (2026-07-31).** `web/src/lib/settled-type.ts` is now the single
+    source of CWI 2.3, and it is deliberately gamma-free. **SUPERSEDES** the two
+    entries that used to sit here — "there is no trigger threshold on amplitude"
+    (`deliveryExpressiveness`) and "axis response is expanded around the
+    speaker's own centre" (`expandAroundCenter`/`expandPitch`). Both belonged to
+    the era when voice was an ANIMATION amplitude; once voice became the resting
+    type, the same expansion destroyed the two anchors the PDF is most explicit
+    about. `web/src/lib/voice-sensitivity.ts` is deleted — nothing imported it.
+    The three defects, all measured on the bundled English sample
+    (233 SSE words / 111 rendered), all invisible to the integrity counters:
+    1. **2.3.5's baseline was off by 20%.** The server already normalizes
+       `loudness` onto the design system's own size axis — 0 is 3% of screen
+       height, 1 is 12%, and it pivots the speaker's running median onto the 5%
+       baseline at **0.2222** (`_word_event` in `live.py`). The client centred
+       that on **0.5**, as if it were a plain normalized level, so the MEDIAN
+       word rendered at **0.793×** the baseline: measured median 0.224 → 0.79.
+       Ordinary speech was captioned as permanently quiet, and the stage type
+       had been shrunk on top of that to clear a ceiling only shouts reached
+       (median word **28.0px**). The literal map is just `(3 + 9L) / 5`.
+    2. **2.3.8's neutral band did not exist.** "All captions within this vocal
+       range maintain this type-weight as a default" describes a **BAND**
+       (160–200 Hz → Regular 400), not a pivot. The client had a single pivot at
+       180 Hz *and* re-centred pitch on the speaker's running baseline with
+       gamma 0.62, so a word 10 Hz off that median was thrown across the whole
+       axis: **67 distinct weights spanning 100–876** on ordinary conversation,
+       with only **19%** of words on Regular. Use RAW Hz against the PDF's
+       absolute 80/160/200/250 anchors.
+    3. **2.3.10's diagonal was broken.** Width summed two always-positive terms,
+       so measured `font-stretch` **never once fell below 100%** — the condensed
+       half, i.e. the entire "thinner or sharper" reading, was unreachable — while
+       weight ran to 876. Loud/high words therefore rendered big + hairline +
+       normal-width, exactly the mismatch p.41 rules out. Width is now centred on
+       100% and driven by the same signed tone as weight (0.7 pitch / 0.3
+       texture), with the harmonics proxy allowed to pull TOWARD neutral but
+       never past it — a plain 0.7/0.3 blend does not hold the diagonal at mild
+       tones, and a 130 Hz word with a thin proxy still resolved heavy+condensed.
+    **Measured after** (`scratchpad/motionprobe.py`, CDP, 500 frames):
+    median settled scale **1.00** at **31.8px**, 65 distinct scales; median
+    weight exactly **400** with **32%** on Regular, 30 distinct weights,
+    200–726; **44%** of words condensed, 21 distinct widths; **0** off-diagonal
+    pairs. Pop still exactly 1.150 / 0.250em on every word, `motionStarts ==
+    motionPaintStarts`, every integrity counter 0, peak concurrency 3.
+    Config: `settled_scale_response` (0.60) is the live narrowing lever and it
+    compresses ABOUT the baseline, so 2.3.5 is exact at any value — the clamp
+    alone cannot do that, it flattens the top of the distribution into one
+    indistinguishable size. `settled_scale_range` [0.72, 1.55],
+    `weight_range` [200, 760], `width_range` [82, 124]; 400 and 100% must stay
+    strictly INSIDE the last two or the neutral band cannot be expressed.
+  * **`settledScaleAllowance`'s coefficient tracks the DISTRIBUTION, not the
+    range (2026-07-31).** It was 0.60, fitted while the median word rendered at
+    0.79× the baseline. Correcting that anchor moved the measured requirement to
+    **1.467** at a 1.55 ceiling, which 0.60 under-budgets by 13% — rows would
+    have overflowed the stage. Re-fitted across scale responses 0.45–1.0 the
+    requirement is `1 + (max−1)*0.85` to within 1.5%; shipped **0.88**.
+    Measure it by sliding a window over the recognizer's REAL word order with
+    each word at the settled size/weight/width its own voice earns and its
+    advance measured in the real caption face (`scratchpad/measure_widths.py`),
+    never by IID-sampling widths. Widening `width_range` from [88,115] to
+    [82,124] cost 0.004 of budget, because the widest row and the loudest run
+    are never the same row. Base type 35.45 → 32.73px, median word 28.0 →
+    31.8px — the corrected anchor buys size back despite the larger allowance.
+    Acceptance after any change here is `scratchpad/overflow.py`: sweep
+    theme × 1440×900 / 390×844, driving the theme through the REAL settings
+    toggle, and assert 0 wrapped rows, 0 orb overlap and no glyph past the clip
+    box while motions are active. Detect a wrapped row by vertical OVERLAP of
+    its words, NOT by equal box tops — words rest at different sizes on a shared
+    baseline, so equal tops flags every row. The one legitimate overflow is the
+    TOP edge on row 0: `justify-content: flex-end` clips the OLDEST row by
+    design (measured 5.95px at 390×844 light, 13 rows).
+  * **THE DESIGN SYSTEM PDF DESCRIBES EXACTLY THREE THINGS. BUILD THOSE.**
+    (2026-07-31, after the user cut short several rounds of inferring motion
+    from `docs/reference/*.mov` — that is the project's *website*, not the
+    spec.) `docs/cwi-design-system-v1.0.pdf` pp.26–41:
+    1. **2.2.2 colour sync** — the word turns the speaker colour at its spoken
+       onset ("when 'In' is spoken, not when 'ble' is spoken").
+    2. **2.2.3 motion** — "Each word should undergo a **15% increase in type
+       size** before returning to its original size, creating a 'pop' motion
+       effect", and the diagram labels the rise **25% elevation**. Its inset
+       ("we need to talk") shows the popped word both LARGER and RAISED off its
+       neighbours' baseline. One transient, per word, once. **Its amplitude is a
+       CONSTANT** — verify `popScale` p50 == max == 1.15 and `liftEm`
+       p50 == max == 0.25em.
+    3. **2.3 intonation** — volume → type SIZE (2.3.3/2.3.6: 3%…12% of screen
+       height, 5% baseline), pitch → type WEIGHT (2.3.8: 160–200 Hz is Regular
+       400; 2.3.9: 80 Hz heavy, 250 Hz light), harmonics → type WIDTH
+       (2.3.9/2.3.10). **THIS IS THE RESTING TYPE, NOT AN ANIMATION.** The pages
+       show whole STATIC sentences with a different size and weight on every
+       word — p.34 "Put that coffee **dOWn!** Coffee's for closers only!",
+       p.40 "The higher the pitch, the lighter the font becomes."
+    **We had it inverted, and that was the whole problem.** Every word settled
+    to IDENTICAL typography and all the voice was crammed into transients: a
+    word-wide size swell with six delivery variants, a word-wide weight+width
+    swell with six more, and a travelling character bulge — nine animations in
+    flight on up to three words where the PDF has one. That is what read as
+    "messy and promiscuous", and because every channel returned to the same rest
+    state the voice never actually showed, which is what "the font size effect
+    and word level lifting doesn't happen" meant.
+    Now: `settledTypeFor()` writes `--settled-scale` / `--settled-weight` /
+    `--settled-width` once per word from the frozen prosody, NEVER animated (the
+    caption invariant is satisfied by construction — there is nothing to re-run),
+    and `@keyframes word-sync-pop` is the only caption animation in the
+    stylesheet. **The MAPPINGS shipped with this round were wrong and were
+    corrected 2026-07-31 — see the settled-type-anchors entry above for the three
+    defects and the current measurements.** Getting the animation count right did
+    not make the axes right: a channel can be present, continuous and still
+    anchored 20% off its stated baseline.
+    Consequences, all load-bearing:
+    * **`transform`, not `font-size`, for the cue.** It is transient and must
+      never reflow the row. `transform-origin: 50% 100%` so it grows from the
+      baseline, as the diagram shows.
+    * **One leading for every row, as a LENGTH** on `.caption-words`:
+      `1.12em * --settled-max + --sync-elevation-em`. Sized per-row from that
+      row's own biggest word instead, row heights varied, `useStageLayout`'s
+      capacity estimate (available height ÷ a *sampled* row's height) was wrong
+      for every other row, and the stack overran the top of the stage by a
+      measured **308px**. A NUMBER line-height fails differently: it is
+      re-multiplied by each word's own font-size, so the biggest word drives the
+      row height again.
+    * **The row budget carries the settled spread**, via
+      `settledScaleAllowance()`. MEASURED, not guessed: the widest row at settled
+      sizes is 15.42 / 18.37 / 21.16 / 24.44 em at N=3…6 against unscaled budgets
+      of 11.65 / 14.20 / 16.61 / 18.93 — a ratio of ~1.30, flat in N. Two traps:
+      the settled scales centre on **1.0 at the median loudness**, not on the
+      midpoint of the range (measured mean 1.024 against a [0.7,1.6] midpoint of
+      1.15, so the midpoint over-budgets by 12%); and multiplying a worst-case
+      WIDTH by a worst-case SCALE double-counts, because the widest row and the
+      loudest run are not the same row. Re-measure with
+      `scratchpad/scaleallow.js` if `settled_scale_range` changes.
+    * **Cost of the wide range:** the base type drops (47 → 35.5px at 1440×987)
+      because rows are ~30% wider. Typical words render near the base, loud words
+      at 1.6×. Narrowing `settled_scale_range` is the lever if that is too small.
+    * **No shadow anywhere inside `.caption-word`**, and no per-word delivery
+      motion families — the PDF has neither. Delivery survives as a readout and
+      through the settled weight/width axes.
+    **SUPERSEDED by this entry** (kept only so the reasoning is not re-derived):
+    the travelling character bulge, "the baseline is flat / nothing lifts", the
+    reflowing line, and "25% elevation is 25% of glyph height". All four came
+    from the recordings. The PDF's own diagram raises the word, and 2.2.4 says
+    words animate "fully, one by one" — syllable-at-a-time is the documented
+    *exception*, gated by `motion.syllable_fill`.
+
+  * **RETURN-TO-NORMAL IS STRUCTURAL (2026-07-31, USER CORRECTION).**
+    **SUPERSEDES** the "settled-type anchors" and "resting type" implementation
+    entries immediately above. The §2.3 anchors remain absolute, but in the live
+    studio they define the voice-shaped CREST of a word's one motion window, not
+    permanent caption typography. Every word begins and ends at normal 5% /
+    Regular 400 / width 100.
+    `web/src/lib/caption-motion.ts` builds the pure plan:
+    normal → §2.3 voice crest composed with §2.2.3's constant 1.15 / 0.25em cue
+    → normal. CSS implements it with an invisible `.word-sizer` that owns layout
+    and an absolutely overlaid `.word-glyph`; no width measurement or frozen
+    inline size exists. Both keyframes have explicit normal endpoints and use
+    the default `animation-fill-mode: none`, so pixels return to normal even if
+    an `animationend` callback is delayed. The callback only clears logical
+    state/concurrency. Config keys are `voice_scale_range` ([0.90, 1.20]) and
+    `voice_scale_response` (0.25); composed with the fixed 1.15 cue, the largest
+    live crest is 1.38x. There is no `settledScaleAllowance`.
+
   * **Speech rate must not reduce caption throughput.** A fixed 520–720 ms
     duration gives the two-slot Next reveal queue a hard ceiling of roughly
     3.8 words/s and creates an ever-growing presentation buffer above it.
@@ -439,8 +504,6 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     also supplies a batch-drain budget, so sparse Korean endpoint batches catch
     up even when their individual acoustic gaps are slow. Freeze that selected
     duration in `MotionSnapshot`; a later revision may not change it.
-    Scale the character step so the last letter begins by 42% of the selected
-    clock; a shortened long word must not lose its alphabet hand-off.
     In the legacy renderer, acoustic span continuously maps the complete
     motion to 520–720 ms; `_motionPaceGain` also eases from
     0.58 on a minimum-duration word to 1.0 on a slow/drawn-out word. A
@@ -817,26 +880,6 @@ words-per-row constant—chooses its visual lines.
   no `"none"`-vs-transform branch (layer promotion thrash); `will-change` on
   `.cc-word`, never gated on `.on`. **Measure it, do not eyeball it:**
   `?churn=1` -> `window.__ccChurn.report()`. Target is flips == line count.
-- **Deriving a spec: four bugs, all in glyph->word assignment.** (a) `align()`
-  fed the DP observations in TIME order while the DP assumes reading order —
-  several glyphs of a word turn on the same frame and their order is then
-  arbitrary, which ran x backwards and handed "word" two of "is"'s characters,
-  stretching it across a 1.4 s pause. Sort by x, map back. (b) Expected
-  character x now comes from real ADVANCE widths (PIL + the bundled Roboto
-  Flex), not from character index. (c) `word_boxes()` reads each word's x
-  extent straight off the pixels — merge glyph runs at a space-sized gap, keep
-  only frames that yield exactly as many runs as words — and the DP forbids
-  any pairing outside them. Threshold and window must come from the RESTING
-  boxes: derived from the frame's own median glyph height, a word swollen past
-  2x raises the threshold and merges with its neighbour. (d) A word can never
-  have MORE ink runs than characters (runs merge, never split), so a frame that
-  gives it more has leaked a neighbour in — that alone is what stopped "louder"
-  handing "or" a 1.85x envelope on a word that never moves.
-- **Normalise each glyph by its OWN rest, then median — not the reverse.**
-  Letters have different intrinsic ink heights and only some have descenders,
-  so as glyphs enter and leave the co-present set the median steps to a
-  different letter and the curve jumps: that artefact alone produced a 0.35x
-  "size" excursion on `Caption` and +-0.16 of phantom lift on still words.
 - **Two independent measurements, and each fails where the other works.**
   Per-glyph TRACKING is clean but breaks on a word that swells past 3x (its
   glyphs merge and grow, violating the association gates) or is short enough
@@ -936,61 +979,6 @@ words-per-row constant—chooses its visual lines.
   uncompressed, so a very high voice rendered hairline (wght 100) beside
   ordinary text. Resting size/weight follow the film stills (4.2% of frame
   height, normal weight), not the 5% cinematic baseline.
-- **SUPERSEDED for amplitudes — see "THE DESIGN SYSTEM PDF" above.** The .aep
-  remains the best source for the SHAPE of the motion and for what the calm
-  film-still variant looks like, but 2.2.3 states the amplitudes outright and
-  the template disagrees with it (the template has no scale animator at all).
-  Where they conflict, the written design system wins.
-  **READ THE .aep. It is the original source; the recordings are not.**
-  `AE PROJECT/AE PROJECT/Academy_CI_Template.aep` is RIFX — walk it with a
-  20-line chunk parser (`LIST`/`RIFX` are containers; `tdmn` = property match
-  name, `tdsn` = stream name, `cdat` = static value, `Utf8` = expression) and
-  the whole motion system falls out in plain text. Two rounds of tuning were
-  spent inferring curves from `docs/*.mov` — a screen capture of the website,
-  which is a *different implementation* — and both got it wrong. The template
-  holds exactly four text animators:
-
-  | animator | motion |
-  |---|---|
-  | `Words` | `fill = yellow` (the settled state) |
-  | `Up` | `y = -5` |
-  | `Yellow` | `y = -amp`, `fill = COLOR_01` |
-  | `Antecipate` | `y = +2`, one frame earlier |
-
-  Selector for all of them: Index units, **Based On = Words**, exactly one word
-  wide (`Index End = start + 1`), **Ease High 50 / Ease Low 50**, swept by
-  `ease(time, inTime, outTime, 0, textLenWords)` between the layer's
-  `[START]`/`[END]` markers.
-- **The template is position + colour only — but PDF §2.2.3 is authoritative.**
-  `grep` the .aep: `ADBE Text Scale`,
-  `Tracking`, `Size`, `Rotation`, `Skew`, `Opacity` all occur **zero** times;
-  the four animators touch only `ADBE Text Position 3D` and
-  `ADBE Text Fill Color`, and their expressions return `[x,y]`, so no Z either.
-  That is the stricter, calmer reading of the system and is what
-  `wave_reach: 0` gives. The recordings in `docs/` are the website — a
-  different implementation — and it animates the active word's size and weight
-  (see the bullet above). Both live and `cc` retain the PDF's required,
-  constant +15% pop; do not "fix" them back to the template's omission.
-- **The lift is IN PHASE with the colour turn.** `Yellow` drives the `-amp`
-  position AND the fill from ONE range selector, so a letter is at the top of
-  its lift at the instant it turns and comes back down behind the boundary.
-  **That is the bounce.** Making the lift merely LEAD the colour — landing at
-  rest as the colour arrives — is smooth but dead, and that is exactly what got
-  flagged as too slow. `Antecipate` (`y = +2`, i.e. DOWNWARD, one frame ahead)
-  is a small dip before the rise, not a lead on the lift itself.
-- **`anticipation_ms` is 33, not 110.** The template states it exactly:
-  `antecipation = framesToTime(1)` — ONE frame at 30 fps. The old 110 ms came
-  from the vaguer note "1..4 frames".
-- **Do not measure motion by tracking a fixed screen COLUMN.** The line reflows
-  horizontally as words differ in size, so a column does not follow one letter;
-  and a column's top edge conflates lift with size, because a bigger letter
-  also has a higher top edge. That is how a static loudness size-difference got
-  misread as a transient "swell after the turn". Zoomed native-rate frame
-  strips, then the .aep, settled it.
-- **The selector pass is held in SECONDS (`wave_window_s`), not as a fraction
-  of the word.** As a fraction it lasted `0.5 x span`, so the wave sped up and
-  slowed down with every word — a two-letter word rippled in 70 ms and a
-  nine-letter one in 290 ms.
 - **The colour turn is a crossfade over `motion.color_turn_ms`.** The config
   always said "color eases with the lift, never a hard cut", but the renderer
   compared `sweep >= at` and flipped each letter to full colour in one frame.
@@ -1088,25 +1076,6 @@ words-per-row constant—chooses its visual lines.
   to keep. Constants baked into a word's `_type` (`size_pct`,
   `emphasis_deadband`, `quiet_deformation`) need `retype()` — without it the
   slider moves and nothing on screen changes.
-- **The reference recordings carry LAYOUT GUIDE RULES, and they destroy glyph
-  segmentation.** The site draws thin full-width rules across the caption band
-  and a vertical playhead through it. One full-width rule puts ink in EVERY
-  column, so column-gap segmentation collapses the whole line into a single
-  run: measured, a 1029-frame recording yielded **14** glyphs instead of
-  hundreds, and the "fit" from it was meaningless. `refmeasure._derule` erases
-  any row/column covering >55% of the band before segmenting (text never does);
-  it also removes the playhead, which must never be measured as a glyph.
-- **Crop the caption band by COLOUR, not by ink.** The sync recording's band
-  starts at x=139 — that is the page's left navigation menu, not the caption.
-  The caption is the only text carrying a speaker colour, so find the band by
-  matching the CWI palette (`R,G high & B low` for yellow, `G high & R,B low`
-  for green) below the browser chrome. Crops in use:
-  sync `1620:210:1390:1075`, intonation `2300:200:1000:1680`,
-  speaker-id `2380:190:890:1265`.
-- **Scroll recovery is what makes the two scrolling recordings measurable.**
-  With `_derule` + `scroll_offsets` the usable glyph curves went 4 -> **59**
-  (intonation) and 37 -> **130** (speaker-id). Nearest-centre tracking alone
-  cannot follow a line moving ~4.5 px/frame.
 - **`size_pct` below `mapping.loudness_to.min` silently kills the quiet half of
   the loudness channel.** `towardBaseline` computes `extent = baseline - min`
   for values under the baseline; if the resting size is below `min` that is
@@ -1115,41 +1084,6 @@ words-per-row constant—chooses its visual lines.
   rescaling the range by `size_pct / baseline` in BOTH `typeOf` (JS) and
   `ccprosody.forward` (Python): CWI's anchors are ratios around its baseline
   and only read as absolute percentages when the resting size IS that baseline.
-- **THE QUIET SIDE NOW WORKS — and three separate bugs were hiding it.**
-  Measured, "softer." shrinks to **0.50x** the line's median glyph height, and
-  the pipeline reported 0.92 (i.e. nothing). (a) `emphasis()` took `nanmax`
-  only, so a word that merely shrinks reports its own resting moment plus the
-  sync pop; it now takes the larger DEVIATION from rest, with 2.2.3's constant
-  +15% divided out of the upward side, using p5/p95 rather than raw extremes
-  so segmentation noise is not read as a shrink. (b) "Rest" was measured
-  before the word's colour TURN — but the intonation envelope leads the onset,
-  and "softer." starts shrinking ~0.9 s before it turns, so rest was measured
-  on the already-shrunk word. Rest now comes from the first `REST_SPAN_S` of
-  the word's support, which read-ahead (2.2.1) guarantees is resting. (c) The
-  tracked-vs-framed choice compared RAW VALUES (`f_emph > 1.15 * t_emph` and
-  `t_emph > 1.001`), which no shrink can ever satisfy — it compares deviations
-  now. Tracking is least reliable exactly here: a word shrinking to half loses
-  its tracks and the replacements measure their rest on the small glyph.
-  `Word.emphasis_source` records which measurement won, per word.
-- **No single word-split threshold works across one caption.** The line spans
-  a 4x size range: "louder" at 2.2x nearly touches its neighbour, "softer." at
-  0.5x has half-size spaces. An absolute threshold merges the shrunken words;
-  a size-relative one merges the swollen ones. Both were tried and each broke
-  the other end. `frame_words` searches a small threshold ladder and accepts
-  only a split that yields exactly the right run count AND passes a
-  SCALE-INVARIANT check: a run's width over its own glyph height is
-  proportional to its CHARACTER COUNT at any size, so that must correlate with
-  the words' lengths. Checking run widths against the RESTING boxes instead
-  fails by assuming sizes have not changed, which is the thing being measured.
-  The check earns its keep on an off-by-one: with "or softer." both at half
-  size the ladder can merge "or"+"softer" while splitting the final ".", which
-  still gives the right NUMBER of runs but shifts every word one place.
-- **Frame attribution must outlive the glyph tracks.** Anchors come from
-  tracks, and those die well before the caption leaves — on the "louder"
-  phrase they end at 7.48 s while "softer." is still at half size at 8.5. When
-  the rank split succeeds, RANK is the attribution and no anchor is needed;
-  the window extends `EXTEND_S` past the last track and `frame_words` refuses
-  any frame that does not split into this caption's word count.
 - **(Superseded, kept for the reasoning.) The quiet side once could not leave
   the deadband.** Scaled
   whisper floor -> emphScale 0.833, `quiet_deformation: 0.35` compresses that
@@ -1165,21 +1099,6 @@ words-per-row constant—chooses its visual lines.
   word. `ccprosody.fit_spec_prosody` therefore solves each word's offset and
   re-centres, exactly and without iterating; an earlier iterate-the-median
   version oscillated forever.
-- **THE DERIVATION IS REPRODUCIBLE — verified 2026-07-30.** Re-deriving
-  `synchronization` reproduced the committed
-  `assets/reference_specs/synchronization.json` exactly: same 18 words, identical
-  text, **0.0 ms** start/end delta, 0.0000 loudness delta, 10 distinct loudness
-  values both. Only `pitch_hz` moved, by ≤0.58 Hz, from passing fps 57.126
-  instead of 57.13. The committed fixtures are current and the pipeline is
-  deterministic, so a future mismatch means a real change, not noise. The
-  incantation (473 frames, 8.28 s):
-  `ffmpeg -i docs/reference/synchronization.mov -vf "crop=3456:210:0:1075"
-  -vsync 0 /tmp/sync/n_%04d.png`, then `derive_reference_spec.py --frames
-  "/tmp/sync/n_*.png" --fps 57.126 --transcript
-  docs/reference/synchronization.txt --rotate 3`. Residuals were 6–29 ms and the
-  documented sanity check holds: synchronization demonstrates TIMING, so its
-  emphasis is essentially uniform (0.94–1.06) apart from the animated
-  `Synchronization` heading at 1.18 and the held `is` at 0.87.
 - **The reference-replay regression test already exists** —
   `test_derived_reference_specs_replay_the_recordings` in `tests/test_live.py`,
   NOT `test_reference.py` (which only covers Python↔JS forward-map parity). It
@@ -1187,48 +1106,6 @@ words-per-row constant—chooses its visual lines.
   one; it already asserts caption-line reconstruction, monotone non-degenerate
   timings, ≥3 distinct loudness values, and ≥70% of words carrying equal-length
   measured motion arrays.
-- **Deriving a reference spec: READ the transcript off the frames, never guess
-  it.** `scripts/derive_reference_spec.py --list-groups sheet.png` renders one
-  frame per caption instance. Guessing cost two rounds: the sync recording also
-  animates its "Synchronization" HEADING and carries a line I had missed
-  ("Caption with Intention uses"), and the intonation recording has a
-  decorative marker row as a fourth instance. The transcript lists EVERY
-  instance in time order, `-` prefixing ones to measure but not emit (headings,
-  loop repeats), and groups map to it 1:1 positionally -- matching by run count
-  is hopeless because merged letters give ~13 runs for 28 characters.
-- **Splitting captions needs a different signal per recording.** Turn-gap
-  splitting fails outright: the pause BETWEEN two phrases (0.67 s) is shorter
-  than one INSIDE "precisely as each word is spoken." (1.2 s). Lifetime overlap
-  fails because read-ahead puts the next line up before the previous leaves.
-  Static recordings: cluster on when each caption is DRAWN (a line appears all
-  at once). Scrolling recordings: that fails too (glyphs enter the crop
-  progressively), so use the `scroll_offsets` SEGMENTS -- the caption change is
-  exactly where the scroll correlation collapses.
-- **The per-word timing fit needs strong priors and one robust pass.** Merged
-  runs mean roughly half as many observations as characters, so several words
-  get one or none; weak priors emitted 20 ms words and overlapping neighbours.
-  Span + continuity priors at weight 1.0/0.8, a forward sweep for ordering and
-  minimum duration, and a 3-MAD outlier refit took residuals from 264 ms to
-  21-36 ms (sync) -- one stray run had been dragging a whole phrase to 247 ms.
-- **Per-word EMPHASIS is the MEDIAN ink height across a word's co-present
-  glyphs.** The median is the whole trick, and three earlier attempts failed:
-    * MAX height reads the ONE letter currently blooming as emphasis -- it put
-      "voice" and "feel" at the ceiling and lost "louder";
-    * WIDTH between glyphs cancels the bloom correctly (each glyph scales about
-      its own centre) but is contaminated by scroll-recovery error, and still
-      put "dynamic" and "uses" at the ceiling on the static recording;
-    * comparing two tracks by ARRAY INDEX compares different moments, because
-      tracks start on different frames.
-  The per-character bloom hits one letter at a time (~1.13 for ~0.29 s), so it
-  barely moves the median; the intonation envelope lifts every letter together,
-  so it moves the median fully. Height is also immune to scroll error. Use ALL
-  co-present glyphs, not first-and-last: on a scrolling line the first letter
-  leaves the crop before the last enters.
-  **Sanity check the output, always:** intonation must put "sizes," well clear
-  of everything else, and synchronization -- which demonstrates timing, not
-  intonation -- must come out essentially uniform. A word that is BOLD rather
-  than large ("weights") correctly shows no height change; weight would need an
-  ink-density measure, which does not exist yet.
 - **`cc` may drive the axes harder than live, via `closed_caption` overrides.**
   `size_response`, `weight_response`, `width_response`, `wght_range`,
   `wdth_range` fall back to `expression` unless `closed_caption` names them.
@@ -1246,20 +1123,6 @@ words-per-row constant—chooses its visual lines.
   word is enlarged for much of its own window, so a full-window median absorbs
   the swell into the baseline and under-reports the ratio — "sizes," measured
   1.355 that way against a true 1.433.
-- **The reference recordings are `docs/reference/character_identification.mov` (character id), `synchronization.mov`
-  (synchronization), `intonation.mov` (intonation)** — trimmed to one cycle each, which
-  removed the loop repeats that used to force `-` skip lines, and captured the
-  two section titles the untrimmed captures had missed. True fps is
-  frames/duration: **57.27 / 57.13 / 57.36** (NOT the container's 120). Crops,
-  full width so a scrolling line is tracked before it exits::
-
-  character_identification.mov  crop=3456:200:0:1270      --scroll --cut 0.75 --rotate 2
-           synchronization.mov  crop=3456:210:0:1075                          --rotate 3
-                intonation.mov  crop=3456:200:0:1680      --scroll --cut 0.55 --rotate 3
-
-  `--rotate` exists because the transcript must stay in RECORDING order for the
-  1:1 group match, but the recordings start mid-cycle, so the site's own order
-  is a rotation of it.
 - **THE PEAK LANDS AFTER THE TURN, AND THE RISE SPANS THE GAP.** Aggregated
   over all three trimmed recordings the lift peaks at **+70..100 ms** past the
   colour turn and the rise takes **70..100 ms** — longer than fast speech's
@@ -1280,14 +1143,6 @@ words-per-row constant—chooses its visual lines.
   amplitude from becoming a stutter on every character. Intonation size and
   weight remain uniform across the word. Every character transform is
   explicitly reset to `none` at rest.
-- **Deriving WEIGHT: use an ABSOLUTE density deadband, never the phrase's own
-  maximum.** Normalising each phrase by its largest deviation stretches the
-  biggest NOISE deviation to full bold whenever nothing in that phrase is
-  actually emphasised — which is why bold kept landing on the wrong words.
-  Measured, real emphasis is unmistakable: "weights" +0.53 and "louder" +0.19
-  in ink density against +-0.09 for everything else. `weight_deadband: 0.12`
-  and `weight_full_dev: 0.55` separate them and keep magnitudes comparable
-  across phrases.
 - **A JS syntax error takes the whole page down silently.** Twice a bad edit
   left an unbalanced brace and the only symptom was a probe reporting
   "built is not defined". Check first with an `onerror` handler injected before
@@ -1309,33 +1164,12 @@ words-per-row constant—chooses its visual lines.
   anticipation with it. Measured gaps are DATA; only unobserved words should
   lean on the prior. Weakening it also improved every residual (12-77 ms ->
   12-32 ms).
-- **GROUND TRUTH for the intonation recording, measured frame by frame:**
-  "louder" reaches **3.14x the line's median glyph height** and **2.2x its ink
-  density** — it is enormous and heavily bold, far beyond anything measured so
-  far. Method that sees it: per frame take the line's median glyph height as the
-  resting reference and its tallest non-clipped glyph as the emphasis
-  (`frame_emphasis`). **Per-glyph TRACKING cannot see it**: a word that swells
-  to 3x and thickens has its glyphs merge and grow fast enough that association
-  breaks, so the single most emphasised word in the recording produces the
-  fewest usable tracks and measures as ~1.09.
-  `frame_emphasis` is written and correct on magnitude but its word
-  ATTRIBUTION is off by roughly one word — it credited "or" with the swell
-  belonging to "louder", both with a +0.25 s slop window and with exact spans.
-  **That is the next thing to fix**; until then the per-track measure is wired
-  in, because it attributes to the right word even though it under-reads.
 - **The config now has room for the real range** (it did not before): `cc`
   overrides `size_response: 1.0` (uncompressed), `quiet_deformation: 1.0` and
   `emphasis_deadband: 0.05`, reachable emphScale **0.88..2.20** (2.83 at a low
   median) and emphWght **200..900**. Before this the ceiling was 1.43 and the
   quiet side was entirely inside the deadband, so "louder" clamped and
   "softer." could not shrink at all however quiet it measured.
-- **SIZE and WEIGHT are two channels and need two measures.** Size = median ink
-  HEIGHT across the word's glyphs; weight = median ink DENSITY
-  (ink pixels / bbox area), which is invariant to the size envelope — a word
-  that merely grows keeps its density, one that thickens raises it. That is the
-  only thing that separates "sizes," (large, normal weight) from "weights"
-  (normal size, bold); height alone reports "weights" as no emphasis at all,
-  which is *correct for height* and useless as a weight signal.
 - **`cc` never clamped the RENDERED type axes.** `expression.wght_range` /
   `wdth_range` were applied in `livepage.py` and **zero** times in `ccpage.py`,
   so the uncompressed response curve resolved an 80 Hz voice to wght 1000 and a
@@ -1349,30 +1183,6 @@ words-per-row constant—chooses its visual lines.
   fire and the renderer appeared not to implement them. `test_derived_reference
   _specs_replay_the_recordings` now asserts >= 3 distinct values in each
   column. When a channel looks dead, check the DATA before the renderer.
-- **Two ways to measure per-letter lift, and they do NOT agree.** From the DOM
-  (`getBoundingClientRect().bottom` over every char, one headless launch) the
-  answer is exact: every character box is the same height, and the lift is a
-  pure translate, so the spread of box bottoms equals the ink spread among
-  non-descenders. It returns exactly `wave_lift_em / 0.529` at peak. The PIXEL
-  method (segment glyphs by column gaps) inflates the tail badly — 38%/50% for
-  a configured 17% — because merged runs and crop-edge glyphs land in the
-  upper percentiles. Use the DOM for "what is the renderer actually doing",
-  and the pixel method ONLY for comparing against the original recording,
-  where it is all that is available — the same artifacts inflate both sides,
-  so it stays apples-to-apples. Never mix a DOM number with a pixel number.
-- **Measure per-letter motion against the original, don't judge it by eye.**
-  Segment a frame into glyphs by column gaps, take each glyph's bottom edge,
-  and report the spread across a row as a % of glyph height (drop descenders
-  with a threshold PROPORTIONAL to glyph height — a fixed one leaves them in at
-  small sizes and doubles the number). Like-for-like over the same span of a
-  line, the original is **median 19.6%** and `cc` (calibrated,
-  `wave_lift_em: 0.10`) is **20.8%** — equal to within the metric's own
-  resolution, since one pixel at our glyph size is 4.2%. Calibrate on the
-  MEDIAN only: p90/max are dominated by segmentation artifacts (they read
-  38%/50% for a configured, DOM-verified 18.9%), so chasing them tunes noise.
-  Two traps: measure the SAME extent in both (a narrow crop of one word only
-  has motion while the boundary is inside it, so it scores far lower than a
-  whole line), and match resolution.
 - **What reads as "noisy" is COUNT, not amplitude.** The fix was to make fewer
   things move, not to move them less:
     * `emphasis_deadband` pins ordinary words to exactly 1.0 so they never
@@ -1398,13 +1208,17 @@ words-per-row constant—chooses its visual lines.
 - **THE CAPTION INVARIANT: a word that has been shown must stop changing once
   its MOTION WINDOW passes.** (Refined 2026-07-24 for expressive live motion.)
   A word animates through one 520–720 ms first-paint transient and returns to
-  common rest. During that window only its own transform and variable-font
-  weight/width may change; `font-size`, line geometry, and earlier words stay
-  fixed. Speaker colour has an independent clock and may sweep during motion or
-  write directly afterward. Confidence-gated block F0 seeds the baseline before
-  the first recognized word; active weight may use the wider 180–700 transient
-  band, then must land exactly at Regular 400. At rest, transform is identity,
-  weight is 400, and width is 100. Verification may add/remove/respell words and recolour them, but
+  **its own settled typography**. During that window only its own `transform`
+  may change; `font-size`, the variable-font axes, line geometry, and earlier
+  words stay fixed. Speaker colour has an independent clock and may sweep during
+  motion or write directly afterward.
+  **REST IS NOT UNIFORM (2026-07-31).** A word rests at the size/weight/width its
+  own voice earned (CWI 2.3 — see the PDF entry above); "returns to rest" means
+  `transform: none`, not Regular 400 at width 100. Resetting every word to
+  identical typography is exactly what erased the voice. The settled values are
+  computed once from the frozen prosody, so they cannot change afterwards and the
+  invariant holds by construction.
+  Verification may add/remove/respell words and recolour them, but
   it may never start a second motion. Enforced by: server
   freezes `loudness`/prosody per time SLOT in `prosody_cache` (key
   `("§slot", utterance, round(start*20))` — text-keyed missed exactly when the
@@ -1540,3 +1354,13 @@ words-per-row constant—chooses its visual lines.
   utterance). `--quiet-sweep` measures it: at -40 dB the WER was 12.99%
   without gain and 3.90% with it. The browser now shows a continuous input
   meter, so a dead or too-quiet mic is visible without speaking a word.
+- **Reference-spec derivation and the .aep provenance live in a skill now.**
+  Everything about re-deriving `assets/reference_specs/*.json` from
+  `docs/reference/*.mov` — the crop-by-colour method, the guide-rule/playhead
+  erasure, scroll recovery, glyph->word assignment, the ink-density weight
+  measure, the reproducibility run — plus the After Effects template analysis is
+  in `.claude/skills/derive-reference-spec/SKILL.md`. It is ~18k characters of
+  method that only matters when you are actually re-deriving or re-litigating
+  where a motion number came from, so it loads on demand instead of every
+  session. Invoke it before touching that pipeline; do not re-derive from
+  scratch.

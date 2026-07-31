@@ -137,10 +137,10 @@ The complete inventory of animated text properties in that project is:
 That describes the downloadable template's calmer implementation, not the
 whole design-system contract. The PDF is authoritative and §2.2.3 explicitly
 requires the 15% temporary pop as well as the diagram's 25% elevation. Live and
-`cc` therefore implement both as a transient transform that returns to rest;
-they never rewrite settled `font-size`. Loudness remains the separate settled
-intonation channel (§§2.3.3–2.3.6), and it never changes synchronization
-amplitude.
+`cc` therefore implement both as a transient transform that returns to rest.
+In live, a separate overlaid glyph carries the §2.3 size/weight/width excursion
+during that same one-shot window; normal type owns layout and every axis returns
+to 5% / Regular 400 / width 100. Voice never changes synchronization amplitude.
 
 Per caption line the template has three animators:
 
@@ -188,7 +188,8 @@ first-paint geometry has one monotonic 520–720 ms clock, while the later
 speaker-colour decision owns only the white→speaker-colour sweep. Verification
 can revise text or attribution during that clock without restarting or
 settling it early; after the clock finishes, no later event can move the word.
-Replayed history never moves. The live base cue is 10% scale / 0.20 em lift;
+Replayed history never moves. The live cue is the design system's own
+15% scale / 0.25 em elevation, and the voice shapes the transient crest (2.3);
 the alphabet hand-off adds at most 0.085 em lift and 3% local pop, with zero
 pre-turn crouch. A `0.72` neighbour blend turns the sampled character phases
 into one smooth ribbon. Its separate virtual clock spaces character turns by
@@ -450,7 +451,7 @@ not the noisier two-frame orb estimate, and needs five voiced frames, 30%
 coverage, octave filtering, and a ±0.45 deadband. This reduced expressive
 profiles from 86–93% of ordinary standard-sample words to 22–29%. `steady`
 words keep only 30% of the additional voice-shaped deviation, but still receive
-the whole live synchronization cue: at least 10% scale and 0.20 em lift. A
+the whole live synchronization cue: 15% scale and 0.25 em elevation. A
 quiet-word intonation value cannot cancel that floor. All CSS paths begin near
 the baseline and use a zero-slope curve; falling/forceful do not teleport into
 their crest on the first frame.
@@ -515,8 +516,8 @@ scale.
 Implemented: main+supporting palettes, streaming-hypothesis read-ahead,
 accurate-profile provisional color cues, stable final words, PDF §2.2.3's
 constant per-word 15% pop plus 25% elevation in authored `cc`, and a separate
-live first-display adaptation (10% / 0.20 em base cue plus compressed transient
-voice axes). The base cue and 0.085 em / 3% upward character ribbon are
+live first-display adaptation (15% / 0.25 em cue plus transient voice axes).
+The base cue and 0.085 em / 3% upward character ribbon are
 independent of the delivery-profile deadband, so an active word remains
 perceptible even when classified `steady`. Live words reveal in acoustic order
 with at most two active,

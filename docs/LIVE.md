@@ -146,15 +146,22 @@ glyphs (so completed captions never shake when a later audio block arrives):
 Motion is a **one-time interpretation of the voice at first paint**, not a
 permanent font style. The key rules:
 
-- Words reveal in acoustic order, with at most **two** animating at once. A third
-  word waits hidden until a slot frees, then appears *with* its motion — it is
-  never shown motionless and animated later.
-- Each word gets a smooth 520–720 ms envelope: loudness shapes a temporary size
-  change, pitch a temporary weight change, and a spectral proxy a temporary width
-  change. It then returns exactly to normal typography.
+- Words reveal in acoustic order, with at most **three** animating at once. A
+  fourth word waits hidden until a slot frees, then appears *with* its motion —
+  it is never shown motionless and animated later.
+- Every word starts and ends at normal 5% / Regular 400 / width 100 typography.
+  During its one motion window, volume shapes size, pitch shapes weight, and the
+  harmonics proxy shapes width. Those §2.3 values are transient and cannot
+  restyle a completed word.
+- **Every word receives the same synchronization cue as it turns colour**: a
+  15% increase in type size with a 25% rise, then back (§2.2.3). This cue is
+  independent of the voice-shaped axes and of the Expression control.
+- Normal type is an invisible layout sizer and the moving glyph is overlaid.
+  Therefore motion cannot reflow a row, needs no browser width measurement, and
+  drops back to normal even if logical animation cleanup is delayed.
 - The reveal schedule is anchored to acoustic timing; a slow frame doesn't
   restart the gap. During fast speech the motion duration shortens (down to a
-  320 ms floor) so the two-slot pipeline never accumulates a growing backlog;
+  320 ms floor) so the three-slot pipeline never accumulates a growing backlog;
   ordinary speech keeps the full duration.
 - Speaker color has a **separate clock** (a white→color sweep), so a late speaker
   decision can recolor a settled word but can never make it move again.

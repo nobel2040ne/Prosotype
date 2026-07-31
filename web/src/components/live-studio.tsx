@@ -44,27 +44,14 @@ import {
 } from "@/lib/caption-paragraphs";
 import type {CaptionWord, LevelEvent} from "@/lib/caption-store";
 import {
-  characterMotionStepMs,
-  naturalMotionDurationMs,
-} from "@/lib/motion-timing";
+  captionMotionFor,
+  type VoiceTypeRanges,
+} from "@/lib/caption-motion";
+import {naturalMotionDurationMs} from "@/lib/motion-timing";
 import {planStageLayout, rowBudgetEm} from "@/lib/stage-layout";
-import {
-  deliveryExpressiveness,
-  expandAroundCenter,
-  expandPitch,
-} from "@/lib/voice-sensitivity";
 
 type CSSVars = CSSProperties & Record<`--${string}`, string | number>;
 type ViewMode = "stage" | "transcript";
-type MotionFamily =
-  | "steady"
-  | "rising"
-  | "falling"
-  | "sustained"
-  | "forceful"
-  | "gentle"
-  | "textured";
-
 interface SettingsState {
   captionScale: number;
   motionIntensity: number;
@@ -85,53 +72,14 @@ const number = (value: unknown, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-const MOTION_FAMILY_GAINS: Record<
-  MotionFamily,
-  {scale: number; lift: number; weight: number; width: number}
-> = {
-  steady: {scale: 1, lift: 1, weight: 1, width: 1},
-  rising: {scale: 1.12, lift: 1.16, weight: 1.04, width: 1.08},
-  falling: {scale: 1.12, lift: 1.16, weight: 1.04, width: 1.08},
-  sustained: {scale: 1.07, lift: 1.10, weight: 1.08, width: 1.12},
-  forceful: {scale: 1.20, lift: 1.24, weight: 1.18, width: 1.16},
-  gentle: {scale: 1, lift: 1, weight: 0.64, width: 0.72},
-  textured: {scale: 1.08, lift: 1.05, weight: 0.86, width: 1.24},
-};
-
-function motionFamilyForDelivery({
-  profile,
-  enabled,
-  contour,
-  flow,
-  force,
-  attack,
-  texture,
-}: {
-  profile: string;
-  enabled: boolean;
-  contour: number;
-  flow: number;
-  force: number;
-  attack: number;
-  texture: number;
-}): MotionFamily {
-  const named = profile as MotionFamily;
-  if (
-    named !== "steady" &&
-    Object.hasOwn(MOTION_FAMILY_GAINS, named)
-  ) return named;
-  if (!enabled) return "steady";
-
-  // The semantic delivery profile deliberately has a high evidence threshold.
-  // Motion variety is a separate, lower-stakes presentation decision: a
-  // trustworthy continuous acoustic dimension may choose a timing family
-  // without relabelling the word as an emotion or strong delivery category.
-  if (Math.abs(contour) >= 0.26) return contour > 0 ? "rising" : "falling";
-  if (flow >= 0.76) return "sustained";
-  if (force >= 0.38 && attack >= 0.55) return "forceful";
-  if (texture >= 0.70) return "textured";
-  if (force <= 0.16 && attack <= 0.24 && texture >= 0.42) return "gentle";
-  return "steady";
+/** The CWI 2.3 crest bounds, as the runtime config declares them. */
+function voiceRanges(runtime: RuntimeConfig): VoiceTypeRanges {
+  return {
+    scale: runtime.voiceScaleRange,
+    scaleResponse: runtime.voiceScaleResponse,
+    weight: runtime.weightRange,
+    width: runtime.widthRange,
+  };
 }
 
 function speakerStatus(word: CaptionWord): string {
@@ -174,10 +122,8 @@ const MotionWord = memo(function MotionWord({
   id,
   word,
   motionSnapshot,
-  isFrontier,
   state,
   color,
-  pitchBaseline,
   intensity,
   runtime,
   onMotionPaint,
@@ -186,10 +132,8 @@ const MotionWord = memo(function MotionWord({
   id: string;
   word: CaptionWord;
   motionSnapshot: MotionSnapshot | undefined;
-  isFrontier: boolean;
   state: RevealState;
   color: string;
-  pitchBaseline: number;
   intensity: number;
   runtime: RuntimeConfig;
   onMotionPaint: (id: string, durationMs: number) => number;
@@ -205,204 +149,49 @@ const MotionWord = memo(function MotionWord({
   );
   const deliveryEnabled = runtime.deliveryMotionEnabled &&
     deliveryConfidence >= runtime.deliveryMinConfidence;
-  const force = deliveryEnabled
-    ? clamp(number(motionWord.delivery_force, loudness), 0, 1)
-    : loudness;
-  const attack = deliveryEnabled
-    ? clamp(number(motionWord.delivery_attack), 0, 1)
-    : 0;
-  const contour = deliveryEnabled
-    ? clamp(number(motionWord.delivery_contour), -1, 1)
-    : 0;
-  const flow = deliveryEnabled
-    ? clamp(number(motionWord.delivery_flow), 0, 1)
-    : 0;
+  // 0.5 is the neutral of the breathiness proxy, so an unavailable reading
+  // leaves the width axis on the pitch term alone rather than pushing it wide.
   const texture = deliveryEnabled
-    ? clamp(number(motionWord.delivery_texture), 0, 1)
-    : 0;
+    ? clamp(number(motionWord.delivery_texture, 0.5), 0, 1)
+    : 0.5;
+  // Retained as a readout only. CWI has no delivery-specific motion families:
+  // every word receives the same 2.2.3 cue while the continuous 2.3 axes shape
+  // the glyph inside that one motion window.
   const deliveryProfile = deliveryEnabled
     ? String(motionWord.delivery_profile ?? "steady")
     : "steady";
-  // NO GATE in the amplitude path. This used to be a lookup on the discrete
-  // `delivery_profile`, where `steady` -- 78% of words, measured -- kept only
-  // 30% of its excursion, so a word just under the classifier's cut-off was
-  // attenuated exactly as hard as a flat one. The magnitude is now continuous in
-  // the measured acoustics, so a small change in the voice produces a small but
-  // real change on screen instead of nothing. `delivery_profile` still selects
-  // the motion family below; it no longer decides how much voice gets through.
-  const profileGain = deliveryExpressiveness(
-    {force, attack, contour, flow, texture},
-    runtime.deliveryExpressivenessFloor,
-    runtime.voiceSensitivityGamma,
+  const pitch = number(motionWord.pitch_hz, 0);
+  const motion = captionMotionFor(
+    {loudness, pitchHz: pitch, texture},
+    voiceRanges(runtime),
+    intensity,
+    runtime.syncPop,
+    runtime.syncElevationEm,
   );
-  const motionFamily = motionFamilyForDelivery({
-    profile: deliveryProfile,
-    enabled: deliveryEnabled,
-    contour,
-    flow,
-    force,
-    attack,
-    texture,
-  });
-  const familyGain = MOTION_FAMILY_GAINS[motionFamily];
-  const expressiveIntensity = intensity * profileGain;
-  const axisIntensity = intensity * Math.max(
-    profileGain,
-    deliveryEnabled ? runtime.deliveryAxisGainFloor : 0.30,
-  );
-  const rawPitch = number(motionWord.pitch_hz, pitchBaseline) || pitchBaseline;
-  // Expand each axis around the speaker's own centre before mapping it. Real
-  // speech occupies a narrow band around the median, and a linear map spent
-  // almost none of the visual range on it -- small voice changes were measured
-  // and then discarded in presentation. Endpoints stay pinned, so the reachable
-  // extremes are unchanged and this cannot fabricate whispers or shouts.
-  const gamma = runtime.voiceSensitivityGamma;
-  const pitch = expandPitch(rawPitch, pitchBaseline, gamma);
-  // SCALE expands only ABOVE the median. Scale may never fall below the constant
-  // 10% sync pop, so `max(sync, …)` already flattens sub-median words; expanding
-  // downward as well pushed MORE of them onto that same floor and removed the
-  // gradient that exists today (measured 2.26% -> 0.02% between loudness 0.30
-  // and 0.45). Above the median there is real headroom, and the spread over a
-  // 0.45->0.55 swing goes from 3.19% to 7.65%.
-  const scaleLoudness = loudness > 0.5
-    ? expandAroundCenter(loudness, 0.5, gamma)
-    : loudness;
-  // LIFT has headroom in BOTH directions and is therefore the only channel that
-  // can express "quieter than the median" at all. It gets the full symmetric
-  // expansion, which is what makes a small drop in the voice visible (measured
-  // 0.9 -> 16.4 milli-em between loudness 0.30 and 0.45).
-  const liftLoudness = expandAroundCenter(loudness, 0.5, gamma);
-  // CWI 2.3.9: weight is inverted pitch over an 80..250 Hz domain. The RENDERED
-  // band is config (`live_sync.weight_range`), because the old hardcoded 180..700
-  // was the main reason the weight channel barely showed: measured, it produced a
-  // median deviation of only 102 units from Regular 400, and 400->500 on Roboto
-  // Flex is Regular->Medium. The word still lands on exactly 400 at rest.
-  const [weightFloor, weightCeiling] = runtime.weightRange;
-  const activeWeight = clamp(
-    weightFloor +
-      ((250 - clamp(pitch, 80, 250)) / 170) * (weightCeiling - weightFloor),
-    weightFloor,
-    weightCeiling,
-  );
-  const activeWidth = clamp(
-    88 + ((190 - clamp(pitch, 80, 250)) / 110) * 18,
-    85,
-    115,
-  );
-  const rawScale = clamp(0.78 + scaleLoudness * 0.58, 0.82, 1.34);
-  // Synchronization is the always-legible CWI timing cue. The delivery
-  // profile gain affects only the voice-shaped deviation, not this base cue.
-  const intonationScale = 1 + (rawScale - 1) * axisIntensity;
-  const synchronizationScale = 1 + runtime.syncPop * intensity;
-  const baseActiveScale = clamp(
-    Math.max(
-      synchronizationScale,
-      intonationScale * synchronizationScale,
-    ),
-    0.82,
-    1.36,
-  );
-  const activeScale = clamp(
-    1 + (baseActiveScale - 1) * familyGain.scale,
-    synchronizationScale,
-    1.38,
-  );
-  // Deviation magnitude from the symmetric channel, so a word BELOW the median
-  // lifts differently from one above it rather than both collapsing to the pop.
-  const liftIntonation = 1
-    + (clamp(0.78 + liftLoudness * 0.58, 0.82, 1.34) - 1) * axisIntensity;
-  const activeLift = Math.max(
-    runtime.syncElevationEm * intensity,
-    (
-      runtime.syncElevationEm
-        + Math.abs(liftIntonation - 1)
-          * runtime.deliveryIntonationLiftGain
-          * familyGain.lift
-    ) * intensity,
-  );
+
   const duration = motionSnapshot?.durationMs ??
     naturalMotionDurationMs(motionWord, runtime);
-  const characters = Array.from(String(word.text ?? ""));
-  const characterStep = characterMotionStepMs(duration, characters.length);
-  const forceLift = force * runtime.deliveryForceLiftEm * expressiveIntensity;
-  const contourLift = contour * runtime.deliveryContourLiftEm * expressiveIntensity;
-  const flowHold = flow * runtime.deliveryFlowHoldEm * expressiveIntensity;
-  const releaseLift = clamp(
-    activeLift * 0.52 + forceLift + contourLift + flowHold,
-    0,
-    activeLift + runtime.deliveryContourLiftEm + runtime.deliveryFlowHoldEm,
-  );
   const style: CSSVars = {
     "--speaker-color": color,
-    // `weightGain` lifts the weight channel ALONE. It multiplies only the
-    // deviation from 400, so a word with no measured pitch deviation still
-    // renders Regular and the rest still land back on exactly 400 -- this
-    // changes how far the transient travels, not where it ends.
-    "--active-weight": String(Math.round(clamp(
-      400 + (activeWeight - 400) *
-        axisIntensity * familyGain.weight * runtime.weightGain,
-      weightFloor,
-      weightCeiling,
-    ))),
-    "--active-width": `${
-      Math.round(clamp(
-        100 + (activeWidth - 100) * axisIntensity * familyGain.width,
-        85,
-        115,
-      ))
-    }%`,
-    "--active-scale": activeScale.toFixed(3),
-    "--active-lift": `${activeLift.toFixed(3)}em`,
-    "--delivery-start-drop": `${
-      (attack * runtime.deliveryAttackDropEm * expressiveIntensity).toFixed(3)
-    }em`,
-    "--delivery-release-lift": `${releaseLift.toFixed(3)}em`,
-    "--delivery-hold-scale": (
-      1 + (activeScale - 1) * (0.28 + flow * 0.48)
+    "--voice-scale": motion.voice.scale.toFixed(3),
+    "--motion-footprint-scale": (
+      motion.voice.scale * motion.sync.scale
     ).toFixed(3),
-    "--delivery-glow": `${
-      (texture * runtime.deliveryTextureGlowPx * expressiveIntensity).toFixed(1)
-    }px`,
-    "--delivery-resonance-opacity": (
-      texture * (0.14 + force * 0.30) * expressiveIntensity
-    ).toFixed(3),
-    "--character-lift": `${
-      (runtime.characterWaveLiftEm * intensity).toFixed(3)
-    }em`,
-    "--character-scale": (
-      1 + runtime.characterWavePop * intensity
-    ).toFixed(3),
+    "--voice-weight": String(motion.voice.weight),
+    "--voice-width": `${motion.voice.width}%`,
+    // 2.2.3 is constant; the Expression control changes §2.3, not this cue.
+    "--sync-pop": motion.sync.scale.toFixed(3),
+    "--sync-elevation": `${motion.sync.elevationEm.toFixed(3)}em`,
     "--motion-duration": `${duration.toFixed(0)}ms`,
     "--motion-phase-delay": "0ms",
-    "--character-step": `${characterStep.toFixed(2)}ms`,
   };
   const status = speakerStatus(word);
-  const initialCharacterCount = Array.from(
-    String(motionWord.text ?? ""),
-  ).length;
 
   useLayoutEffect(() => {
     const element = wordRef.current;
     if (!element) return;
-    element.style.width = "";
-    // Freeze the box at its resting layout width so the inner glyph's weight and
-    // width axes cannot reflow the row. offsetWidth/getBoundingClientRect on the
-    // WRAPPER report layout width, which a descendant's transform never touches.
-    //
-    // FREEZE IT IN em, NOT px. The stage font-size is
-    // `clamp(20px, 4.6vh, 50px) * --caption-scale`, so a pixel box goes stale the
-    // moment the window is resized or the Caption scale slider moves: the glyphs
-    // re-render at the new size while the box keeps the old one. Measured at
-    // scale 1.8, every word spilled its box (15px on "a", 43px on "tab") and the
-    // words overlapped each other. Glyph advances are linear in font-size and the
-    // word inherits the feed's size at 1em, so an em width tracks them exactly
-    // and never needs re-measuring. (A change of FACE -- not size -- would still
-    // need one, but the caption font is locked before the first word arrives.)
-    const fontSize = parseFloat(getComputedStyle(element).fontSize) || 1;
-    // Fractional, then a hair of slack: offsetWidth rounds down, which clipped
-    // the last letter of every word the last time this was measured in integers.
-    const restingWidth = element.getBoundingClientRect().width;
-    element.style.width = `${(restingWidth / fontSize + 0.01).toFixed(4)}em`;
+    // The hidden normal-type sizer owns layout; the animated glyph is overlaid.
+    // No width read/freeze is necessary, even while weight and width change.
     const phaseStartedAt = state === "active" && motionSnapshot
       ? onMotionPaint(id, duration)
       : performance.now();
@@ -433,38 +222,27 @@ const MotionWord = memo(function MotionWord({
       data-final={word.final ? "true" : "false"}
       data-sustain={word.sustain_active ? "true" : "false"}
       data-delivery={deliveryProfile}
-      data-motion={motionFamily}
       data-word-id={id}
       style={style}
       ref={wordRef}
-      title={`${deliveryProfile} delivery · ${Math.round(pitch)} Hz · ${
-        number(word.loudness_db, -72).toFixed(1)
-      } dB`}
+      title={`${deliveryProfile} delivery · ${
+        pitch > 0 ? `${Math.round(pitch)} Hz` : "unvoiced"
+      } · ${number(word.loudness_db, -72).toFixed(1)} dB · ${
+        motion.voice.weight
+      }/${motion.voice.width}%`}
     >
+      <span className="word-sizer word-sizer-normal" aria-hidden="true">
+        {word.text}
+      </span>
+      <span className="word-sizer word-sizer-crest" aria-hidden="true">
+        {word.text}
+      </span>
       <span
         className="word-glyph"
         aria-label={word.text}
         onAnimationEnd={handleAnimationEnd}
       >
-        <span className="word-ink">
-          {characters.map((char, index) => (
-            <span
-              className="caption-character"
-              aria-hidden="true"
-              data-revision-added={
-                state === "active" &&
-                !isFrontier &&
-                index >= initialCharacterCount
-                  ? "true"
-                  : "false"
-              }
-              key={index}
-              style={{"--char-index": index} as CSSVars}
-            >
-              {char}
-            </span>
-          ))}
-        </span>
+        <span className="word-ink" aria-hidden="true">{word.text}</span>
       </span>
     </span>
   );
@@ -559,11 +337,9 @@ function CaptionFeed({
   paragraphs,
   palette,
   level,
-  pitchBaseline,
   intensity,
   runtime,
   motionSnapshots,
-  frontierId,
   confirmMotionPaint,
   completeMotion,
   transcript,
@@ -572,11 +348,9 @@ function CaptionFeed({
   paragraphs: CaptionParagraph[];
   palette: string[];
   level: LevelEvent;
-  pitchBaseline: number;
   intensity: number;
   runtime: RuntimeConfig;
   motionSnapshots: Record<string, MotionSnapshot>;
-  frontierId: string | null;
   confirmMotionPaint: (id: string, durationMs: number) => number;
   completeMotion: (id: string) => void;
   transcript: boolean;
@@ -733,14 +507,12 @@ function CaptionFeed({
                     id={id}
                     word={word}
                     motionSnapshot={motionSnapshots[id]}
-                    isFrontier={id === frontierId}
                     state={reveal}
                     color={speakerColor(
                       word.speaker ?? null,
                       speakerStatus(word),
                       palette,
                     )}
-                    pitchBaseline={pitchBaseline}
                     intensity={intensity}
                     runtime={runtime}
                     onMotionPaint={confirmMotionPaint}
@@ -1007,7 +779,7 @@ function SettingsPanel({
         <input
           type="range"
           min="0"
-          max="1.35"
+          max="1"
           step="0.05"
           value={settings.motionIntensity}
           onChange={(event) => setSettings({
@@ -1085,7 +857,6 @@ export function LiveStudio() {
     motionSnapshots,
     confirmMotionPaint,
     completeMotion,
-    pitchBaseline,
     startedAt,
     lastEventAt,
   } = useCaptionStream({reducedMotion: settings.reducedMotion});
@@ -1249,11 +1020,9 @@ export function LiveStudio() {
             paragraphs={stageParagraphs}
             palette={palette}
             level={level}
-            pitchBaseline={pitchBaseline}
             intensity={settings.motionIntensity}
             runtime={runtime}
             motionSnapshots={motionSnapshots}
-            frontierId={model.order.at(-1) ?? null}
             confirmMotionPaint={confirmMotionPaint}
             completeMotion={completeMotion}
             transcript={view === "transcript"}

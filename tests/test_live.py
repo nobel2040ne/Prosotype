@@ -979,21 +979,20 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     assert runtime["wordMotionBacklogTargetMs"] == 600
     assert runtime["wordMotionRateHeadroom"] == 0.90
     assert runtime["wordMotionCatchupScale"] == 0.82
-    assert runtime["syncPop"] == 0.10
-    assert runtime["syncElevationEm"] == 0.20
-    assert runtime["characterWaveLiftEm"] == 0.085
-    assert runtime["characterWavePop"] == 0.030
+    assert runtime["syncPop"] == 0.15
+    # CWI 2.2.3 verbatim -- a 15% type-size increase, and the diagram's
+    # "25% elevation". ONE transient, per word, and nothing else moves.
+    assert runtime["syncElevationEm"] == 0.25
+    # CWI 2.3 shapes the transient crest from absolute anchors; the client never
+    # re-centres these on a speaker's own median.
+    assert runtime["voiceScaleRange"] == [0.90, 1.20]
+    assert 0 < runtime["voiceScaleResponse"] <= 1
+    # 2.3.8's Regular 400 and 2.3.10's 100% must sit strictly inside both bands,
+    # or the neutral band cannot be expressed at all.
+    assert runtime["weightRange"][0] < 400 < runtime["weightRange"][1]
+    assert runtime["widthRange"][0] < 100 < runtime["widthRange"][1]
     assert runtime["deliveryMotionEnabled"] is True
-    assert runtime["deliveryContourLiftEm"] > 0
-    assert runtime["deliveryTextureGlowPx"] > 0
-    assert runtime["deliveryIntonationLiftGain"] == 0.35
-    assert runtime["deliveryAxisGainFloor"] == 0.50
     assert runtime["deliveryMinConfidence"] == 0.38
-    # Amplitude is continuous, with no per-profile lookup: the floor is the
-    # smallest excursion a flat word gets, and it must leave real headroom
-    # above it or ordinary variation cannot show.
-    assert 0 < runtime["deliveryExpressivenessFloor"] < 0.6
-    assert 0 < runtime["voiceSensitivityGamma"] <= 1
     assert [item["id"] for item in runtime["languages"]] == ["en", "ko"]
 
 
