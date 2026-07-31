@@ -47,6 +47,8 @@ export interface CaptionWord {
   correction?: boolean;
   src?: string;
   sustain_active?: boolean;
+  /** CWI 2.1.5: an off-camera voice is set in italic, keeping its colour. */
+  off_camera?: boolean;
   sustain_s?: number;
   _render_stage?: RenderStage;
   _sse_id?: number;
@@ -128,34 +130,6 @@ export function wordKey(word: CaptionWord): string {
     Number(word.utterance ?? 0),
     Math.round(Number(word.start ?? word.t ?? 0) * 50),
   ].join(":");
-}
-
-export type RevealIntent = "animate" | "settle";
-
-/**
- * Motion eligibility belongs to first discovery, not to a later word update.
- *
- * An unseen live word keeps its entrance through verification or an
- * EventSource reconnect while it is queued. A word first reconstructed from
- * history remains settled even if a later live record clears `_replay`.
- */
-export function revealIntentForFirstSeen(
-  word: CaptionWord,
-  reducedMotion: boolean,
-): RevealIntent {
-  return word._replay || reducedMotion ? "settle" : "animate";
-}
-
-export function pendingRevealCanAnimate(
-  intent: RevealIntent,
-  reducedMotion: boolean,
-  motionAlreadyStarted: boolean,
-): boolean {
-  return (
-    intent === "animate" &&
-    !reducedMotion &&
-    !motionAlreadyStarted
-  );
 }
 
 function numeric(value: unknown, fallback = 0): number {
@@ -349,14 +323,4 @@ export function reduceCaptionEvent(
     words: boundedWords,
     order: boundedOrder,
   };
-}
-
-export function nextRevealDeadline(
-  currentDeadline: number,
-  now: number,
-  gap: number,
-  catchupGap: number,
-): number {
-  const base = currentDeadline > 0 ? currentDeadline : now;
-  return Math.max(base + Math.max(0, gap), now + Math.max(0, catchupGap));
 }

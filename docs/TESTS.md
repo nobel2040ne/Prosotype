@@ -83,35 +83,40 @@ Two things to look at specifically, because the automated gates cannot:
   must bring back the CWI 2.4.1 black box *and* the exact CI palette — if the
   colours stay muted, the toggle changed the CSS but not the React state.
 
-### 3. Is the motion still lossless?
+### 3. Is the read-ahead real, and is the motion lossless?
 
 ```bash
-.venv/bin/python -m autocwi live --sample --lang en --no-open &
-.venv/bin/python scripts/studio_probe.py --samples 70
+.venv/bin/python -m autocwi live --sample --lang en --loop --no-open &
+.venv/bin/python scripts/studio_probe.py --samples 40
 ```
 
-Attach **before** the first word arrives. Acceptance is the invariants, not the
-exact numbers:
+The studio presents captions from a playhead running
+`display.read_ahead_delay_s` behind the acoustic clock, which is what puts
+recognized-but-uncoloured text on screen (CWI 2.2.1). Acceptance is the
+invariants, not the exact numbers:
 
 | counter | required |
 |---|---|
-| `maxActiveMotions` | never above `display.max_simultaneous_reveals` |
-| `motionStarts` vs `motionPaintStarts` | equal — every reserved slot painted |
-| `motionsWithoutPaint` | 0 |
-| `abortedUnpaintedMotions` | 0 — the 250 ms watchdog never fired |
-| `freshWordsWithoutMotion` | 0 — no word appeared without its one motion |
+| `readAheadMs` | well above 0 — at 0 the page is colouring text the instant it arrives, so 2.2.1 is not being delivered at all |
+| `words` vs `visible` | equal — read-ahead words are the white ones; nothing is withheld |
+| `domUnarmed` | 0 — an unscheduled word would stay read-ahead forever |
+| DOM white words vs `aheadWords` | agree within ~2; a gap means the page is not showing what the schedule believes |
+| `lateWords` | a burst on attach, then flat. Steadily climbing means the delay is shorter than the recognizer's delivery latency |
 
-**`presentationBacklogMs` must be read as a time series, not as a max.** It is
-`newest - current` in acoustic time, so its peak just reports how deep the buffer
-was when the browser attached — it read an identical 3211 ms across runs with
-different settings, which is the tell. Sample it every ~0.5 s instead: it should
-decay to 0 within a few seconds of attaching and then stay there. If it *stays*
-high, that is real lag.
+**Measured 2026-08-01** on the bundled clip: read-ahead 2.43 s median against a
+2.5 s delay (English) and 1.47 s (Korean); 0 invisible words; 0 unarmed; peak
+simultaneous motions 4–6.
 
-`staleSettledWords` counts words that arrived past
-`display.word_motion_backlog_ceiling_s` and were revealed as history rather than
-animated. Attaching mid-clip should produce a burst of these and then none;
-attaching before the first word should produce zero.
+**The time window is not the word count.** `readAheadMs` measures the far edge
+of the window, and `fast` mode holds a word back until the following one is
+stable, so the last part of that window is often one lone hypothesis word.
+Words actually past the playhead, measured across delays: 1 median / 6 max at
+2.5 s, 2/8 at 4.0 s, 6/16 at 5.5 s. Raise `read_ahead_delay_s` for a fuller
+white line where lag is cheap.
+
+There is no concurrency cap and no presentation backlog any more. Both belonged
+to the reveal queue, which the playhead replaced — a word animates at its
+recorded onset or, if it arrived after that moment, not at all.
 
 The legacy renderer has its own probe:
 

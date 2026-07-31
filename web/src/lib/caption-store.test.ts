@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   mergeCaptionWord,
-  nextRevealDeadline,
-  pendingRevealCanAnimate,
   reduceCaptionEvent,
-  revealIntentForFirstSeen,
   initialCaptionModel,
   type CaptionWord,
 } from "./caption-store.ts";
@@ -125,30 +122,6 @@ test("a provisional accurate commit survives later hypothesis snapshots", () => 
   assert.deepEqual(state.order, ["u0:w0", "u0:w1", "u0:w2"]);
   assert.equal(state.words["u0:w0"]._render_stage, "commit");
   assert.equal(state.words["u0:w0"].provisional, true);
-});
-
-test("late reveal deadlines do not compound a fresh full gap", () => {
-  assert.equal(nextRevealDeadline(220, 520, 140, 60), 580);
-});
-
-test("queued live motion eligibility survives a later replay update", () => {
-  const intent = revealIntentForFirstSeen(word({_replay: false}), false);
-  const later = word({_replay: true, verified: true});
-
-  assert.equal(later._replay, true);
-  assert.equal(intent, "animate");
-  assert.equal(pendingRevealCanAnimate(intent, false, false), true);
-});
-
-test("history, reduced motion, and consumed IDs cannot animate", () => {
-  const replayIntent = revealIntentForFirstSeen(word({_replay: true}), false);
-  const reducedIntent = revealIntentForFirstSeen(word(), true);
-
-  assert.equal(replayIntent, "settle");
-  assert.equal(reducedIntent, "settle");
-  assert.equal(pendingRevealCanAnimate(replayIntent, false, false), false);
-  assert.equal(pendingRevealCanAnimate("animate", true, false), false);
-  assert.equal(pendingRevealCanAnimate("animate", false, true), false);
 });
 
 test("the first audience presentation is not treated as reconnect history", () => {

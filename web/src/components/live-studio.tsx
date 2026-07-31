@@ -24,15 +24,12 @@ import {
   useMemo,
   useRef,
   useState,
-  type AnimationEvent,
   type CSSProperties,
 } from "react";
 import {
   useCaptionStream,
   type LanguageSession,
   type LiveLanguageOption,
-  type MotionSnapshot,
-  type RevealState,
   type RuntimeConfig,
 } from "@/hooks/use-caption-stream";
 import {
@@ -47,7 +44,8 @@ import {
   captionMotionFor,
   type VoiceTypeRanges,
 } from "@/lib/caption-motion";
-import {naturalMotionDurationMs} from "@/lib/motion-timing";
+import {acousticTimeMs, naturalMotionDurationMs} from "@/lib/motion-timing";
+import {baselineOffsetEm, formatBaselineEm} from "@/lib/glyph-metrics";
 import {planStageLayout, rowBudgetEm} from "@/lib/stage-layout";
 
 type CSSVars = CSSProperties & Record<`--${string}`, string | number>;
@@ -121,26 +119,27 @@ function useElapsed(startedAt: number): string {
 const MotionWord = memo(function MotionWord({
   id,
   word,
-  motionSnapshot,
-  state,
   color,
   intensity,
   runtime,
-  onMotionPaint,
-  onMotionComplete,
+  clockEpoch,
+  scheduleWord,
 }: {
   id: string;
   word: CaptionWord;
-  motionSnapshot: MotionSnapshot | undefined;
-  state: RevealState;
   color: string;
   intensity: number;
   runtime: RuntimeConfig;
-  onMotionPaint: (id: string, durationMs: number) => number;
-  onMotionComplete: (id: string) => void;
+  clockEpoch: number | null;
+  scheduleWord: (
+    id: string,
+    word: CaptionWord,
+    durationMs: number,
+  ) => {turnAtMs: number; epoch: number} | null;
 }) {
   const wordRef = useRef<HTMLSpanElement>(null);
-  const motionWord = motionSnapshot?.word ?? word;
+  const armedRef = useRef<{turnAtMs: number; epoch: number} | null>(null);
+  const motionWord = word;
   const loudness = clamp(number(motionWord.loudness, 0.5), 0, 1);
   const deliveryConfidence = clamp(
     number(motionWord.delivery_confidence),
@@ -166,14 +165,17 @@ const MotionWord = memo(function MotionWord({
     voiceRanges(runtime),
     intensity,
     runtime.syncPop,
-    runtime.syncElevationEm,
   );
 
-  const duration = motionSnapshot?.durationMs ??
-    naturalMotionDurationMs(motionWord, runtime);
+  /* Frozen at mount: a verifier respelling can revise `end`, and a caption
+     already in flight must not have its clock reshaped underneath it. */
+  const [duration] = useState(
+    () => naturalMotionDurationMs(motionWord, runtime),
+  );
   const style: CSSVars = {
     "--speaker-color": color,
-    "--voice-scale": motion.voice.scale.toFixed(3),
+    // The 2.2.3 pop and the 2.3 voice size are ONE scale on one element now, so
+    // this is both the animated crest and the width the sizer must reserve.
     "--motion-footprint-scale": (
       motion.voice.scale * motion.sync.scale
     ).toFixed(3),
@@ -181,47 +183,76 @@ const MotionWord = memo(function MotionWord({
     "--voice-width": `${motion.voice.width}%`,
     // 2.2.3 is constant; the Expression control changes §2.3, not this cue.
     "--sync-pop": motion.sync.scale.toFixed(3),
-    "--sync-elevation": `${motion.sync.elevationEm.toFixed(3)}em`,
     "--motion-duration": `${duration.toFixed(0)}ms`,
-    "--motion-phase-delay": "0ms",
   };
   const status = speakerStatus(word);
 
+  /*
+   * ARM THE WORD ONCE, THEN LEAVE IT ALONE.
+   *
+   * `--turn-delay` is the `animation-delay` for all three caption animations:
+   * the 2.2.2 colour turn, the 2.2.3 pop and the 2.3 voice crest. Writing it
+   * imperatively -- never through the `style` prop -- is deliberate: React
+   * reapplies that prop on every render, and rewriting `animation-delay`
+   * shifts a running animation, so a verifier respelling would visibly yank a
+   * word that was already mid-pop.
+   *
+   * `data-armed` lives on the DOM node rather than in a ref, so the two cases
+   * that must behave differently actually do:
+   *   - a re-render (new text, new colour, new speaker) finds the flag set and
+   *     touches nothing, so the motion continues undisturbed;
+   *   - a genuine remount arrives with a fresh node and no flag, re-derives the
+   *     delay against the new animation origin, and resumes at the same wall
+   *     moment rather than replaying from the start.
+   *
+   * The turn moment itself is frozen in `armedRef` on first arm. Because it is
+   * computed as `onset - clockOffset + delay` -- with no reference to "now" --
+   * even a remount that has to recompute it lands on the same answer.
+   *
+   * Until this runs, the stylesheet's own large positive default holds the word
+   * in read-ahead type. Because this is a LAYOUT effect in the same commit that
+   * first paints the word, a word can never flash coloured on arrival.
+   */
   useLayoutEffect(() => {
     const element = wordRef.current;
     if (!element) return;
-    // The hidden normal-type sizer owns layout; the animated glyph is overlaid.
-    // No width read/freeze is necessary, even while weight and width change.
-    const phaseStartedAt = state === "active" && motionSnapshot
-      ? onMotionPaint(id, duration)
-      : performance.now();
-    const phaseElapsed = state === "active"
-      ? clamp(performance.now() - phaseStartedAt, 0, duration)
-      : 0;
+    if (armedRef.current === null) {
+      // No acoustic clock yet. `clockEpoch` brings us back when there is one.
+      const armed = scheduleWord(id, word, duration);
+      if (armed === null) return;
+      armedRef.current = armed;
+    }
+    /*
+     * A capture restart (a looping sample, a restarted server) invalidates the
+     * timeline this word was placed on. It was spoken -- on the previous pass
+     * -- so it settles. Re-deriving its onset against the new clock would put
+     * it in the FUTURE and turn a whole stage of already-read captions back to
+     * read-ahead white, which is what `--sample --loop` used to do.
+     */
+    if (clockEpoch !== null && armedRef.current.epoch !== clockEpoch) {
+      element.dataset.armed = "stale";
+      element.style.setProperty("--turn-delay", "-600000ms");
+      return;
+    }
+    if (element.dataset.armed === "true") return;
+    element.dataset.armed = "true";
     element.style.setProperty(
-      "--motion-phase-delay",
-      `${(-phaseElapsed).toFixed(1)}ms`,
+      "--turn-delay",
+      `${Math.round(armedRef.current.turnAtMs - performance.now())}ms`,
     );
-  }, [
-    duration,
-    id,
-    motionSnapshot,
-    onMotionPaint,
-    state,
-    word.text,
-  ]);
-
-  const handleAnimationEnd = (event: AnimationEvent<HTMLSpanElement>) => {
-    if (event.target === event.currentTarget) onMotionComplete(id);
-  };
+  }, [clockEpoch, duration, id, scheduleWord, word]);
 
   return (
     <span
-      className={`caption-word ${state === "active" ? "is-active" : "is-settled"}`}
+      className="caption-word"
       data-status={status}
       data-final={word.final ? "true" : "false"}
       data-sustain={word.sustain_active ? "true" : "false"}
       data-delivery={deliveryProfile}
+      // CWI 2.1.5: an off-camera voice keeps its speaker colour and is set in
+      // italic. Live capture has no camera and never sets this; it is here so
+      // the SSE contract can carry the distinction rather than inventing it.
+      data-off-camera={word.off_camera ? "true" : "false"}
       data-word-id={id}
       style={style}
       ref={wordRef}
@@ -237,11 +268,7 @@ const MotionWord = memo(function MotionWord({
       <span className="word-sizer word-sizer-crest" aria-hidden="true">
         {word.text}
       </span>
-      <span
-        className="word-glyph"
-        aria-label={word.text}
-        onAnimationEnd={handleAnimationEnd}
-      >
+      <span className="word-glyph" aria-label={word.text}>
         <span className="word-ink" aria-hidden="true">{word.text}</span>
       </span>
     </span>
@@ -339,9 +366,9 @@ function CaptionFeed({
   level,
   intensity,
   runtime,
-  motionSnapshots,
-  confirmMotionPaint,
-  completeMotion,
+  clockEpoch,
+  scheduleWord,
+  playheadMs,
   transcript,
   reducedMotion,
 }: {
@@ -350,9 +377,13 @@ function CaptionFeed({
   level: LevelEvent;
   intensity: number;
   runtime: RuntimeConfig;
-  motionSnapshots: Record<string, MotionSnapshot>;
-  confirmMotionPaint: (id: string, durationMs: number) => number;
-  completeMotion: (id: string) => void;
+  clockEpoch: number | null;
+  scheduleWord: (
+    id: string,
+    word: CaptionWord,
+    durationMs: number,
+  ) => {turnAtMs: number; epoch: number} | null;
+  playheadMs: number;
   transcript: boolean;
   reducedMotion: boolean;
 }) {
@@ -463,6 +494,23 @@ function CaptionFeed({
     stackAnimations.current.clear();
   }, []);
 
+  /*
+   * WHERE SPEECH ACTUALLY IS, which is no longer the bottom of the stack.
+   *
+   * With read-ahead the last row holds words nobody has said yet, so pinning
+   * the voice orb to it would park the live instrument next to white text. The
+   * orb belongs on the row the playhead is inside. This changes only when the
+   * playhead crosses a row boundary, so the coarse playhead tick is plenty --
+   * and because the words themselves take no playhead prop, their memoisation
+   * is untouched by it.
+   */
+  const spokenRow = Math.max(
+    0,
+    paragraphs.findLastIndex((paragraph) => paragraph.words.some(
+      ({word}) => acousticTimeMs(word) <= playheadMs,
+    )),
+  );
+
   // The feed container is rendered even while empty: it is the element the stage
   // measures to decide how many rows fit (`useStackCapacity`), and that answer is
   // needed BEFORE the first word arrives. The empty state is a sibling.
@@ -470,7 +518,7 @@ function CaptionFeed({
     <div className={transcript ? "transcript-feed" : "caption-feed"}>
       {paragraphs.map((paragraph, paragraphIndex) => {
         const color = speakerColor(paragraph.speaker, paragraph.status, palette);
-        const isLatest = paragraphIndex === paragraphs.length - 1;
+        const isLatest = paragraphIndex === spokenRow;
         const firstWord = paragraph.words[0]?.word;
         return (
           <section
@@ -502,12 +550,12 @@ function CaptionFeed({
             </header>
             <div className="caption-surface">
               <div className="caption-words">
-                {paragraph.words.map(({id, word, reveal}) => (
+                {paragraph.words.map(({id, word}) => (
                   <MotionWord
                     id={id}
                     word={word}
-                    motionSnapshot={motionSnapshots[id]}
-                    state={reveal}
+                    clockEpoch={clockEpoch}
+                    scheduleWord={scheduleWord}
                     color={speakerColor(
                       word.speaker ?? null,
                       speakerStatus(word),
@@ -515,12 +563,10 @@ function CaptionFeed({
                     )}
                     intensity={intensity}
                     runtime={runtime}
-                    onMotionPaint={confirmMotionPaint}
-                    onMotionComplete={completeMotion}
                     key={id}
                   />
                 ))}
-                {isLatest && !transcript && (
+                {paragraphIndex === spokenRow && !transcript && (
                   <VoiceOrb level={level} color={color} />
                 )}
               </div>
@@ -548,6 +594,88 @@ function CaptionFeed({
  * per-language `--per-word-em` budget, and a rendered row's true height, which
  * the dark stage inflates with .22em of padding the light stage does not have.
  */
+/**
+ * Find the baseline inside a caption word's box, so the cue can grow FROM it.
+ *
+ * CWI never moves a word's baseline (see `glyph-metrics.ts` for the evidence in
+ * `docs/reference/`), but `transform-origin: 50% 100%` is the bottom of the line
+ * box, a descender plus half-leading below the baseline. Scaling about that
+ * point lifts the word — further the louder it is, because the scale carries the
+ * voice — which is the hop the design system does not have.
+ *
+ * Measured rather than tabulated because the offset depends on the face's own
+ * ascent/descent AND on the line-height: Roboto Flex and Noto Sans KR give
+ * different answers, and a hardcoded number would silently be wrong for Korean.
+ *
+ * Cheap: one probe, once per face. The caption font is locked before the first
+ * word arrives, so there is nothing to keep re-measuring.
+ */
+function useGlyphBaseline(language: string | null): string | null {
+  const [offset, setOffset] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const measure = () => {
+      if (cancelled) return;
+      // The probe has to carry the REAL caption typography, so it borrows the
+      // live class names rather than restating font-family/line-height here.
+      const host = document.createElement("div");
+      host.className = "caption-feed";
+      host.setAttribute("aria-hidden", "true");
+      host.style.cssText =
+        "position:absolute;left:-9999px;top:0;visibility:hidden;" +
+        "contain:strict;width:400px;height:200px;";
+      // `.caption-words` is not optional scaffolding: it carries the caption
+      // line-height, and the baseline's distance from the box bottom is
+      // half-leading PLUS descent. Measuring without it returned an identical
+      // 0.2500em for Roboto Flex and Noto Sans KR -- the giveaway that the
+      // probe was reading `line-height: normal` rather than the real 1.38, and
+      // leaving the pivot ~0.1em below the true baseline.
+      const row = document.createElement("div");
+      row.className = "caption-words";
+      const word = document.createElement("span");
+      word.className = "caption-word";
+      const glyph = document.createElement("span");
+      glyph.className = "word-glyph";
+      // `position:absolute` on the real glyph would detach it from this probe's
+      // flow; static keeps the same line box, which is what carries the metric.
+      glyph.style.position = "static";
+      glyph.textContent = "Hxg";
+      // A zero-width inline-block sits with its bottom margin edge ON the
+      // baseline. It is the only way to reach the baseline from JavaScript.
+      const strut = document.createElement("i");
+      strut.style.cssText = "display:inline-block;width:0;height:0;";
+      glyph.appendChild(strut);
+      word.appendChild(glyph);
+      row.appendChild(word);
+      host.appendChild(row);
+      // MOUNT IT INSIDE THE SHELL. `--font-caption` is switched by
+      // `.studio-shell[data-language="ko"]`, so a probe parented to
+      // `document.body` silently measures Roboto Flex even in a Korean
+      // session -- which is exactly how this returned an identical number for
+      // both faces twice before.
+      const shell = document.querySelector(".studio-shell") ?? document.body;
+      shell.appendChild(host);
+      const fontSize = parseFloat(getComputedStyle(glyph).fontSize);
+      const measured = baselineOffsetEm(
+        glyph.getBoundingClientRect(),
+        strut.getBoundingClientRect(),
+        fontSize,
+      );
+      host.remove();
+      if (measured === null) return;
+      const next = formatBaselineEm(measured);
+      setOffset((current) => (current === next ? current : next));
+    };
+    // The caption faces are local @font-face downloads. Measuring before they
+    // load returns the fallback face's metrics, which is a different number.
+    document.fonts.ready.then(measure).catch(measure);
+    return () => {
+      cancelled = true;
+    };
+  }, [language]);
+  return offset;
+}
+
 function useStageLayout(
   stage: React.RefObject<HTMLDivElement | null>,
   runtime: RuntimeConfig,
@@ -561,7 +689,7 @@ function useStageLayout(
   const [layout, setLayout] = useState(() => ({
     wordsPerRow: runtime.stageWordsPerBlock,
     rows: runtime.stageParagraphHistory,
-    rowBudgetEm: rowBudgetEm(runtime.stageWordsPerBlock, 1.40, 4.30),
+    rowBudgetEm: rowBudgetEm(runtime.stageWordsPerBlock, 1.45, 6.60),
   }));
   useEffect(() => {
     const node = stage.current;
@@ -604,8 +732,8 @@ function useStageLayout(
       });
       const budget = rowBudgetEm(
         next.wordsPerRow,
-        parseFloat(styles.getPropertyValue("--word-em-linear")) || 1.40,
-        parseFloat(styles.getPropertyValue("--word-em-spread")) || 4.30,
+        parseFloat(styles.getPropertyValue("--word-em-linear")) || 1.45,
+        parseFloat(styles.getPropertyValue("--word-em-spread")) || 6.60,
       );
       setLayout((current) => (
         current.wordsPerRow === next.wordsPerRow &&
@@ -853,10 +981,9 @@ export function LiveStudio() {
     session,
     languageError,
     selectLanguage,
-    reveal,
-    motionSnapshots,
-    confirmMotionPaint,
-    completeMotion,
+    scheduleWord,
+    clockEpoch,
+    playheadMs,
     startedAt,
     lastEventAt,
   } = useCaptionStream({reducedMotion: settings.reducedMotion});
@@ -870,11 +997,11 @@ export function LiveStudio() {
     () => buildCaptionParagraphs(
       model.words,
       model.order,
-      reveal,
       runtime.paragraphWordLimit,
     ),
-    [model.words, model.order, reveal, runtime.paragraphWordLimit],
+    [model.words, model.order, runtime.paragraphWordLimit],
   );
+  const glyphBaselineEm = useGlyphBaseline(session.language);
   const stageLayout = useStageLayout(
     stageRef,
     runtime,
@@ -923,6 +1050,19 @@ export function LiveStudio() {
     // can never disagree about how many words a row holds.
     "--stack-words": stageLayout.wordsPerRow,
     "--row-budget-em": stageLayout.rowBudgetEm.toFixed(3),
+    // CWI 2.2.1: read-ahead is full white at 90% opacity -- which the PDF
+    // specifies against 2.4.1's 90%-black box. The light stage has no box, and
+    // white measures 1.05:1 on it, so it takes the same-semantic legible value
+    // the way palette_light does. Both arrive from config.yaml.
+    "--read-ahead-color": settings.lightStage
+      ? runtime.readAheadColorLight
+      : runtime.readAheadColor,
+    "--read-ahead-opacity": runtime.readAheadOpacity,
+    "--color-turn-ms": `${runtime.colorTurnMs}ms`,
+    // CWI grows a word from its BASELINE and never moves it. This is where that
+    // baseline actually is inside the glyph's line box, measured off the live
+    // caption face; the CSS fallback covers the frame before it resolves.
+    ...(glyphBaselineEm ? {"--glyph-baseline-em": glyphBaselineEm} : {}),
   };
 
   // The theme lives on the document element, not on the shell: `html`/`body`
@@ -1011,9 +1151,26 @@ export function LiveStudio() {
           ref={stageRef}
         >
           {model.sound && (
-            <div className="sound-chip">
-              <AudioWaveform size={13} />
+            /* CWI 2.4.4 and 2.4.5. A sound effect is white, inside brackets,
+               and otherwise obeys the caption system: its type grows and pops
+               with the loudness of the sound it describes. Music is the
+               documented exception -- it is wrapped in the ♫ symbol on either
+               side and, per 2.4.5, "they don't need to be animated and don't
+               change color", so its scale is pinned at 1. */
+            <div
+              className="sound-caption"
+              data-category={model.sound.category ?? "environmental"}
+              style={{
+                "--sound-level": clamp(
+                  (number(level.rms_db, -72) + 52) / 34,
+                  0,
+                  1,
+                ).toFixed(3),
+              } as CSSVars}
+            >
+              {model.sound.category === "music" ? "♫ " : null}
               [{model.sound.label ?? model.sound.category ?? "sound"}]
+              {model.sound.category === "music" ? " ♫" : null}
             </div>
           )}
           <CaptionFeed
@@ -1022,9 +1179,9 @@ export function LiveStudio() {
             level={level}
             intensity={settings.motionIntensity}
             runtime={runtime}
-            motionSnapshots={motionSnapshots}
-            confirmMotionPaint={confirmMotionPaint}
-            completeMotion={completeMotion}
+            clockEpoch={clockEpoch}
+            scheduleWord={scheduleWord}
+            playheadMs={playheadMs}
             transcript={view === "transcript"}
             reducedMotion={settings.reducedMotion}
           />

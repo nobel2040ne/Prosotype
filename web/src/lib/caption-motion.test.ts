@@ -32,34 +32,32 @@ test("every motion is normal before and after its transient", () => {
     {loudness: 0.5, pitchHz: 180, texture: 0.5},
     {loudness: 1, pitchHz: 250, texture: 1},
   ]) {
-    const plan = captionMotionFor(voice, RANGES, 1, 0.15, 0.25);
+    const plan = captionMotionFor(voice, RANGES, 1, 0.15);
     assert.deepEqual(plan.rest, NORMAL_CAPTION_TYPE);
   }
 });
 
-test("2.2.3 is a constant 15% pop and 25% elevation on every voice", () => {
+test("2.2.3 is a constant 15% growth on every voice", () => {
   const quiet = captionMotionFor(
     {loudness: 0, pitchHz: 250, texture: 1},
     RANGES,
     1,
     0.15,
-    0.25,
   );
   const loud = captionMotionFor(
     {loudness: 1, pitchHz: 80, texture: 0},
     RANGES,
     0,
     0.15,
-    0.25,
   );
-  assert.deepEqual(quiet.sync, {scale: 1.15, elevationEm: 0.25});
+  assert.deepEqual(quiet.sync, {scale: 1.15});
   assert.deepEqual(loud.sync, quiet.sync);
 });
 
 test("expression changes voice shape without weakening the synchronization cue", () => {
   const voice = {loudness: 1, pitchHz: 80, texture: 0};
-  const off = captionMotionFor(voice, RANGES, 0, 0.15, 0.25);
-  const on = captionMotionFor(voice, RANGES, 1, 0.15, 0.25);
+  const off = captionMotionFor(voice, RANGES, 0, 0.15);
+  const on = captionMotionFor(voice, RANGES, 1, 0.15);
   assert.deepEqual(off.voice, NORMAL_CAPTION_TYPE);
   assert.notDeepEqual(on.voice, NORMAL_CAPTION_TYPE);
   assert.deepEqual(off.sync, on.sync);

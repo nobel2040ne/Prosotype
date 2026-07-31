@@ -8,32 +8,34 @@ import {
 } from "react";
 import {
   initialCaptionModel,
-  nextRevealDeadline,
-  pendingRevealCanAnimate,
   reduceCaptionEvent,
-  revealIntentForFirstSeen,
   type CaptionEvent,
   type CaptionModel,
   type CaptionWord,
   type LevelEvent,
-  type RevealIntent,
 } from "@/lib/caption-store";
+import {acousticTimeMs} from "@/lib/motion-timing";
 import {
-  acousticTimeMs,
-  acousticBacklogMs,
-  adaptiveMotionDurationMs,
-  exceedsMotionBacklogCeiling,
-  isHistoricalInsertion,
-  naturalMotionDurationMs,
-  nextActiveMotionDelayMs,
-  recentAcousticGapMs,
-  unpaintedReservationExpired,
-} from "@/lib/motion-timing";
+  advanceClock,
+  IDLE_CLOCK,
+  monotonicTimeForAcousticMs,
+  presentationNowMs,
+  readAheadMs,
+  type PlayheadClock,
+} from "@/lib/caption-clock";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "demo";
-export type RevealState = "hidden" | "active" | "settled";
-export interface MotionSnapshot {
-  word: CaptionWord;
+
+/**
+ * Everything a word needs in order to animate itself, frozen at discovery.
+ *
+ * `turnAtMs` is the `performance.now()` moment the playhead reaches the word's
+ * spoken onset; `durationMs` is its 2.2.3 window. Both are immutable for the
+ * life of the word, so a verifier respelling, a speaker correction or a
+ * reconnect replay can never restart, reshape or double-run its motion.
+ */
+export interface WordSchedule {
+  turnAtMs: number;
   durationMs: number;
 }
 export type SessionState =
@@ -69,23 +71,26 @@ export interface RuntimeConfig {
   stageWordsMin: number;
   /** Rows the stack must fit before a shorter row (larger type) is preferred. */
   stageMinRows: number;
-  revealGapMs: number;
-  revealGapMinMs: number;
-  revealGapMaxMs: number;
-  revealTimingStrength: number;
-  catchupGapMs: number;
-  maxActiveMotions: number;
+  /**
+   * CWI 2.2.1. How far the caption playhead runs behind the acoustic clock.
+   *
+   * This is what buys the white read-ahead: the recognizer delivers a word
+   * about 1.1 s after it is spoken, so a 2.5 s playhead leaves ~1.4 s of
+   * recognized-but-not-yet-coloured text on screen at all times.
+   */
+  readAheadDelayMs: number;
+  /** 2.2.1: "full white at 90% opacity" -- against 2.4.1's black box. */
+  readAheadColor: string;
+  /** The boxless light stage measures white at 1.05:1. See config.yaml. */
+  readAheadColorLight: string;
+  readAheadOpacity: number;
+  /** Crossfade for the 2.2.2 turn. It eases with the lift, never a hard cut. */
+  colorTurnMs: number;
   wordMotionBaseMs: number;
   wordMotionMaxMs: number;
   wordMotionSpanStretch: number;
   wordMotionMinMs: number;
-  wordMotionBacklogTargetMs: number;
-  /** Above this acoustic backlog a word settles instead of animating. */
-  motionBacklogCeilingMs: number;
-  wordMotionRateHeadroom: number;
-  wordMotionCatchupScale: number;
   syncPop: number;
-  syncElevationEm: number;
   deliveryMotionEnabled: boolean;
   /** A drawn-out word holds its 2.2.3 cue slightly longer. */
   deliveryFlowDurationMs: number;
@@ -117,22 +122,16 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   stageWordsPerBlock: 6,
   stageWordsMin: 3,
   stageMinRows: 10,
-  revealGapMs: 140,
-  revealGapMinMs: 80,
-  revealGapMaxMs: 260,
-  revealTimingStrength: 0.75,
-  catchupGapMs: 60,
-  maxActiveMotions: 3,
+  readAheadDelayMs: 2500,
+  readAheadColor: "#ffffff",
+  readAheadColorLight: "#6e6e73",
+  readAheadOpacity: 0.9,
+  colorTurnMs: 90,
   wordMotionBaseMs: 520,
   wordMotionMaxMs: 720,
   wordMotionSpanStretch: 0.42,
   wordMotionMinMs: 320,
-  wordMotionBacklogTargetMs: 600,
-  motionBacklogCeilingMs: 1200,
-  wordMotionRateHeadroom: 0.90,
-  wordMotionCatchupScale: 0.82,
   syncPop: 0.15,
-  syncElevationEm: 0.25,
   deliveryMotionEnabled: true,
   deliveryFlowDurationMs: 90,
   weightRange: [200, 760],
@@ -170,19 +169,34 @@ const EMPTY_LEVEL: LevelEvent = {
   spectral_centroid_hz: 0,
 };
 
-const UNPAINTED_RESERVATION_TIMEOUT_MS = 250;
-
-interface PendingReveal {
-  id: string;
-  intent: RevealIntent;
-}
+/**
+ * How often the playhead is published to React.
+ *
+ * Nothing about a word's own motion depends on this: colour and pop are CSS
+ * animations the browser schedules from a frozen `animation-delay`. The tick
+ * exists only for things that track WHERE speech currently is — the trailing
+ * voice orb's row, and the diagnostics probe — so it is deliberately coarse.
+ */
+const PLAYHEAD_TICK_MS = 66;
 
 interface StreamOptions {
   reducedMotion: boolean;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
+/**
+ * The newest word the browser currently HOLDS -- the far edge of the
+ * read-ahead.
+ *
+ * It has to be read off the live model rather than accumulated as a
+ * high-water mark. The reducer deletes non-final hypothesis words routinely,
+ * so a running maximum keeps counting text that is no longer on screen and
+ * reports read-ahead the viewer cannot actually read. Measured, that
+ * overstated it by roughly 1.5 s. `order` is time-sorted, so this is the last
+ * entry.
+ */
+function newestAcousticMs(model: CaptionModel): number {
+  const newest = model.order.at(-1);
+  return newest ? acousticTimeMs(model.words[newest]) : Number.NaN;
 }
 
 function demoEvents(): Array<{delay: number; event: CaptionEvent}> {
@@ -270,46 +284,33 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     languages: DEFAULT_RUNTIME_CONFIG.languages,
   });
   const [languageError, setLanguageError] = useState<string | null>(null);
-  const [reveal, setReveal] = useState<Record<string, RevealState>>({});
-  const [motionSnapshots, setMotionSnapshots] =
-    useState<Record<string, MotionSnapshot>>({});
+  const [playheadMs, setPlayheadMs] = useState(Number.NEGATIVE_INFINITY);
+  const [clockEpoch, setClockEpoch] = useState<number | null>(null);
   const [startedAt] = useState(() => Date.now());
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
 
   const modelRef = useRef(model);
-  const revealRef = useRef(reveal);
   const levelRef = useRef(level);
-  const pendingRef = useRef<PendingReveal[]>([]);
-  const knownRef = useRef(new Set<string>());
-  const activeRef = useRef(new Map<string, number>());
-  const motionStartedRef = useRef(new Set<string>());
-  const motionPaintStartedRef = useRef(new Map<string, number>());
-  const unpaintedReservationsRef = useRef(new Map<string, number>());
-  const abortedUnpaintedRef = useRef(new Set<string>());
-  const motionEligibleRef = useRef(new Set<string>());
-  const discoveryFrontierTimeRef = useRef(Number.NEGATIVE_INFINITY);
-  const maxPresentationBacklogRef = useRef(0);
-  const adaptiveMotionStartsRef = useRef(0);
-  // Peak simultaneous motions. `activeMotions` is instantaneous, so a headless
-  // sample almost never lands on the peak; the concurrency cap can only be
-  // verified against a running maximum.
-  const maxActiveMotionsRef = useRef(0);
-  const staleSettledRef = useRef(0);
-  const minimumMotionDurationRef = useRef(Number.POSITIVE_INFINITY);
-  const deadlineRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pumpRef = useRef<() => void>(() => undefined);
+  const scheduledRef = useRef(new Map<string, WordSchedule>());
+  // The clock lives in a ref, not in state: it is revised ~15 times a second by
+  // level events and must not re-render the studio on every one of them. The
+  // coarse playhead tick below is what React actually sees.
+  const clockRef = useRef<PlayheadClock>(IDLE_CLOCK);
+  const runtimeRef = useRef(runtime);
+  const lateWordsRef = useRef(0);
+  const rearmedWordsRef = useRef(0);
+  const minReadAheadRef = useRef(Number.POSITIVE_INFINITY);
   const eventIdRef = useRef(0);
 
   useEffect(() => {
     modelRef.current = model;
   }, [model]);
   useEffect(() => {
-    revealRef.current = reveal;
-  }, [reveal]);
-  useEffect(() => {
     levelRef.current = level;
   }, [level]);
+  useEffect(() => {
+    runtimeRef.current = runtime;
+  }, [runtime]);
 
   const backendOrigin =
     process.env.NEXT_PUBLIC_AUTOCWI_ORIGIN?.replace(/\/$/, "") ?? "";
@@ -319,6 +320,20 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     setLastEventAt(Date.now());
     if (event.type === "level") {
       const incoming = event as unknown as LevelEvent;
+      // THE CLOCK SOURCE. `level.t` is the capture position in seconds on the
+      // same timeline as `word.t` (`stream_base + word.start`), and it arrives
+      // every ~64 ms whether or not anyone is speaking, which is exactly what a
+      // playhead needs. Word events are NOT used here: they are retained and
+      // replayed to each new audience connection, so an old timestamp would
+      // look like a capture restart and yank the playhead backwards.
+      const seconds = Number(incoming.t);
+      if (Number.isFinite(seconds)) {
+        clockRef.current = advanceClock(
+          clockRef.current,
+          seconds * 1000,
+          performance.now(),
+        );
+      }
       setLevel(incoming);
       setWaveform((values) => [...values.slice(-31), Number(incoming.rms_db)]);
       return;
@@ -395,10 +410,16 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     if (isDemo) {
       const connectionTimer = setTimeout(() => setConnection("demo"), 0);
       const timers: Array<ReturnType<typeof setTimeout>> = [];
+      const demoStartedAt = performance.now();
       const levelTimer = setInterval(() => {
         const phase = performance.now() / 420;
         dispatch({
           type: "level",
+          // The demo needs a real acoustic clock too, or the playhead never
+          // starts and every word stays white. Its words span t=0..3.4 s, so a
+          // wall clock from mount plays the read-ahead exactly as live does:
+          // the whole block appears white first, then colours word by word.
+          t: (performance.now() - demoStartedAt) / 1000,
           rms_db: -32 + Math.sin(phase) * 9,
           floor_db: -61,
           gain_db: 0,
@@ -451,317 +472,179 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     return () => source.close();
   }, [backendOrigin, dispatch]);
 
-  const schedulePump = useCallback((delay = 0) => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(
-      () => pumpRef.current(),
-      Math.max(0, delay),
+  /*
+   * SCHEDULING, IN FULL.
+   *
+   * A word is placed on the playhead once, by the word itself, in its own
+   * layout effect (see `MotionWord`). There is no queue, no concurrency cap,
+   * no reveal gap, no catch-up policy and no backlog ceiling, because none of
+   * those questions exist any more: a word's colour turn happens when the
+   * playhead reaches its recorded onset, and the browser owns that schedule as
+   * a single `animation-delay`.
+   *
+   * The old scheduler had to answer "when should this word appear?" from
+   * arrival order alone, which is why it grew slots, deadlines, an adaptive
+   * clock, a staleness ceiling and a watchdog for reservations that never
+   * painted. The playhead answers it from the recording itself.
+   *
+   * This callback is stable for the life of the hook, so passing it to every
+   * word costs no re-renders, and it is called from a layout effect in the
+   * SAME commit that first paints the word -- which is what makes the frozen
+   * turn moment exact rather than one frame late.
+   */
+  const scheduleWord = useCallback((
+    id: string,
+    word: CaptionWord,
+    durationMs: number,
+  ): {turnAtMs: number; epoch: number} | null => {
+    const clock = clockRef.current;
+    const acousticMs = acousticTimeMs(word);
+    // Before the first level event there is no acoustic clock and therefore no
+    // honest moment to turn this word. Returning null leaves it in read-ahead
+    // type; it is scheduled as soon as the clock starts.
+    if (!clock.started || !Number.isFinite(acousticMs)) return null;
+    const turnAtMs = monotonicTimeForAcousticMs(
+      clock,
+      acousticMs,
+      runtimeRef.current.readAheadDelayMs,
     );
+    const previous = scheduledRef.current.get(id);
+    scheduledRef.current.set(id, {turnAtMs, durationMs});
+    if (previous) {
+      // The word was already scheduled, so this is a remount asking for its
+      // delay again. That is a supported path -- the turn moment is derived
+      // from the recording and the clock, never from "now", so the word
+      // resumes at the same wall moment against its new animation origin --
+      // but it is worth counting, because a large figure means the stack is
+      // churning React keys and paying for it.
+      rearmedWordsRef.current += 1;
+      return {turnAtMs, epoch: clock.epoch};
+    }
+    /*
+     * A word delivered after its own onset had already passed needs no special
+     * case: the negative delay puts both CSS animations past their end, so it
+     * paints settled and coloured, which is exactly right for history. Count
+     * it once per word, though -- a steadily rising figure is the signal that
+     * the read-ahead delay is shorter than the recognizer's real latency, i.e.
+     * that no read-ahead is being delivered at all.
+     */
+    if (turnAtMs < performance.now()) lateWordsRef.current += 1;
+    return {turnAtMs, epoch: clock.epoch};
   }, []);
 
-  const pump = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = null;
-    const now = performance.now();
-    const expiredIds: string[] = [];
-    for (const [id, expiry] of activeRef.current) {
-      if (!modelRef.current.words[id]) {
-        activeRef.current.delete(id);
-        unpaintedReservationsRef.current.delete(id);
-      } else if (
-        expiry === Number.POSITIVE_INFINITY &&
-        unpaintedReservationExpired(
-          unpaintedReservationsRef.current.get(id),
-          now,
-          UNPAINTED_RESERVATION_TIMEOUT_MS,
-        )
-      ) {
-        activeRef.current.delete(id);
-        unpaintedReservationsRef.current.delete(id);
-        abortedUnpaintedRef.current.add(id);
-        motionEligibleRef.current.delete(id);
-        expiredIds.push(id);
-      } else if (now >= expiry) {
-        activeRef.current.delete(id);
-        expiredIds.push(id);
-      }
-    }
-    if (expiredIds.length) {
-      setReveal((current) => {
-        const next = {...current};
-        for (const id of expiredIds) {
-          if (next[id] === "active") next[id] = "settled";
-        }
-        return next;
-      });
-    }
-    while (
-      pendingRef.current.length &&
-      !modelRef.current.words[pendingRef.current[0].id]
-    ) {
-      const dropped = pendingRef.current.shift();
-      if (dropped && revealRef.current[dropped.id] === "hidden") {
-        knownRef.current.delete(dropped.id);
-        motionEligibleRef.current.delete(dropped.id);
-      }
-    }
-    if (!pendingRef.current.length) {
-      deadlineRef.current = 0;
-      const cleanupDelay = nextActiveMotionDelayMs(
-        activeRef.current.values(),
-        now,
-      );
-      if (cleanupDelay !== null) schedulePump(cleanupDelay);
-      return;
-    }
-    if (now < deadlineRef.current) {
-      schedulePump(deadlineRef.current - now);
-      return;
-    }
-
-    const pending = pendingRef.current[0];
-    const activeCount = activeRef.current.size;
-    if (activeCount >= runtime.maxActiveMotions) {
-      schedulePump(16);
-      return;
-    }
-
-    pendingRef.current.shift();
-    const word = modelRef.current.words[pending.id];
-    if (!word) {
-      schedulePump(0);
-      return;
-    }
-    // Measured BEFORE the animate decision: a word far enough behind the
-    // acoustic frontier is history, and history settles rather than racing
-    // through the motion queue long after it was spoken.
-    const backlogMs = acousticBacklogMs(
-      modelRef.current.words,
-      pending.id,
-      modelRef.current.order.at(-1),
-    );
-    const isStale = exceedsMotionBacklogCeiling(
-      backlogMs,
-      runtime.motionBacklogCeilingMs,
-    );
-    const animate = !isStale && pendingRevealCanAnimate(
-      pending.intent,
-      reducedMotion,
-      motionStartedRef.current.has(pending.id),
-    );
-    const nextState: RevealState = animate ? "active" : "settled";
-    if (animate) {
-      const acousticGapMs = recentAcousticGapMs(
-        modelRef.current.words,
-        modelRef.current.order,
-        pending.id,
-      );
-      const naturalDurationMs = naturalMotionDurationMs(word, runtime);
-      const durationMs = adaptiveMotionDurationMs(
-        naturalDurationMs,
-        acousticGapMs,
-        backlogMs,
-        pendingRef.current.length + 1,
-        runtime,
-      );
-      maxPresentationBacklogRef.current = Math.max(
-        maxPresentationBacklogRef.current,
-        backlogMs,
-      );
-      minimumMotionDurationRef.current = Math.min(
-        minimumMotionDurationRef.current,
-        durationMs,
-      );
-      if (durationMs < naturalDurationMs - 0.5) {
-        adaptiveMotionStartsRef.current += 1;
-      }
-      motionStartedRef.current.add(pending.id);
-      setMotionSnapshots((current) => (
-        current[pending.id]
-          ? current
-          : {
-              ...current,
-              [pending.id]: {
-                word: {...word},
-                durationMs,
-              },
-            }
+  /*
+   * Publish the playhead coarsely.
+   *
+   * No word's motion depends on this -- CSS runs those. It exists so the
+   * trailing voice orb can sit on the row speech has actually reached, and so
+   * the probe can report the read-ahead it is really delivering.
+   */
+  useEffect(() => {
+    let frame = 0;
+    let last = 0;
+    const tick = () => {
+      frame = requestAnimationFrame(tick);
+      const now = performance.now();
+      if (now - last < PLAYHEAD_TICK_MS) return;
+      last = now;
+      const clock = clockRef.current;
+      if (!clock.started) return;
+      // Publishing the epoch is what starts words scheduling, and what tells
+      // words from a previous capture to settle. Both are rare transitions, so
+      // this bails out on the common path.
+      setClockEpoch((current) => (
+        current === clock.epoch ? current : clock.epoch
       ));
-      // Reserve the concurrency slot immediately, but do not start its clock
-      // until the word's layout effect confirms the first real browser paint.
-      activeRef.current.set(pending.id, Number.POSITIVE_INFINITY);
-      maxActiveMotionsRef.current = Math.max(
-        maxActiveMotionsRef.current,
-        activeRef.current.size,
+      const playhead = presentationNowMs(
+        clock,
+        now,
+        runtimeRef.current.readAheadDelayMs,
       );
-      unpaintedReservationsRef.current.set(pending.id, performance.now());
-      schedulePump(UNPAINTED_RESERVATION_TIMEOUT_MS);
-    } else {
-      if (isStale) staleSettledRef.current += 1;
-      motionEligibleRef.current.delete(pending.id);
-    }
-    setReveal((current) => ({...current, [pending.id]: nextState}));
-
-    const nextPending = pendingRef.current[0];
-    if (!nextPending) {
-      deadlineRef.current = 0;
-      return;
-    }
-    const nextWord = modelRef.current.words[nextPending.id];
-    const from = Number(word.t ?? word.start);
-    const to = Number(nextWord?.t ?? nextWord?.start);
-    const acoustic = Number.isFinite(from) && Number.isFinite(to) && to > from
-      ? clamp((to - from) * 1000, runtime.revealGapMinMs, runtime.revealGapMaxMs)
-      : runtime.revealGapMs;
-    const gap = isStale
-      ? 0
-      : runtime.revealGapMs +
-        (acoustic - runtime.revealGapMs) * runtime.revealTimingStrength;
-    deadlineRef.current = nextRevealDeadline(
-      deadlineRef.current || now,
-      performance.now(),
-      gap,
-      runtime.catchupGapMs,
-    );
-    schedulePump(deadlineRef.current - performance.now());
-  }, [reducedMotion, runtime, schedulePump]);
-
-  useEffect(() => {
-    pumpRef.current = pump;
-  }, [pump]);
-
-  useEffect(() => {
-    const currentIds = new Set(model.order);
-    const revealUpdates: Record<string, RevealState> = {};
-    pendingRef.current = pendingRef.current.filter(({id}) => currentIds.has(id));
-    for (const id of model.order) {
-      const word = model.words[id];
-      const wordTime = acousticTimeMs(word);
-      if (knownRef.current.has(id)) {
-        if (Number.isFinite(wordTime)) {
-          discoveryFrontierTimeRef.current = Math.max(
-            discoveryFrontierTimeRef.current,
-            wordTime,
-          );
-        }
-        continue;
-      }
-      knownRef.current.add(id);
-      const discoveredBehindFrontier = isHistoricalInsertion(
-        word,
-        discoveryFrontierTimeRef.current,
-      );
-      const intent = word && !discoveredBehindFrontier
-        ? revealIntentForFirstSeen(word, reducedMotion)
-        : "settle";
-      if (Number.isFinite(wordTime)) {
-        discoveryFrontierTimeRef.current = Math.max(
-          discoveryFrontierTimeRef.current,
-          wordTime,
+      const newest = newestAcousticMs(modelRef.current);
+      if (Number.isFinite(newest) && scheduledRef.current.size > 0) {
+        minReadAheadRef.current = Math.min(
+          minReadAheadRef.current,
+          readAheadMs(
+            clock,
+            newest,
+            now,
+            runtimeRef.current.readAheadDelayMs,
+          ),
         );
       }
-      if (intent === "settle") {
-        revealUpdates[id] = "settled";
-      } else {
-        revealUpdates[id] = "hidden";
-        motionEligibleRef.current.add(id);
-        pendingRef.current.push({id, intent});
-      }
-    }
-    for (const id of knownRef.current) {
-      if (!currentIds.has(id) && revealRef.current[id] === "hidden") {
-        knownRef.current.delete(id);
-        motionEligibleRef.current.delete(id);
-      }
-    }
-    const revealTimer = Object.keys(revealUpdates).length
-      ? setTimeout(() => {
-          setReveal((current) => ({...current, ...revealUpdates}));
-        }, 0)
-      : null;
-    schedulePump(0);
-    return () => {
-      if (revealTimer) clearTimeout(revealTimer);
+      setPlayheadMs(playhead);
     };
-  }, [model.order, model.words, reducedMotion, schedulePump]);
-
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
   }, []);
-
-  const confirmMotionPaint = useCallback((id: string, durationMs: number) => {
-    const existing = motionPaintStartedRef.current.get(id);
-    if (existing !== undefined) return existing;
-    const startedAt = performance.now();
-    motionPaintStartedRef.current.set(id, startedAt);
-    unpaintedReservationsRef.current.delete(id);
-    if (activeRef.current.has(id)) {
-      activeRef.current.set(id, startedAt + Math.max(0, durationMs));
-    }
-    schedulePump(0);
-    return startedAt;
-  }, [schedulePump]);
-
-  const completeMotion = useCallback((id: string) => {
-    activeRef.current.delete(id);
-    unpaintedReservationsRef.current.delete(id);
-    setReveal((current) => (
-      current[id] === "settled"
-        ? current
-        : {...current, [id]: "settled"}
-    ));
-    schedulePump(0);
-  }, [schedulePump]);
 
   useEffect(() => {
     window.__cwiStudio = {
       dispatch,
-      report: () => ({
-        connection,
-        words: modelRef.current.order.length,
-        visible: modelRef.current.order
-          .filter((id) => revealRef.current[id] !== "hidden").length,
-        activeMotions: activeRef.current.size,
-        maxActiveMotions: maxActiveMotionsRef.current,
-        staleSettledWords: staleSettledRef.current,
-        pendingReveals: pendingRef.current.length,
-        motionStarts: motionStartedRef.current.size,
-        motionPaintStarts: motionPaintStartedRef.current.size,
-        motionsWithoutPaint: [...motionStartedRef.current].filter(
-          (id) => (
-            !motionPaintStartedRef.current.has(id) &&
-            !abortedUnpaintedRef.current.has(id)
+      report: () => {
+        const now = performance.now();
+        const clock = clockRef.current;
+        const delayMs = runtimeRef.current.readAheadDelayMs;
+        const playhead = presentationNowMs(clock, now, delayMs);
+        const live = new Set(modelRef.current.order);
+        for (const id of scheduledRef.current.keys()) {
+          if (!live.has(id)) scheduledRef.current.delete(id);
+        }
+        const scheduled = [...scheduledRef.current.values()];
+        return {
+          connection,
+          words: modelRef.current.order.length,
+          // Every recognized word is on screen now: read-ahead words are the
+          // white ones. Nothing is withheld, so this must equal `words`.
+          visible: modelRef.current.order.filter(
+            (id) => Boolean(modelRef.current.words[id]),
+          ).length,
+          clockStarted: clock.started,
+          readAheadDelayMs: delayMs,
+          /*
+           * THE NUMBER THAT MATTERS. Recognized text sitting on screen ahead of
+           * the colour, in ms. It should settle near
+           * `readAheadDelayMs - recognizerLatency` (~1.4 s at the shipped 2.5 s
+           * against the 1120 ms accurate stream). Zero means the caption is
+           * being coloured the instant it arrives -- i.e. CWI 2.2.1 is not
+           * actually being delivered, whatever the page looks like.
+           */
+          readAheadMs: readAheadMs(
+            clock,
+            newestAcousticMs(modelRef.current),
+            now,
+            delayMs,
           ),
-        ).length,
-        abortedUnpaintedMotions: abortedUnpaintedRef.current.size,
-        presentationBacklogMs: pendingRef.current.length
-          ? acousticBacklogMs(
-              modelRef.current.words,
-              pendingRef.current[0].id,
-              modelRef.current.order.at(-1),
-            )
-          : 0,
-        maxPresentationBacklogMs: maxPresentationBacklogRef.current,
-        adaptiveMotionStarts: adaptiveMotionStartsRef.current,
-        minimumMotionDurationMs: Number.isFinite(
-          minimumMotionDurationRef.current,
-        )
-          ? minimumMotionDurationRef.current
-          : 0,
-        motionEligibleWords: motionEligibleRef.current.size,
-        freshWordsWithoutMotion: modelRef.current.order.filter((id) => {
-          return (
-            !reducedMotion &&
-            motionEligibleRef.current.has(id) &&
-            revealRef.current[id] === "settled" &&
-            !motionStartedRef.current.has(id)
-          );
-        }).length,
-        directionKnown: Number.isFinite(
-          Number(levelRef.current.direction_deg ??
-            levelRef.current.azimuth_deg),
-        ),
-      }),
+          minReadAheadMs: Number.isFinite(minReadAheadRef.current)
+            ? minReadAheadRef.current
+            : 0,
+          aheadWords: scheduled.filter((item) => item.turnAtMs > now).length,
+          activeMotions: scheduled.filter(
+            (item) => item.turnAtMs <= now &&
+              now - item.turnAtMs < item.durationMs,
+          ).length,
+          scheduledWords: scheduled.length,
+          /*
+           * Words that arrived after their own onset had already passed and so
+           * could never animate. A steadily rising count means the read-ahead
+           * delay is shorter than the recognizer's real latency.
+           */
+          lateWords: lateWordsRef.current,
+          rearmedWords: rearmedWordsRef.current,
+          playheadMs: Number.isFinite(playhead) ? playhead : null,
+          newestAcousticMs: Number.isFinite(newestAcousticMs(
+            modelRef.current,
+          ))
+            ? newestAcousticMs(modelRef.current)
+            : null,
+          clockEpoch: clock.epoch,
+          reducedMotion,
+          directionKnown: Number.isFinite(
+            Number(levelRef.current.direction_deg ??
+              levelRef.current.azimuth_deg),
+          ),
+        };
+      },
     };
     return () => {
       delete window.__cwiStudio;
@@ -794,10 +677,9 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     session,
     languageError,
     selectLanguage,
-    reveal,
-    motionSnapshots,
-    confirmMotionPaint,
-    completeMotion,
+    scheduleWord,
+    clockEpoch,
+    playheadMs,
     startedAt,
     lastEventAt,
     dispatch,

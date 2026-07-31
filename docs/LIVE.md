@@ -201,8 +201,9 @@ these yet.
 ## Diagnostics
 
 - `display.debug_render` and `?renderdiag=1` expose per-word render diagnostics.
-- `window.__cwiStudio.report()` (studio) and `window.__cwiRenderDiag.report()`
-  (legacy) summarize the reveal queue and motion state in the browser console.
+- `window.__cwiStudio.report()` (studio) summarizes the read-ahead playhead and
+  motion state; `window.__cwiRenderDiag.report()` (legacy) summarizes the older
+  renderer's reveal queue.
 - `scripts/live_render_probe.py` injects a deterministic event burst into a
   headless browser and reports DOM, queue, and motion metrics.
 

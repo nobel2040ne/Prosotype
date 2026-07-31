@@ -1,7 +1,5 @@
 import type {CaptionWord} from "./caption-store.ts";
 
-export type CaptionRevealState = "hidden" | "active" | "settled";
-
 export interface CaptionParagraph {
   id: string;
   speaker: string | null;
@@ -10,7 +8,6 @@ export interface CaptionParagraph {
   words: Array<{
     id: string;
     word: CaptionWord;
-    reveal: CaptionRevealState;
   }>;
 }
 
@@ -36,18 +33,22 @@ function speakerStatus(word: CaptionWord): string {
  * A zero word limit is intentional: wrapping belongs to CSS and therefore
  * follows the actual viewport. A positive limit remains available as a safety
  * valve, but is not the studio default.
+ *
+ * EVERY recognized word is included, including words the playhead has not
+ * reached yet. That is the point: CWI 2.2.1 wants the line on screen in white
+ * BEFORE it is spoken, so withholding a word until its moment -- which the old
+ * reveal state did -- is precisely what made read-ahead impossible. Words
+ * ahead of the playhead are rendered as read-ahead type, not hidden.
  */
 export function buildCaptionParagraphs(
   words: Record<string, CaptionWord>,
   order: string[],
-  reveal: Record<string, CaptionRevealState>,
   wordLimit = 0,
 ): CaptionParagraph[] {
   const paragraphs: CaptionParagraph[] = [];
   for (const id of order) {
-    const state = reveal[id] ?? "hidden";
     const word = words[id];
-    if (state === "hidden" || !word) continue;
+    if (!word) continue;
 
     const status = speakerStatus(word);
     const speaker = status === "unknown" ? null : (word.speaker ?? null);
@@ -70,7 +71,7 @@ export function buildCaptionParagraphs(
         words: [],
       });
     }
-    paragraphs.at(-1)?.words.push({id, word, reveal: state});
+    paragraphs.at(-1)?.words.push({id, word});
   }
   return paragraphs;
 }
@@ -80,8 +81,8 @@ export function buildCaptionParagraphs(
  *
  * The transcript retains every paragraph. Stage keeps only the most recent
  * fixed-boundary blocks, but it never hides recognized words inside those
- * blocks. Concurrency belongs to the reveal scheduler; filtering provisional
- * words here made English captions disappear until endpoint verification.
+ * blocks. Filtering provisional words here made English captions disappear
+ * until endpoint verification.
  */
 export function selectStableCaptionStack(
   paragraphs: CaptionParagraph[],

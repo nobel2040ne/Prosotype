@@ -69,6 +69,15 @@ caption_box:
 read_ahead:
   color: "#FFFFFF"
   opacity: 0.9
+  # 2.2.1's white is specified against 2.4.1's 90%-black captions box, and the
+  # light stage deliberately has no box. MEASURED against that stage's #FAFAF8
+  # surface, white read-ahead is 1.05:1 -- not weak, invisible. This is the same
+  # deviation, and the same remedy, as palette_light: keep the SEMANTIC (the
+  # read-ahead is neutral and uncoloured, so colour still means "spoken") and
+  # change only the value until it is legible. #6E6E73 measures 4.85:1 there,
+  # and stays quieter than the saturated palette_light speaker hues, so the
+  # colour turn is still the thing that reads as the change.
+  color_light: "#6E6E73"
 
 # What reaches the stage, and for how long.
 #
@@ -78,6 +87,12 @@ read_ahead:
 # correcting instead. Measured on one 48-word utterance, showing the 160 ms
 # draft as read-ahead rewrote the stage 55 times and deleted words 16 times.
 # Text that will not hold still is not read-ahead.
+#
+# RESOLVED 2026-08-01 by `read_ahead_delay_s` below, and the resolution is not
+# "show the draft anyway". The playhead trails the acoustic clock, so the text
+# on screen ahead of the colour is text the recognizer has ALREADY committed --
+# stable by the time a reader reaches it, revisable only while it is still
+# white. Both halves of the problem above are satisfied at once.
 #
 #   sentence  - turn-taking: nothing shows until a whole utterance is finalized,
 #               then the complete line appears at once, settled, no per-word
@@ -175,6 +190,57 @@ display:
   word_reveal_gap_max_s: 0.26
   word_reveal_timing_strength: 0.75
   word_reveal_catchup_gap_s: 0.06
+  # ---------------------------------------------------------------------------
+  # THE READ-AHEAD DELAY (CWI 2.2.1). THIS IS WHAT MAKES THE STUDIO A CWI
+  # RENDERER RATHER THAN A WORD-POP ANIMATION.
+  #
+  # The design system is built on the line existing in white BEFORE it is
+  # spoken. A live recognizer cannot produce text early, so for a long time the
+  # studio painted each word on arrival and had no read-ahead at all -- which
+  # also meant no stable text to read, and a caption invariant enforced by a
+  # thicket of guards instead of by construction.
+  #
+  # Presenting from a playhead that trails the acoustic clock inverts that. ASR
+  # delivers a word about 1.1 s after it is spoken (the 1120 ms accurate
+  # stream); colouring only up to `now - 2.5 s` leaves ~1.4 s of recognized,
+  # verified, still-white text on screen ahead of the colour at all times.
+  #
+  # Consequences, all of them good:
+  #   - 2.2.1 read-ahead, 2.2.2 onset colour and the 2.2.3 pop all become pure
+  #     functions of the recording's own timing, scheduled by the browser as one
+  #     `animation-delay`. The reveal queue, its concurrency slots, catch-up
+  #     policy, adaptive clock and backlog ceiling are all gone.
+  #   - text may be revised only AHEAD of the playhead; once a word turns
+  #     colour it is frozen. The caption invariant is now structural.
+  #
+  # MEASURED on the bundled English sample (scripts/studio_probe.py, 40
+  # samples each), because the delay does NOT convert into read-ahead one for
+  # one -- `fast` mode holds a word back until the following one is stable, so
+  # the window is only partly filled with text:
+  #
+  #     delay    words past the playhead (median / max)
+  #     2.5 s    1 / 6
+  #     4.0 s    2 / 8
+  #     5.5 s    6 / 16
+  #
+  # LOWERED 2026-08-01, 2.5 -> 1.2, at the user's direction: "motion should be
+  # real-time". THE DELAY *IS* THE LAG. A word's colour turn and pop happen at
+  # `onset + delay`, so 2.5 s put the cue two and a half seconds after the sound
+  # in the room -- and, measured on the bundled clip, durable speaker
+  # attribution arrives at a median 4.48 s, so the word popped into NEUTRAL and
+  # only took its speaker colour ~2 s later. The visually meaningful moment
+  # landed after attribution, which is exactly what that looks like.
+  # Word TEXT, by contrast, is available at a median 0.62 s. 1.2 s clears that
+  # comfortably, so most words still animate rather than arriving already past
+  # their own onset, while the cue lands close enough to the speech to read as
+  # synchronized. Read-ahead is thin at this setting, and that is the trade:
+  # the delay buys read-ahead and spends sync, one for one.
+  # Raise it toward 5.5 s for a lecture or a recorded screening, where lag costs
+  # nothing and a fuller white line is worth more.
+  # Below the recognizer's own delivery latency it buys nothing at all, and
+  # `lateWords` in window.__cwiStudio.report() climbs because words arrive
+  # after their own onset has already passed.
+  read_ahead_delay_s: 1.2
   # The reference motion breathes rather than jabs. Normal words get a 520 ms
   # zero-slope rise/return; a longer acoustic word may stretch toward 720 ms.
   # The two-word active cap still prevents overlap from becoming visual noise.
@@ -458,27 +524,54 @@ motion:
     # JavaScript width measurement or retained animation style is required.
     # =====================================================================
     studio:
-      # 2.2.3, verbatim.
+      # 2.2.3, verbatim: "a 15% increase in type size before returning to its
+      # original size". THE WORD GROWS FROM ITS BASELINE; IT DOES NOT HOP.
+      # There was a `sync_elevation_em: 0.25` next to this, on the reading that
+      # the diagram's "25% elevation" was a second, vertical channel. Overlaying
+      # rest and peak frames of docs/reference/synchronization.mov disproves it:
+      # neighbouring words are pixel-identical, so the line is static, and the
+      # popped word's ink bottom stays on its baseline while it grows. At about
+      # a third of the cap height, 0.25em read as a jump and buried the size
+      # change that is the actual cue. The elevation is not lost -- scaling
+      # about the glyph box's bottom (a descender below the baseline) raises the
+      # word's TOP by ~0.15em on its own, which is what the diagram labels.
       sync_pop: 0.15
-      # 2.2.3 diagram. 25% of the word's own type size.
-      sync_elevation_em: 0.25
       # ------------------------------------------------------------------
       # 2.3 VOICE-SHAPED CREST. Every anchor is absolute; do not re-centre one
       # on the speaker's running median. The CSS animation returns all three
       # axes to normal at both endpoints.
       # ------------------------------------------------------------------
       # 2.3.6: the design system's authored range is 0.6x..2.4x around the 5%
-      # baseline. Because live returns to normal after each transient, using that
-      # whole range would make neighboring words collide or reserve poster-sized
-      # gaps. The voice layer is therefore limited to 0.90x..1.20x; composed
-      # with 2.2.3's independent 1.15 pop, the largest crest is 1.38x.
-      voice_scale_range: [0.90, 1.20]
+      # baseline -- a FOUR-fold span between a whisper and a shout, and the
+      # single most visible thing the design system does.
+      #
+      # OPENED UP 2026-08-01, [0.90, 1.20] -> [0.72, 1.62], at the user's
+      # direction ("the reference has more feelings on motion"). The old band
+      # was a 1.33x total span: about a twelfth of the specified excursion, so
+      # a shout and a whisper rendered within a hair of each other and the
+      # channel effectively did not exist. Look at frame 395 of
+      # docs/reference/intonation.mov -- "louder" reaches roughly FOUR times the
+      # text around it -- against our own stage, and the difference is the whole
+      # complaint.
+      # Composed with 2.2.3's independent 1.15 pop the largest crest is now
+      # 1.86x, against 1.38x before.
+      # WHY NOT THE FULL 0.6..2.4: rows here reserve each word's crest footprint
+      # so a swelling word cannot collide with its neighbours, and that
+      # reservation is paid for in base type size -- the row budget below had to
+      # be re-fitted, and the caption dropped 45.3 -> ~35px at 1440x900. The
+      # reference does not pay this: it re-fits the whole LINE while a word is
+      # swelling, shrinking its neighbours to make room and restoring them
+      # afterwards (visible across frames 350-440). Doing the same here would
+      # buy the rest of the range back at full size; it is the next real step.
+      voice_scale_range: [0.72, 1.62]
       # How much of the 2.3.6 excursion survives, applied ABOUT the baseline so
       # 2.3.5's anchor is exact at any value. This is the live narrowing lever,
       # and it is NOT the clamp: clamping alone flattens the top of the
       # distribution into one indistinguishable size, while this stays monotone.
       # 1.0 is the literal PDF range before the live clamp.
-      voice_scale_response: 0.25
+      # 0.25 kept 2.3.5's anchor exact while flattening everything around it;
+      # 0.62 keeps the anchor and lets the distribution actually spread.
+      voice_scale_response: 0.62
       # 2.3.8: 160-200 Hz is Regular 400 -- a BAND, not a pivot, so ordinary F0
       # jitter must not move the weight at all. 2.3.9: 80 Hz -> heavy,
       # 250 Hz -> light. The design system reaches 100..1000; live narrows it
@@ -493,7 +586,16 @@ motion:
       # wdth axis.
       width_range: [82, 124]
 
-    neighbor_push: false      # past written captions never move again
+    # ENABLED FOR THE STUDIO 2026-08-01. This is the legacy renderer's flag and
+    # stays false there. The Next studio implements the push in CSS instead
+    # (`word-footprint` on `.word-sizer-crest`), because it is the motion the
+    # reference is actually made of: watch the NEIGHBOURS in
+    # docs/reference/intonation.mov frames 352->396 and the line re-flows around
+    # "louder". Without it there is a pop and nothing else, which is exactly how
+    # it read. The old objection -- "past written captions never move again" --
+    # does not apply: the push is transient and symmetric in time, so a settled
+    # row returns to precisely the geometry it had.
+    neighbor_push: false      # legacy renderer only; the studio pushes in CSS
     # Open-caption adaptation: a word cannot be visible before ASR supplies it,
     # so its first paint is its visual activation. Run the same fixed §2.2.3
     # synchronization cue once when the DOM word is created. Later text,

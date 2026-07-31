@@ -4,7 +4,6 @@ import {
   buildCaptionParagraphs,
   planCaptionStackMotion,
   selectStableCaptionStack,
-  type CaptionRevealState,
 } from "./caption-paragraphs.ts";
 import type {CaptionWord} from "./caption-store.ts";
 
@@ -14,15 +13,12 @@ function sentence(
 ): {
   words: Record<string, CaptionWord>;
   order: string[];
-  reveal: Record<string, CaptionRevealState>;
 } {
   const words: Record<string, CaptionWord> = {};
   const order: string[] = [];
-  const reveal: Record<string, CaptionRevealState> = {};
   for (let index = 0; index < count; index += 1) {
     const id = `u0:w${index}`;
     order.push(id);
-    reveal[id] = "settled";
     words[id] = {
       word_id: id,
       text: `word-${index}`,
@@ -32,7 +28,7 @@ function sentence(
       speaker_status: "stable",
     };
   }
-  return {words, order, reveal};
+  return {words, order};
 }
 
 test("a long speaker turn remains one wrapping paragraph", () => {
@@ -40,7 +36,6 @@ test("a long speaker turn remains one wrapping paragraph", () => {
   const paragraphs = buildCaptionParagraphs(
     input.words,
     input.order,
-    input.reveal,
     0,
   );
   assert.equal(paragraphs.length, 1);
@@ -55,7 +50,6 @@ test("a real speaker change starts a new paragraph", () => {
   const paragraphs = buildCaptionParagraphs(
     input.words,
     input.order,
-    input.reveal,
     0,
   );
   assert.deepEqual(
@@ -75,7 +69,6 @@ test("a new utterance starts a paragraph even for the same speaker", () => {
   const paragraphs = buildCaptionParagraphs(
     input.words,
     input.order,
-    input.reveal,
     0,
   );
   assert.deepEqual(
@@ -92,7 +85,6 @@ test("a positive safety limit still splits exceptionally large turns", () => {
   const paragraphs = buildCaptionParagraphs(
     input.words,
     input.order,
-    input.reveal,
     12,
   );
   assert.deepEqual(paragraphs.map((paragraph) => paragraph.words.length), [12, 7]);
@@ -109,7 +101,6 @@ test("the audience stack stays continuous while transcript turns remain intact",
   const paragraphs = buildCaptionParagraphs(
     input.words,
     input.order,
-    input.reveal,
   );
   const stack = selectStableCaptionStack(paragraphs, 2, 8);
 
@@ -126,7 +117,6 @@ test("one long turn advances through six stable eight-word rows", () => {
   const paragraphs = buildCaptionParagraphs(
     input.words,
     input.order,
-    input.reveal,
   );
   const stack = selectStableCaptionStack(paragraphs);
 
@@ -169,12 +159,10 @@ test("opening a second row does not change the first row identity", () => {
   const firstStack = selectStableCaptionStack(buildCaptionParagraphs(
     firstRowWords.words,
     firstRowWords.order,
-    firstRowWords.reveal,
   ));
   const secondStack = selectStableCaptionStack(buildCaptionParagraphs(
     secondRowWords.words,
     secondRowWords.order,
-    secondRowWords.reveal,
   ));
 
   assert.equal(firstStack[0].id, secondStack[0].id);
@@ -192,7 +180,6 @@ test("the audience stack does not hide recognized provisional words", () => {
   const paragraphs = buildCaptionParagraphs(
     input.words,
     input.order,
-    input.reveal,
   );
   const stack = selectStableCaptionStack(paragraphs, 2, 8);
 
@@ -215,7 +202,6 @@ test("provisional accurate commits remain visible before endpoint verification",
   const stack = selectStableCaptionStack(buildCaptionParagraphs(
     input.words,
     input.order,
-    input.reveal,
   ));
 
   assert.deepEqual(
@@ -233,7 +219,6 @@ test("speaker churn cannot create one-word rows or remount the stack", () => {
   const alternatingParagraphs = buildCaptionParagraphs(
     alternating.words,
     alternating.order,
-    alternating.reveal,
   );
   const before = selectStableCaptionStack(alternatingParagraphs);
 
@@ -241,7 +226,6 @@ test("speaker churn cannot create one-word rows or remount the stack", () => {
   const correctedParagraphs = buildCaptionParagraphs(
     corrected.words,
     corrected.order,
-    corrected.reveal,
   );
   const after = selectStableCaptionStack(correctedParagraphs);
 
@@ -269,14 +253,12 @@ test("pending attribution and provisional utterances cannot break the stack", ()
   const before = selectStableCaptionStack(buildCaptionParagraphs(
     pending.words,
     pending.order,
-    pending.reveal,
   ));
 
   const attributed = sentence(16, "S1");
   const after = selectStableCaptionStack(buildCaptionParagraphs(
     attributed.words,
     attributed.order,
-    attributed.reveal,
   ));
 
   assert.deepEqual(before.map(({words}) => words.length), [8, 8]);

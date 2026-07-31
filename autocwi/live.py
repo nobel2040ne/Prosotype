@@ -4606,6 +4606,7 @@ def _studio_runtime_config(
     language_selection_required: bool = False,
 ) -> dict:
     display = cfg.get("display", {}) or {}
+    read_ahead = cfg.get("read_ahead", {}) or {}
     live_sync = cfg.get("motion", {}).get("live_sync", {}) or {}
     # The Next studio's motion is its own: `studio:` overrides any shared key,
     # so the legacy diagnostics renderer keeps the values it was tuned against.
@@ -4630,22 +4631,19 @@ def _studio_runtime_config(
         ),
         "stageWordsMin": display.get("studio_stack_words_min", 3),
         "stageMinRows": display.get("studio_stack_min_rows", 10),
-        "revealGapMs": round(
-            float(display.get("word_reveal_gap_s", 0.14)) * 1000
+        # CWI 2.2.1. How far the caption playhead trails the acoustic clock,
+        # and therefore how much recognized-but-uncoloured text the viewer can
+        # read ahead. See the long note on `read_ahead_delay_s` in config.yaml.
+        "readAheadDelayMs": round(
+            float(display.get("read_ahead_delay_s", 2.5)) * 1000
         ),
-        "revealGapMinMs": round(
-            float(display.get("word_reveal_gap_min_s", 0.08)) * 1000
+        "readAheadColor": read_ahead.get("color", "#FFFFFF"),
+        # Same read-ahead, legible on the boxless light stage. See config.yaml.
+        "readAheadColorLight": read_ahead.get("color_light", "#6E6E73"),
+        "readAheadOpacity": float(read_ahead.get("opacity", 0.9)),
+        "colorTurnMs": round(
+            float(cfg.get("motion", {}).get("color_turn_ms", 90))
         ),
-        "revealGapMaxMs": round(
-            float(display.get("word_reveal_gap_max_s", 0.26)) * 1000
-        ),
-        "revealTimingStrength": display.get(
-            "word_reveal_timing_strength", 0.75
-        ),
-        "catchupGapMs": round(
-            float(display.get("word_reveal_catchup_gap_s", 0.06)) * 1000
-        ),
-        "maxActiveMotions": display.get("max_simultaneous_reveals", 3),
         "wordMotionBaseMs": round(
             float(display.get("word_motion_duration_s", 0.52)) * 1000
         ),
@@ -4658,20 +4656,7 @@ def _studio_runtime_config(
         "wordMotionMinMs": round(
             float(display.get("word_motion_min_duration_s", 0.32)) * 1000
         ),
-        "wordMotionBacklogTargetMs": round(
-            float(display.get("word_motion_backlog_target_s", 0.60)) * 1000
-        ),
-        "motionBacklogCeilingMs": round(
-            float(display.get("word_motion_backlog_ceiling_s", 1.20)) * 1000
-        ),
-        "wordMotionRateHeadroom": display.get(
-            "word_motion_rate_headroom", 0.90
-        ),
-        "wordMotionCatchupScale": display.get(
-            "word_motion_catchup_scale", 0.82
-        ),
         "syncPop": live_sync.get("sync_pop", 0.15),
-        "syncElevationEm": live_sync.get("sync_elevation_em", 0.25),
         "voiceScaleRange": [
             float(v) for v in live_sync.get(
                 "voice_scale_range", [0.90, 1.20]

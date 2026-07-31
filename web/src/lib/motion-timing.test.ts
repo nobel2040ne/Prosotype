@@ -1,14 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  acousticBacklogMs,
-  adaptiveMotionDurationMs,
-  exceedsMotionBacklogCeiling,
-  isHistoricalInsertion,
+  acousticTimeMs,
   naturalMotionDurationMs,
-  nextActiveMotionDelayMs,
-  recentAcousticGapMs,
-  unpaintedReservationExpired,
   type MotionDurationSettings,
 } from "./motion-timing.ts";
 
@@ -17,106 +11,40 @@ const settings: MotionDurationSettings = {
   wordMotionMaxMs: 720,
   wordMotionSpanStretch: 0.42,
   wordMotionMinMs: 320,
-  wordMotionBacklogTargetMs: 600,
-  wordMotionRateHeadroom: 0.90,
-  wordMotionCatchupScale: 0.82,
-  maxActiveMotions: 2,
   deliveryFlowDurationMs: 90,
 };
 
-test("ordinary speech retains the authored motion duration", () => {
-  const natural = naturalMotionDurationMs({
-    start: 0,
-    end: 0.2,
-    delivery_flow: 0,
-  }, settings);
-  assert.equal(natural, 604);
+test("acoustic time prefers the global stream timeline", () => {
+  // `t` is stream_base + start, the same timeline `level.t` reports, so it is
+  // directly comparable with the playhead. `start` alone is utterance-relative.
+  assert.equal(acousticTimeMs({t: 41.5, start: 1.5}), 41_500);
+  assert.equal(acousticTimeMs({start: 1.5}), 1_500);
+  assert.ok(Number.isNaN(acousticTimeMs(undefined)));
+  assert.ok(Number.isNaN(acousticTimeMs({})));
+});
+
+test("an ordinary word keeps the authored 520 ms clock", () => {
   assert.equal(
-    adaptiveMotionDurationMs(natural, 400, 0, 1, settings),
-    natural,
+    naturalMotionDurationMs({start: 1, end: 1.2}, settings),
+    520 + 200 * 0.42,
   );
 });
 
-test("fast speech receives a sustainable two-slot duration", () => {
-  assert.equal(
-    adaptiveMotionDurationMs(650, 200, 0, 1, settings),
-    360,
+test("a drawn-out word runs longer, bounded by the maximum", () => {
+  const drawn = naturalMotionDurationMs(
+    {start: 1, end: 2.4, delivery_flow: 1},
+    settings,
   );
+  assert.equal(drawn, 720);
+  assert.ok(drawn > naturalMotionDurationMs({start: 1, end: 1.1}, settings));
 });
 
-test("an existing acoustic backlog gets bounded catch-up headroom", () => {
-  assert.equal(
-    adaptiveMotionDurationMs(650, 250, 1_500, 2, settings),
-    369,
+test("flow lengthens the cue without exceeding the ceiling", () => {
+  const steady = naturalMotionDurationMs({start: 0, end: 0.2}, settings);
+  const flowing = naturalMotionDurationMs(
+    {start: 0, end: 0.2, delivery_flow: 1},
+    settings,
   );
-});
-
-test("extreme speed never collapses below the smooth-motion floor", () => {
-  assert.equal(
-    adaptiveMotionDurationMs(650, 50, 5_000, 1, settings),
-    320,
-  );
-});
-
-test("a sparse decoder batch drains even when word cadence is slow", () => {
-  assert.equal(
-    adaptiveMotionDurationMs(720, null, 8_400, 14, settings),
-    320,
-  );
-});
-
-test("source timing estimates cadence and backlog across a decoder batch", () => {
-  const words = Object.fromEntries(Array.from({length: 12}, (_, index) => [
-    `w${index}`,
-    {
-      start: index * 0.2,
-      end: index * 0.2 + 0.16,
-      utterance: 0,
-    },
-  ]));
-  const order = Object.keys(words);
-  assert.equal(recentAcousticGapMs(words, order, "w4"), 200);
-  assert.equal(acousticBacklogMs(words, "w4", "w11"), 1_400);
-});
-
-
-test("a word inserted behind the presented frontier cannot move late", () => {
-  assert.equal(
-    isHistoricalInsertion({start: 4}, 5_000),
-    true,
-  );
-  assert.equal(
-    isHistoricalInsertion({start: 4.98}, 5_000),
-    false,
-  );
-});
-
-test("an unpainted reservation has a bounded deadlock watchdog", () => {
-  assert.equal(unpaintedReservationExpired(1_000, 1_249, 250), false);
-  assert.equal(unpaintedReservationExpired(1_000, 1_250, 250), true);
-  assert.equal(unpaintedReservationExpired(undefined, 2_000, 250), false);
-});
-
-test("painted motion schedules a logical return-to-rest fallback", () => {
-  assert.equal(
-    nextActiveMotionDelayMs([Number.POSITIVE_INFINITY, 1_800, 1_450], 1_000),
-    450,
-  );
-  assert.equal(nextActiveMotionDelayMs([900], 1_000), 0);
-  assert.equal(nextActiveMotionDelayMs([Number.POSITIVE_INFINITY], 1_000), null);
-  assert.equal(nextActiveMotionDelayMs([], 1_000), null);
-});
-
-test("a word far behind the acoustic frontier is history, not live speech", () => {
-  // Cold start: model loading buffered a deep queue, measured 12.7 s of clip
-  // time on the bundled sample. Those words settle instead of racing through
-  // the motion queue seconds after they were spoken.
-  assert.equal(exceedsMotionBacklogCeiling(12688, 1200), true);
-  // Ordinary decoder burst -- still live, still animates.
-  assert.equal(exceedsMotionBacklogCeiling(600, 1200), false);
-  assert.equal(exceedsMotionBacklogCeiling(1200, 1200), false);
-  // A disabled ceiling must never suppress motion.
-  assert.equal(exceedsMotionBacklogCeiling(99999, 0), false);
-  // Malformed readings fall back to animating rather than silently settling.
-  assert.equal(exceedsMotionBacklogCeiling(Number.NaN, 1200), false);
+  assert.equal(flowing - steady, 90);
+  assert.ok(flowing <= settings.wordMotionMaxMs);
 });

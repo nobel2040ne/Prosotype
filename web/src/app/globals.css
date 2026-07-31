@@ -73,13 +73,30 @@
      See `rowBudgetEm` -- the per-word cost RISES as rows shorten, so a single
      per-word constant is wrong. Fitted to the measured English worst cases
      (2.93em/word at six words, 3.61em at three) plus ~8%. Korean is separate: a
-     Hangul 어절 is close to full-width. */
-  --word-em-linear: 1.40;
-  --word-em-spread: 4.30;
+     Hangul 어절 is close to full-width.
+     RAISED 2026-08-01, 1.40/4.30 -> 1.45/4.45. The fit was made by sliding a
+     window over one clip's word order, and live text beat it: MEASURED on the
+     running studio, the widest real row reached 19.49em against an 18.93em
+     budget at N=6 -- a 3% under-prediction. The row spilled into the right clip
+     gutter, which is sized for the voice orb, and a row-final word caught
+     mid-pop then pushed 43px past the clip edge and was cut off. It went
+     unnoticed for as long as it did because the old reveal queue capped
+     concurrency at three, so the row's LAST word was rarely mid-motion when a
+     probe sampled; the playhead animates every word at its own onset and peak
+     concurrency measured 6. Costs ~3% of type size (46.7 -> 45.3px at
+     1440x900) and takes the budget to 19.60em, clear of the observation.
+     SPREAD RAISED AGAIN 2026-08-01, 4.45 -> 6.60, when the 2.3 voice band was
+     opened from [0.90,1.20] to [0.72,1.62]. Only the SPREAD term moves: a row's
+     width is the sum of its words' crest footprints, whose MEAN is unchanged
+     (the voice scale still centres on 1.0 at the median loudness) -- what grew
+     is the variance, which is exactly what `spread*sqrt(N)` is for. Raising
+     `linear` instead would have over-budgeted every ordinary row. */
+  --word-em-linear: 1.45;
+  --word-em-spread: 6.60;
   /* The resolved budget for the current row width. `planStageLayout` writes this
      and `--stack-words` together; these are only what renders before the first
-     measurement (six words: 6*1.40 + 4.30*sqrt(6)). */
-  --row-budget-em: 18.93;
+     measurement (six words: 6*1.45 + 6.60*sqrt(6)). */
+  --row-budget-em: 24.87;
   --stack-words: 6;
   /* Ceiling on the caption type size as a fraction of the STAGE width, because
      Stage rows do not wrap and an oversized row is clipped, not wrapped. This is
@@ -453,23 +470,45 @@ button {
 
 /* Sits below the caption block: it is a non-speech cue, and the top of the
    stage now belongs to the first caption row. */
-.sound-chip {
+/* CWI 2.4.4: "Sound effects always appear in white and within brackets [ ],
+   similar to classic caption systems. However, they still follow the rules of
+   Caption with Intention's animation and design system... the sound effects
+   inside the brackets will increase in size and 'pop' in sync with the sound."
+
+   So this is a CAPTION, not chrome: caption face, white, no pill, no border,
+   no blur. It sits below the caption block because the stack owns the stage.
+   The size follows the live input level, which is the honest analogue of the
+   thunder example -- it is the loudness of the sound being described. */
+.sound-caption {
   position: absolute;
   z-index: 8;
-  bottom: 26px;
+  bottom: 22px;
   left: 50%;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 7px 11px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
-  color: var(--text);
-  font-size: 12px;
-  font-style: italic;
+  color: #fff;
+  font-family: var(--font-caption);
+  font-size: calc(var(--caption-height-cap, 34px) * .46);
+  font-variation-settings: "opsz" 14, "wght" 400, "wdth" 100;
+  letter-spacing: -.012em;
+  white-space: nowrap;
+  transform-origin: 50% 100%;
+  transform:
+    translateX(-50%)
+    scale(calc(1 + var(--sound-level, 0) * .22));
+  transition: transform 120ms cubic-bezier(.42,0,.22,1);
+}
+
+/* The light stage has no captions box, and pure white on near-white would
+   vanish. 2.4.1's box is what makes white legible, so where the box is absent
+   the sound effect takes the stage's own ink instead. */
+:root[data-theme="light"] .sound-caption {
+  color: var(--caption-unknown);
+}
+
+/* CWI 2.4.5: music descriptors "don't need to be animated and don't change
+   color". The ♫ symbol on either side is added by the component. */
+.sound-caption[data-category="music"] {
   transform: translateX(-50%);
-  backdrop-filter: blur(12px);
+  transition: none;
 }
 
 .empty-stage {
@@ -544,14 +583,17 @@ button {
      - bottom: the box hugs its content, so the newest row's bottom edge IS the
        content edge -- and the Stage FLIP entry starts that row at
        `translateY(0.58em)`. Measured, the entering row and the voice orb riding
-       on it were cut off for the whole 620 ms entry. This gutter is the one the
-       eviction path never uses: `justify-content: flex-end` sends overflow to
-       the TOP, so the bottom strip stays free.
+       on it were cut off for the whole 620 ms entry. Raised .66 -> .84em on
+       2026-08-01: the cue now grows a word about its BASELINE, so a crest
+       scales the descenders downward as well and the bottom row clipped by a
+       measured 1.3px. This gutter is the one the eviction path never uses:
+       `justify-content: flex-end` sends overflow to the TOP, so the bottom
+       strip stays free.
      Capping the row with `max-width` instead resolved its `%` against a
      shrink-wrapped `.caption-surface` and dragged the orb onto the last word.
      The right gutter covers the orb plus the last word's transient overhang.
      Keep `--caption-gutter-em` equal to left + right. */
-  padding: .40em 1.90em .66em .60em;
+  padding: .40em 1.90em .84em .60em;
   /* No gap: consecutive blocks are one continuous read, spaced only by the
      caption's own leading. A gap turned every speaker turn and utterance
      boundary into a visible section break, which is segmentation the reader
@@ -660,7 +702,23 @@ button {
   max-width: 100%;
   padding: .08em .16em .14em .18em;
   row-gap: .12em;
-  /* Motion is painted on an overlay and never participates in layout. */
+  /* LEADING CARRIES THE CREST. The cue grows a word upward from its fixed
+     baseline (CWI moves no word vertically), so the ink top rises by
+     `(scale - 1) * capHeight` -- ~0.61em at the 1.863x maximum crest -- and the
+     leading is the only thing between a loud word and the row above it.
+     KEPT AT 1.38, AND THE ARITHMETIC THAT SAID OTHERWISE WAS WRONG (2026-08-01).
+     `lineHeight >= capHeight * maxScale + descent` predicted 1.56 and it was
+     raised to 1.58 on that basis. Forcing the true worst case -- injecting a
+     maximum-loudness word so the crest actually reaches 1.863x, rather than
+     waiting for the sampler to stumble on one -- measured the clear gap to the
+     row above as 10.5px at 1.38 and 11.5px at 1.58. One pixel, because taller
+     lines also shrink the type. The estimate ignored that a descender has to be
+     directly above the swelling word for any of it to matter.
+     Re-check with `scratchpad/ink_collision.py` if `voice_scale_range` grows:
+     it reads PIXELS. Line-box geometry cannot answer this question -- a scaled
+     box overlaps its neighbour long before any letter does, and that overlap
+     grows WITH the leading even as the real ink gap improves.
+     Motion is painted on an overlay and never participates in layout. */
   line-height: 1.38;
   white-space: normal;
 }
@@ -702,8 +760,20 @@ button {
    visible glyph is absolutely overlaid and may follow CWI 2.3 during its one
    motion window without changing this box. This replaces the old
    getBoundingClientRect -> inline-width freeze: the return state is structural,
-   not something recovered by measuring pixels. */
+   not something recovered by measuring pixels.
+
+   ONE DELAY DRIVES THE WHOLE CAPTION. `--turn-delay` is how long until the
+   playhead reaches this word's spoken onset, written once by the component and
+   never rewritten. Every caption animation -- the 2.2.2 colour turn here, the
+   2.2.3 pop on `.word-glyph`, the 2.3 crest on `.word-ink` -- takes it as its
+   `animation-delay`, so the browser schedules all three off the recording's own
+   timing. There is no JavaScript timer, no reveal queue and no per-frame work.
+
+   The default is large and positive on purpose: an unscheduled word (the clock
+   has not started, or it arrived in the same tick) sits in read-ahead type
+   rather than flashing coloured. */
 .caption-word {
+  --turn-delay: 600000ms;
   position: relative;
   display: inline-grid;
   flex: 0 0 auto;
@@ -716,6 +786,14 @@ button {
   font-weight: 400;
   font-stretch: 100%;
   opacity: 1;
+  /* CWI 2.2.1 + 2.2.2. See the keyframes for why there is no `to`. */
+  animation: word-color-turn var(--color-turn-ms, 90ms) linear
+    var(--turn-delay) backwards;
+}
+
+/* CWI 2.1.5: an off-camera voice is italic, and keeps its speaker colour. */
+.caption-word[data-off-camera="true"] {
+  font-style: italic;
 }
 
 .caption-word:last-child {
@@ -745,14 +823,28 @@ button {
   white-space: pre;
 }
 
+/* THE PUSH. A SWELLING WORD MOVES ITS NEIGHBOURS ASIDE.
+   This is the motion the studio was missing, and it is the one that reads as
+   alive. Watch the NEIGHBOURS in the reference, not the word:
+   `intonation.mov` frames 352 -> 396, "feel when my voice gets" slides left as
+   "louder" balloons; `character_identification.mov`, "will distinguish chara"
+   slides right as "colors" turns. The line re-flows around the word being
+   spoken. Without it there is only a pop, which is exactly what it looked like.
+   The visible glyph is absolutely positioned and cannot move anything, so the
+   push has to come from this in-flow sizer: the grid track is
+   max(normal sizer, crest sizer), and animating the crest on the SAME clock
+   grows and shrinks the word's cell, which the row's flex layout turns into a
+   shove. It reserves nothing at rest -- at 0% and 100% it is identical to the
+   normal sizer, so a settled row is exactly as wide as its words.
+   `line-height: 0` keeps this a width-only channel; row height never moves. */
 .word-sizer-crest {
-  /* Reserve the real motion footprint with CSS typography, not a pixel read.
-     The grid track takes max(normal sizer, crest sizer), while zero line-height
-     keeps this width-only reservation from changing row height. */
-  font-size: calc(1em * var(--motion-footprint-scale));
-  font-weight: var(--voice-weight);
-  font-stretch: var(--voice-width);
+  font-size: 1em;
+  font-weight: 400;
+  font-stretch: 100%;
   line-height: 0;
+  will-change: font-size;
+  animation: word-footprint var(--motion-duration) cubic-bezier(.42,0,.22,1)
+    var(--turn-delay);
 }
 
 .word-glyph {
@@ -761,15 +853,29 @@ button {
   bottom: 0;
   display: block;
   width: max-content;
-  transform-origin: 50% 100%;
+  /* THE PIVOT IS THE BASELINE, NOT THE BOX BOTTOM. `50% 100%` is the bottom of
+     the LINE BOX, which sits a descender plus half-leading below the baseline,
+     so scaling about it lifts the whole word by `(scale - 1) * that offset` --
+     and because the scale carries the voice, louder words lifted further. That
+     is a word-level lift, and CWI has none: in `docs/reference/intonation.mov`
+     the word "louder" reaches roughly FOUR times the text beside it with its
+     ink bottom exactly on the shared baseline.
+     `--glyph-baseline-em` is measured off the live caption face by
+     `useGlyphBaseline` (measured .3799em for Roboto Flex and .2598em for Noto
+     Sans KR at this line-height -- the two faces genuinely differ, so this
+     cannot be a constant). The fallback is the Roboto value and covers only the
+     frame before the measurement resolves. */
+  transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
   transform: translate3d(-50%, 0, 0) scale(1);
   white-space: nowrap;
   will-change: transform;
-}
-
-.caption-word.is-active .word-glyph {
-  animation: word-sync-pop var(--motion-duration) cubic-bezier(.42,0,.22,1);
-  animation-delay: var(--motion-phase-delay);
+  /* CWI 2.2.3. `animation-fill-mode` stays at its default `none`, so the word
+     rests here BOTH before the delay elapses and after the cue completes. A
+     word whose onset is already past arrives with a delay negative enough that
+     the browser treats the animation as finished, and it simply paints
+     settled -- which is exactly what a late/replayed word should do. */
+  animation: word-sync-pop var(--motion-duration) cubic-bezier(.42,0,.22,1)
+    var(--turn-delay);
 }
 
 /* REMOVED 2026-07-31 (user request): the `textured` delivery family drew a
@@ -779,27 +885,23 @@ button {
    colour belongs to speaker identity. Texture still reaches the screen through
    the weight/width axes and the `textured` motion family's own timing. */
 
+/* NO TRANSFORM HERE. The 2.2.3 pop and the 2.3 voice size were two nested
+   scales on the same clock, same easing, same 42% crest -- which meant two
+   transform origins that both had to stay on the baseline and could drift
+   apart. They are composed into the single scale on `.word-glyph` above
+   (`--motion-footprint-scale`, the value the crest sizer already reserves).
+   This element keeps only the axes that are font properties, not geometry. */
 .word-ink {
   display: inline-block;
-  transform-origin: 50% 100%;
-  transform: scale(1);
   font-weight: 400;
   font-stretch: 100%;
-  will-change: transform, font-weight, font-stretch;
-}
-
-.caption-word.is-active .word-ink {
-  animation: word-voice-shape var(--motion-duration) cubic-bezier(.42,0,.22,1);
-  animation-delay: var(--motion-phase-delay);
-}
-
-/* `animation-fill-mode` is deliberately left at its default `none`. Even if an
-   animationend event is lost, the browser drops the animated values and these
-   explicit normal declarations win. Removing `.is-active` is logical cleanup;
-   it is not required to recover the pixels. */
-.caption-word.is-settled .word-glyph,
-.caption-word.is-settled .word-ink {
-  animation: none;
+  will-change: font-weight, font-stretch;
+  /* CWI 2.3, on the same clock. Both endpoints are normal type, per the
+     2026-07-31 return-to-normal correction, so the voice is visible at the
+     crest of the one motion window and the row is typographically uniform at
+     rest. Same `fill-mode: none` reasoning as the glyph above. */
+  animation: word-voice-shape var(--motion-duration) cubic-bezier(.42,0,.22,1)
+    var(--turn-delay);
 }
 
 .caption-word[data-sustain="true"] .word-glyph::after {
@@ -1430,13 +1532,51 @@ button {
   line-height: 1.5;
 }
 
+/* THE READ-AHEAD LAYER -- CWI 2.2.1 and 2.2.2.
+   2.2.1: "Every line of dialogue should first appear in white as a complete
+   sentence... This allows the Deaf community to read ahead at their own pace.
+   The read-ahead text should be displayed in full white at 90% opacity."
+   2.2.2: the word turns "as soon as the sound of the word begins to be
+   pronounced, not after" -- when "In" is spoken, not when "ble" is.
+
+   THERE IS NO `to` KEYFRAME, AND THAT IS THE WHOLE TRICK. An omitted endpoint
+   makes the browser use the element's OWN computed value, so this one rule
+   turns each word into whatever colour it is actually entitled to -- the
+   speaker's CI hue, the neutral `--caption-unknown` while attribution is
+   pending, the receded provisional mix -- without any of that being restated
+   here. A later speaker correction rewrites `--speaker-color` on a word whose
+   animation has already finished, so it lands as a direct colour write, which
+   is exactly the documented rule for late attribution.
+
+   `backwards` fill is what actually paints the read-ahead: it applies the
+   `from` keyframe for the entire delay, which may be many seconds. */
+@keyframes word-color-turn {
+  from {
+    color: var(--read-ahead-color, #fff);
+    opacity: var(--read-ahead-opacity, .9);
+  }
+}
+
 /* THE SYNCHRONIZATION LAYER -- CWI 2.2.3, verbatim:
    "Caption with Intention adds a motion element to each word as it changes
    color. Each word should undergo a 15% increase in type size before returning
    to its original size, creating a 'pop' motion effect."
-   The diagram on the same page labels the rise "25% elevation", and its inset
-   ("we need to talk") shows the popped word both LARGER and RAISED off the
-   baseline of its neighbours.
+   THE WORD GROWS FROM ITS BASELINE. IT DOES NOT MOVE. (Corrected twice, finally
+   2026-08-01, by LOOKING at all three recordings in `docs/reference/`.)
+   Take a baseline guide PER FRAME from a static neighbouring word -- the
+   reference re-fits its whole line while a word swells, so a guide drawn once
+   from the first frame drifts and fabricates an apparent rise, which is exactly
+   how the previous two answers here went wrong. Done properly:
+   `intonation.mov` shows "louder" reaching roughly FOUR times the text beside
+   it with its ink bottom exactly on the shared baseline, and
+   `character_identification.mov` shows read-ahead and spoken words at visibly
+   different sizes all sitting on one line. Zero vertical displacement, at any
+   size.
+   So there is no `translateY` (removed earlier) AND no box-bottom pivot: see
+   `.word-glyph`'s `transform-origin` for why the latter was still lifting the
+   word, and lifting it further the louder it was.
+   The diagram's "25% elevation" is simply where the TOP of the word ends up
+   when it grows from a fixed baseline.
    One path, on the whole word, once. `transform`, not `font-size`, keeps the cue
    transient and out of layout. The permanent -50% X translation centres the
    overlaid glyph on the normal-type sizer beneath it. */
@@ -1445,9 +1585,7 @@ button {
     transform: translate3d(-50%, 0, 0) scale(1);
   }
   42% {
-    transform:
-      translate3d(-50%, calc(-1 * var(--sync-elevation)), 0)
-      scale(var(--sync-pop));
+    transform: translate3d(-50%, 0, 0) scale(var(--motion-footprint-scale));
   }
   100% {
     transform: translate3d(-50%, 0, 0) scale(1);
@@ -1459,14 +1597,28 @@ button {
    the crest. This live presentation makes those qualities transient: both
    endpoints are exactly the normal caption type, and the visible glyph is
    overlaid so the axis excursion cannot move neighbouring words. */
-@keyframes word-voice-shape {
+/* The layout half of the cue: the word's own cell, on the glyph's clock. The
+   axes are here as well as on `.word-ink` because weight and width change a
+   word's advance, so the cell has to follow them or the push under-reads. */
+@keyframes word-footprint {
   0%, 100% {
-    transform: scale(1);
+    font-size: 1em;
     font-weight: 400;
     font-stretch: 100%;
   }
   42% {
-    transform: scale(var(--voice-scale));
+    font-size: calc(1em * var(--motion-footprint-scale));
+    font-weight: var(--voice-weight);
+    font-stretch: var(--voice-width);
+  }
+}
+
+@keyframes word-voice-shape {
+  0%, 100% {
+    font-weight: 400;
+    font-stretch: 100%;
+  }
+  42% {
     font-weight: var(--voice-weight);
     font-stretch: var(--voice-width);
   }
@@ -1853,7 +2005,12 @@ button {
   }
 }
 
-.studio-shell[data-reduced-motion="true"] .caption-word,
+/* REDUCED MOTION KEEPS THE COLOUR TURN. It is not decoration: read-ahead
+   (2.2.1) and the onset turn (2.2.2) are how a viewer knows which word is
+   being spoken right now, and they involve no movement at all. What goes is
+   the geometry -- the 2.2.3 pop and the 2.3 crest. `.caption-word` therefore
+   keeps its animation here, where it previously lost it along with everything
+   else and every word rendered instantly in its speaker colour. */
 .studio-shell[data-reduced-motion="true"] .word-ink {
   animation: none !important;
   transform: none !important;

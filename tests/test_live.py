@@ -971,21 +971,51 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     assert runtime["paragraphWordLimit"] == 0
     assert runtime["stageParagraphHistory"] == 6
     assert runtime["stageWordsPerBlock"] == 6
-    assert runtime["revealGapMs"] == 140
-    assert runtime["maxActiveMotions"] == 3
+    # CWI 2.2.1. The playhead trails the acoustic clock by this much, which is
+    # what leaves recognized-but-uncoloured text on screen to read ahead into.
+    # It has to exceed the recognizer's own latency (~1.1 s for the 1120 ms
+    # accurate stream) or it buys no read-ahead at all.
+    assert runtime["readAheadDelayMs"] == 1200
+    # It must still clear the median time for a word's TEXT to arrive (~0.62 s
+    # measured), or words land past their own onset and never animate.
+    assert runtime["readAheadDelayMs"] > 620
+    # 2.2.1 again: "full white at 90% opacity".
+    assert runtime["readAheadColor"] == "#FFFFFF"
+    assert runtime["readAheadOpacity"] == 0.9
+    # 2.2.2's turn eases with the lift; it is never a hard cut.
+    assert runtime["colorTurnMs"] > 0
     assert runtime["wordMotionBaseMs"] == 520
     assert runtime["wordMotionMaxMs"] == 720
     assert runtime["wordMotionMinMs"] == 320
-    assert runtime["wordMotionBacklogTargetMs"] == 600
-    assert runtime["wordMotionRateHeadroom"] == 0.90
-    assert runtime["wordMotionCatchupScale"] == 0.82
+    # The reveal queue and its concurrency slots, catch-up gap, backlog target,
+    # rate headroom and staleness ceiling are gone: the playhead schedules every
+    # word from its own recorded onset, so none of them has anything to decide.
+    for retired in (
+        "revealGapMs",
+        "maxActiveMotions",
+        "wordMotionBacklogTargetMs",
+        "wordMotionRateHeadroom",
+        "wordMotionCatchupScale",
+        "motionBacklogCeilingMs",
+    ):
+        assert retired not in runtime
     assert runtime["syncPop"] == 0.15
-    # CWI 2.2.3 verbatim -- a 15% type-size increase, and the diagram's
-    # "25% elevation". ONE transient, per word, and nothing else moves.
-    assert runtime["syncElevationEm"] == 0.25
+    # CWI 2.2.3 verbatim -- a 15% type-size increase. ONE transient, per word,
+    # and nothing else moves. There is deliberately no elevation term: the word
+    # grows from its baseline rather than translating upward, which is what the
+    # reference recording shows and what the diagram's "25% elevation" label
+    # describes as a consequence.
+    assert "syncElevationEm" not in runtime
     # CWI 2.3 shapes the transient crest from absolute anchors; the client never
     # re-centres these on a speaker's own median.
-    assert runtime["voiceScaleRange"] == [0.90, 1.20]
+    # 2.3.6 specifies 0.6x..2.4x around the 5% baseline. Live cannot use all of
+    # it while rows reserve each word's crest footprint, but the band must stay
+    # wide enough that a shout and a whisper are plainly different sizes -- at
+    # [0.90, 1.20] they were within a third of each other and the channel read
+    # as absent. Assert the SPAN, not the exact numbers, so tuning stays free.
+    low, high = runtime["voiceScaleRange"]
+    assert low < 1 < high, "2.3.5's baseline must sit strictly inside the band"
+    assert high / low >= 2.0, "whisper and shout must be visibly different"
     assert 0 < runtime["voiceScaleResponse"] <= 1
     # 2.3.8's Regular 400 and 2.3.10's 100% must sit strictly inside both bands,
     # or the neutral band cannot be expressed at all.

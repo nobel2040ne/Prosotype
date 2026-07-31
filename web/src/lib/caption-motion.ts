@@ -8,6 +8,14 @@
  * Normal type owns layout. The voice-shaped type is painted on an overlaid
  * glyph during the motion window, so changing size, weight, or width cannot
  * reflow the caption row and no DOM measurement is required.
+ *
+ * WHEN it runs is not decided here, and is no longer decided by a scheduler at
+ * all. Because the playhead (`caption-clock.ts`) presents captions behind the
+ * acoustic clock, every word's colour turn has a known future moment, which is
+ * handed to the browser as one `animation-delay`. The reveal queue, its
+ * concurrency slots, its catch-up policy and its unpainted-reservation
+ * watchdog were all machinery for guessing that moment from arrival order;
+ * none of it survives.
  */
 
 export interface VoiceTypeRanges {
@@ -32,10 +40,16 @@ export interface CaptionMotionPlan {
   rest: CaptionType;
   /** CWI 2.3 type at the expressive crest of the motion. */
   voice: CaptionType;
-  /** CWI 2.2.3's independent eye-guiding cue. */
+  /**
+   * CWI 2.2.3's eye-guiding cue: ONE growth, anchored at the baseline.
+   *
+   * There is no elevation term. The diagram's "25% elevation" is what
+   * scaling about the glyph box's bottom does to the TOP of the word; as a
+   * separate translation it made the word hop instead of grow. See the
+   * `word-sync-pop` keyframe.
+   */
   sync: {
     scale: number;
-    elevationEm: number;
   };
 }
 
@@ -145,7 +159,6 @@ export function captionMotionFor(
   ranges: VoiceTypeRanges,
   expression: number,
   syncPop: number,
-  syncElevationEm: number,
 ): CaptionMotionPlan {
   const target = voiceTypeFor(voice, ranges);
   const amount = clamp(Number.isFinite(expression) ? expression : 1, 0, 1);
@@ -158,7 +171,6 @@ export function captionMotionFor(
     },
     sync: {
       scale: 1 + Math.max(0, syncPop),
-      elevationEm: Math.max(0, syncElevationEm),
     },
   };
 }

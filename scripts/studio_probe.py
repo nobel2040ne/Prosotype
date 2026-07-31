@@ -4,8 +4,17 @@
 `--dump-dom` trick. That cannot work here: `--dump-dom` serializes at the load
 event, before hydration and before any SSE word, returning essentially the raw
 `web/out/index.html` shell. So this drives CDP and calls
-`window.__cwiStudio.report()` on a real, connected page, sampling over time --
-`activeMotions` is instantaneous, so only a running maximum can verify the cap.
+`window.__cwiStudio.report()` on a real, connected page, sampling over time.
+
+THE HEADLINE NUMBER IS `readAheadMs`. CWI 2.2.1 wants the line legible in white
+before it is spoken, and the studio delivers that by running its playhead
+behind the acoustic clock. Read-ahead should settle near
+`read_ahead_delay_s - recognizer latency`. A value at or near zero means
+captions are being coloured the instant they arrive -- the page may look fine
+and still not be implementing the design system.
+
+It also reads the DOM directly, because "how many words are currently white"
+is the thing a viewer actually sees and no counter can stand in for it.
 
 Start a live server first, then:
 
@@ -27,15 +36,50 @@ CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 DEBUG_PORT = 9223
 
 
-def _configured_reveal_cap() -> int:
-    """The concurrency cap from config.yaml, so the probe cannot drift from it."""
+def _configured_read_ahead_ms() -> float:
+    """The delay from config.yaml, so the probe cannot drift from it."""
     try:
         import yaml
         root = Path(__file__).resolve().parent.parent
         cfg = yaml.safe_load((root / "config.yaml").read_text())
-        return int(cfg["display"]["max_simultaneous_reveals"])
+        return float(cfg["display"]["read_ahead_delay_s"]) * 1000
     except Exception:
-        return 3
+        return 2500.0
+
+
+# Counting white words is a DOM question, not a counter question: read-ahead is
+# defined by what the viewer can see, and the colour is produced by a CSS
+# animation the JavaScript never observes.
+DOM_PHASES = r"""
+(() => {
+  const words = [...document.querySelectorAll('.caption-word')];
+  let readAhead = 0, moving = 0;
+  const shell = document.querySelector('.studio-shell');
+  const ink = shell
+    ? getComputedStyle(shell).getPropertyValue('--read-ahead-color').trim()
+    : '#FFFFFF';
+  const probe = document.createElement('span');
+  probe.style.color = ink;
+  document.body.appendChild(probe);
+  const target = getComputedStyle(probe).color;
+  probe.remove();
+  for (const word of words) {
+    if (getComputedStyle(word).color === target) readAhead += 1;
+    const glyph = word.querySelector('.word-glyph');
+    if (!glyph) continue;
+    const transform = getComputedStyle(glyph).transform;
+    if (transform === 'none') continue;
+    const matrix = new DOMMatrixReadOnly(transform);
+    if (Math.abs(matrix.a - 1) > 0.002 || Math.abs(matrix.f) > 0.5) moving += 1;
+  }
+  return JSON.stringify({
+    domWords: words.length,
+    domReadAhead: readAhead,
+    domMoving: moving,
+    domUnarmed: words.filter((w) => !w.dataset.armed).length,
+  });
+})()
+"""
 
 
 def wait_for_debugger(port: int, timeout_s: float = 25.0) -> str:
@@ -63,16 +107,16 @@ def sample(url: str, samples: int, interval_s: float) -> list[dict]:
 
     collected: list[dict] = []
     with connect(url, max_size=8 * 1024 * 1024) as socket:
-        message_id = 0
-        for _ in range(samples):
-            message_id += 1
+        state = {"id": 0}
+
+        def evaluate(expression: str):
+            state["id"] += 1
+            message_id = state["id"]
             socket.send(json.dumps({
                 "id": message_id,
                 "method": "Runtime.evaluate",
                 "params": {
-                    "expression":
-                        "JSON.stringify(window.__cwiStudio "
-                        "? window.__cwiStudio.report() : null)",
+                    "expression": expression,
                     "returnByValue": True,
                     "awaitPromise": False,
                 },
@@ -81,9 +125,12 @@ def sample(url: str, samples: int, interval_s: float) -> list[dict]:
             while True:
                 reply = json.loads(socket.recv())
                 if reply.get("id") == message_id:
-                    break
-            payload = (
-                reply.get("result", {}).get("result", {}).get("value")
+                    return reply.get("result", {}).get("result", {}).get("value")
+
+        for _ in range(samples):
+            payload = evaluate(
+                "JSON.stringify(window.__cwiStudio "
+                "? window.__cwiStudio.report() : null)"
             )
             if payload:
                 try:
@@ -91,6 +138,12 @@ def sample(url: str, samples: int, interval_s: float) -> list[dict]:
                 except (TypeError, ValueError):
                     report = None
                 if report:
+                    dom = evaluate(DOM_PHASES)
+                    if dom:
+                        try:
+                            report.update(json.loads(dom))
+                        except (TypeError, ValueError):
+                            pass
                     collected.append(report)
             time.sleep(interval_s)
     return collected
@@ -101,43 +154,78 @@ def summarize(reports: list[dict]) -> None:
         raise SystemExit(
             "no reports captured -- is a live server running on the given URL?"
         )
-    final = reports[-1]
-    peaks = {
-        "maxActiveMotions": max(r.get("maxActiveMotions", 0) for r in reports),
-        "activeMotions (observed peak)": max(
-            r.get("activeMotions", 0) for r in reports
-        ),
-        "pendingReveals (peak)": max(r.get("pendingReveals", 0) for r in reports),
-        "maxPresentationBacklogMs": max(
-            r.get("maxPresentationBacklogMs", 0) for r in reports
+    started = [r for r in reports if r.get("clockStarted")]
+    if not started:
+        raise SystemExit(
+            "the acoustic clock never started: no `level` event carrying `t` "
+            "reached the page, so nothing can be presented."
+        )
+    final = started[-1]
+
+    print(f"\nsamples: {len(reports)} ({len(started)} with a running clock)"
+          f"   connection: {final.get('connection')}")
+    print(f"words: {final.get('words')}   visible: {final.get('visible')}"
+          f"   scheduled: {final.get('scheduledWords')}")
+
+    # Drop the attach transient: a browser joining a running capture inherits
+    # history, and its first samples describe the backlog, not the steady state.
+    steady = started[len(started) // 3:] or started
+    read_ahead = sorted(r.get("readAheadMs", 0) for r in steady)
+    median = read_ahead[len(read_ahead) // 2]
+    configured = _configured_read_ahead_ms()
+
+    print("\nread-ahead (CWI 2.2.1) -- recognized text ahead of the colour")
+    print(f"  configured delay              {configured:.0f} ms")
+    print(f"  delivered read-ahead, median  {median:.0f} ms")
+    print(f"  delivered read-ahead, min     {min(read_ahead):.0f} ms")
+    white = sorted(r.get("domReadAhead", 0) for r in steady)
+    ahead = sorted(r.get("aheadWords", 0) for r in steady)
+    print(f"  white words in the DOM, median {white[len(white) // 2]}"
+          f"   max {max(white)}")
+    print(f"  words past the playhead, median {ahead[len(ahead) // 2]}"
+          f"   max {max(ahead)}")
+    # The two must agree: a word scheduled in the future is exactly a word the
+    # colour turn has not reached, and CSS paints those from the read-ahead
+    # keyframe. A gap means the DOM is not showing what the schedule believes.
+    gap = max(abs(r.get("domReadAhead", 0) - r.get("aheadWords", 0))
+              for r in steady)
+    print(f"  worst disagreement            {gap}"
+          f"{'' if gap <= 2 else '   <-- INVESTIGATE'}")
+
+    print("\nintegrity (all should be 0)")
+    checks = {
+        # Every recognized word is on screen -- read-ahead words are the white
+        # ones. Nothing is withheld, so these must agree.
+        "words not visible": final.get("words", 0) - final.get("visible", 0),
+        # A word painted without a schedule would sit in read-ahead forever.
+        "unarmed words in DOM": max(
+            r.get("domUnarmed", 0) for r in started
         ),
     }
-    print(f"\nsamples: {len(reports)}   connection: {final.get('connection')}")
-    print(f"words: {final.get('words')}   visible: {final.get('visible')}")
-    print("\npeaks over the run")
-    for name, value in peaks.items():
-        print(f"  {name:<32} {value}")
-
-    print("\nmotion integrity (all should be 0)")
-    for name in ("motionsWithoutPaint", "abortedUnpaintedMotions",
-                 "freshWordsWithoutMotion"):
-        value = max(r.get(name, 0) for r in reports)
+    for name, value in checks.items():
         flag = "" if value == 0 else "   <-- INVESTIGATE"
-        print(f"  {name:<32} {value}{flag}")
+        print(f"  {name:<30} {value}{flag}")
 
-    print("\nreveal / clock")
-    for name in ("motionStarts", "motionPaintStarts", "adaptiveMotionStarts",
-                 "minimumMotionDurationMs"):
-        print(f"  {name:<32} {final.get(name)}")
+    print("\nmotion")
+    print(f"  peak simultaneous motions     "
+          f"{max(r.get('domMoving', 0) for r in started)}")
+    print(f"  re-armed (remounted) words    {final.get('rearmedWords')}")
+    print(f"  capture restarts (epoch)      {final.get('clockEpoch')}")
 
-    # The cap is config (display.max_simultaneous_reveals), not a constant --
-    # it is the caption's throughput ceiling, so it moves when the lag does.
-    limit = _configured_reveal_cap()
-    cap = peaks["maxActiveMotions"]
-    if cap > limit:
-        print(f"\nFAIL: {cap} simultaneous motions — the cap is {limit}.")
+    # Words delivered after their own onset had already passed. A cold start or
+    # a late-attaching browser produces a burst of these legitimately; a figure
+    # that keeps climbing during steady speech means the delay is too short.
+    late_growth = final.get("lateWords", 0) - steady[0].get("lateWords", 0)
+    print(f"  late words (total / steady)   "
+          f"{final.get('lateWords')} / {late_growth}")
+
+    if median < 200:
+        print(f"\nFAIL: only {median:.0f} ms of read-ahead. CWI 2.2.1 is not "
+              f"being delivered -- raise display.read_ahead_delay_s above the "
+              f"recognizer's own latency.")
     else:
-        print(f"\nOK: peak simultaneous motions {cap} (cap {limit}).")
+        print(f"\nOK: {median:.0f} ms of read-ahead against a "
+              f"{configured:.0f} ms delay.")
 
 
 def main() -> None:
