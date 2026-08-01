@@ -84,10 +84,29 @@ export function buildCaptionParagraphs(
  * blocks. Filtering provisional words here made English captions disappear
  * until endpoint verification.
  */
+/**
+ * What the stage remembers between renders so laid-out rows cannot move.
+ *
+ * The caller owns this and passes the same object back in.
+ */
+export interface StageMemory {
+  /** Words that start a row. Once set, a word keeps starting its row. */
+  starts: Set<string>;
+  /** Every word the stage has already placed. */
+  placed: Set<string>;
+  /** Acoustic time of the furthest word placed so far, in seconds. */
+  newestPlaced: number;
+}
+
+export function createStageMemory(): StageMemory {
+  return {starts: new Set(), placed: new Set(), newestPlaced: Number.NEGATIVE_INFINITY};
+}
+
 export function selectStableCaptionStack(
   paragraphs: CaptionParagraph[],
   stackLimit = 6,
   wordsPerCaption = 8,
+  memory: StageMemory = createStageMemory(),
 ): CaptionParagraph[] {
   const stageWords = paragraphs.flatMap((paragraph) => paragraph.words);
 
@@ -101,12 +120,63 @@ export function selectStableCaptionStack(
    * stack. The transcript still preserves semantic speaker/utterance
    * paragraphs.
    */
+  /*
+   * ROW STARTS ARE ANCHORED TO WORD IDS, NOT TO POSITION.
+   *
+   * Chunking purely by index made row membership a function of how many words
+   * precede a word -- so the verifier deleting or inserting ONE word anywhere
+   * earlier shifted every later word and re-flowed the whole stack. The user
+   * reported exactly that: "the old sentences adjusting causes discrete word
+   * location changes -> disturbs the readability." It is also why `rearmedWords`
+   * measured 53 of 64: re-chunking re-keys every row after the change.
+   *
+   * Once a word has started a row it keeps starting that row. An earlier
+   * deletion now just makes its own row shorter, and an insertion lengthens
+   * only the row it lands in -- neither can pull words across a boundary that
+   * the viewer has already read. A row that overruns capacity opens a NEW
+   * anchor at that point, so the correction stays local to that row instead of
+   * cascading down the stack.
+   */
+  /*
+   * A LATE WORD MAY ONLY APPEND, NEVER INSERT.
+   *
+   * Anchored row starts stop an edit from re-chunking the rows BELOW it, but a
+   * word inserted into a row still lengthens that row and pushes its own tail
+   * out. Measured live, the verifier corrected "Something without" to "Give me
+   * something without" and the row went
+   *   [it, Look, just, Something, without]
+   *   [it, Look, just, Give, Something] + [without ...]
+   * -- text the viewer had already read, rearranged.
+   *
+   * So a word the stage has never placed, whose onset falls behind the furthest
+   * word it HAS placed, is not shown. It stays in the model and in Transcript;
+   * it simply does not get to reopen a line that has been read. Appends are
+   * untouched, so a word arriving late after the endpoint stall still appears.
+   */
+  const placeable = stageWords.filter((entry) => {
+    if (memory.placed.has(entry.id)) return true;
+    const onset = Number(entry.word.t ?? entry.word.start);
+    if (Number.isFinite(onset) && onset < memory.newestPlaced - 1e-6) {
+      return false;
+    }
+    return true;
+  });
+  for (const entry of placeable) {
+    memory.placed.add(entry.id);
+    const onset = Number(entry.word.t ?? entry.word.start);
+    if (Number.isFinite(onset)) {
+      memory.newestPlaced = Math.max(memory.newestPlaced, onset);
+    }
+  }
+
   const rows: CaptionParagraph[] = [];
-  for (const entry of stageWords) {
+  for (const entry of placeable) {
     const utterance = Number(entry.word.utterance ?? 0);
     let row = rows.at(-1);
+    const startsRow = memory.starts.has(entry.id);
     if (
       !row ||
+      startsRow ||
       (wordsPerCaption > 0 && row.words.length >= wordsPerCaption)
     ) {
       row = {
@@ -117,6 +187,7 @@ export function selectStableCaptionStack(
         words: [],
       };
       rows.push(row);
+      memory.starts.add(entry.id);
     }
     row.words.push(entry);
   }

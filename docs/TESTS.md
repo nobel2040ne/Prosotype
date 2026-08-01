@@ -115,7 +115,7 @@ Words actually past the playhead, measured across delays: 1 median / 6 max at
 white line where lag is cheap.
 
 There is no concurrency cap and no presentation backlog any more. Both belonged
-to the reveal queue, which the playhead replaced — a word animates at its
+to the playhead schedule, which the playhead replaced — a word animates at its
 recorded onset or, if it arrived after that moment, not at all.
 
 The legacy renderer has its own probe:

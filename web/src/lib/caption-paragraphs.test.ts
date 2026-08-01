@@ -4,6 +4,7 @@ import {
   buildCaptionParagraphs,
   planCaptionStackMotion,
   selectStableCaptionStack,
+  createStageMemory,
 } from "./caption-paragraphs.ts";
 import type {CaptionWord} from "./caption-store.ts";
 
@@ -361,4 +362,80 @@ test("row removal or reappearance cannot replay stack motion", () => {
     ),
     [],
   );
+});
+
+test("an earlier deletion cannot re-chunk the rows below it", () => {
+  // Six words, three per row: [w0 w1 w2] [w3 w4 w5].
+  const input = sentence(6);
+  const memory = createStageMemory();
+  const before = selectStableCaptionStack(
+    buildCaptionParagraphs(input.words, input.order, 0), 0, 3, memory,
+  );
+  assert.deepEqual(before.map((r) => r.words.length), [3, 3]);
+  const secondRow = before[1].words.map(({id}) => id);
+
+  // The verifier drops one word from the FIRST row.
+  const trimmed = {
+    words: {...input.words},
+    order: input.order.filter((id) => id !== "u0:w1"),
+  };
+  delete trimmed.words["u0:w1"];
+  const after = selectStableCaptionStack(
+    buildCaptionParagraphs(trimmed.words, trimmed.order, 0), 0, 3, memory,
+  );
+
+  // Chunking by index would pull w3 up into row 0 and shift everything the
+  // viewer had already read. Anchored rows keep the boundary where it was.
+  assert.deepEqual(after.map((r) => r.words.length), [2, 3]);
+  assert.deepEqual(after[1].words.map(({id}) => id), secondRow);
+  assert.equal(after[1].id, before[1].id, "row identity must survive");
+});
+
+test("a word inserted behind what is already placed is not shown", () => {
+  const input = sentence(6);
+  const memory = createStageMemory();
+  selectStableCaptionStack(
+    buildCaptionParagraphs(input.words, input.order, 0), 0, 3, memory,
+  );
+
+  // The verifier finds a word it missed, in the middle of read text.
+  const grown = {words: {...input.words}, order: [...input.order]};
+  grown.words["u0:w1b"] = {...input.words["u0:w1"], word_id: "u0:w1b",
+    text: "inserted", start: 0.25, end: 0.3, t: 0.25};
+  grown.order.splice(2, 0, "u0:w1b");
+  const after = selectStableCaptionStack(
+    buildCaptionParagraphs(grown.words, grown.order, 0), 0, 3, memory,
+  );
+
+  // Showing it would lengthen a read row and push its tail onto the next line.
+  const shown = after.flatMap((row) => row.words.map(({id}) => id));
+  assert.ok(!shown.includes("u0:w1b"), "late insertion must not reopen a row");
+  assert.deepEqual(after.map((r) => r.words.length), [3, 3]);
+  assert.deepEqual(after.at(-1)!.words.map(({id}) => id),
+                   ["u0:w3", "u0:w4", "u0:w5"]);
+});
+
+test("a word arriving late at the END still appends", () => {
+  const input = sentence(3);
+  const memory = createStageMemory();
+  selectStableCaptionStack(
+    buildCaptionParagraphs(input.words, input.order, 0), 0, 3, memory,
+  );
+  const grown = {words: {...input.words}, order: [...input.order]};
+  grown.words["u0:w3"] = {...input.words["u0:w2"], word_id: "u0:w3",
+    text: "later", start: 9, end: 9.2, t: 9};
+  grown.order.push("u0:w3");
+  const after = selectStableCaptionStack(
+    buildCaptionParagraphs(grown.words, grown.order, 0), 0, 3, memory,
+  );
+  const shown = after.flatMap((row) => row.words.map(({id}) => id));
+  assert.ok(shown.includes("u0:w3"), "an append must still reach the screen");
+});
+
+test("a fresh stack still chunks by capacity", () => {
+  const input = sentence(7);
+  const rows = selectStableCaptionStack(
+    buildCaptionParagraphs(input.words, input.order, 0), 0, 3, createStageMemory(),
+  );
+  assert.deepEqual(rows.map((r) => r.words.length), [3, 3, 1]);
 });

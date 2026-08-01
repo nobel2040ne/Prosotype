@@ -70,85 +70,55 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   handler, Server Action, cookie, rewrite, or other feature incompatible with
   static export. If the export is absent, live intentionally falls back to the
   generated diagnostics page; a built studio keeps it at `/legacy`.
-- **THE PLAYHEAD. READ THIS BEFORE TOUCHING LIVE MOTION (2026-08-01).**
-  The studio presents captions from a clock that runs
-  `display.read_ahead_delay_s` (**2.5 s**) BEHIND the acoustic clock, and that
-  single decision is what makes it a CWI renderer instead of a word-pop
-  animation. CWI 2.2.1 is built on read-ahead — the line exists in white before
-  it is spoken — and a live recognizer cannot produce text early. But it does
-  not have to: ASR delivers a word some time after it was spoken, so colouring
-  only up to `now − 2.5 s` leaves real, recognized, still-white text on screen
-  ahead of the colour. Nothing is predicted or fabricated.
-  **THE DELAY *IS* THE LAG, AND IT IS A ONE-FOR-ONE TRADE (2026-08-01).**
-  A word's colour turn and pop happen at `onset + delay`, so read-ahead is
-  bought with synchronization and nothing else. Shipped at 2.5 s first, and the
-  user's verdict was immediate: "motion should be real-time... motion applies
-  after the determination of speaker". Both halves were right. MEASURED off the
-  SSE stream on the bundled clip: a word's TEXT is available at a median
-  **0.62 s** (p90 2.68 s), but durable speaker attribution arrives at a median
-  **4.48 s** — **3.33 s later**. At a 2.5 s playhead the word therefore popped
-  into NEUTRAL and only took its speaker colour ~2 s afterwards, so the
-  visually meaningful moment did land after attribution.
-  `read_ahead_delay_s` is **1.2 s**: clear of the 0.62 s text latency, so words
-  still arrive before their own onset and animate, but close enough to the
-  speech to read as synchronized. Read-ahead is thin there (median 0 words, max
-  2) and that is the deliberate trade. Do NOT try to fix the colour lag by
-  gating the turn on attribution — CLAUDE.md's oldest rule on this still holds,
-  and the turn must happen on time in whatever colour is known.
-  `web/src/lib/caption-clock.ts` is the clock and is pure. It recovers acoustic
-  time from `level.t` (~64 ms cadence, the same timeline as `word.t =
-  stream_base + word.start`) with a **max-filter plus slow decay**: transport
-  jitter can only ever make a sample look late, so the true offset is the
-  maximum over recent samples, relaxed 5 ms/s so it still tracks device drift.
-  Word events are deliberately NOT a clock source — they are replayed to every
-  new audience connection, and an old timestamp would read as a capture
-  restart. A backwards jump over 1.5 s IS a restart (`--sample --loop`, a
-  restarted server): the clock snaps and bumps `epoch`. **Words scheduled under
-  an older epoch must settle, never be re-derived** — recomputing their onset
-  against the new timeline puts them in the FUTURE, and a full stage of
-  already-read captions turns white again. That was a real, screenshotted bug.
-  **Everything downstream is now a pure function of that clock**, and the whole
-  reveal scheduler is gone: no queue, no concurrency slots, no reveal gap, no
-  catch-up floor, no adaptive clock, no backlog ceiling, no unpainted-slot
-  watchdog, no `motionSnapshots`, no `confirmMotionPaint`/`completeMotion`, no
-  discovery frontier. All of it existed to guess, from arrival order, a moment
-  the recording already knows. Deleted 2026-08-01 along with
-  `nextRevealDeadline`, `revealIntentForFirstSeen`, `pendingRevealCanAnimate`,
-  `adaptiveMotionDurationMs`, `acousticBacklogMs`, `recentAcousticGapMs`,
-  `exceedsMotionBacklogCeiling`, `isHistoricalInsertion`,
-  `unpaintedReservationExpired` and `nextActiveMotionDelayMs`.
-  **ONE `animation-delay` DRIVES THE WHOLE CAPTION.** `--turn-delay` is how
-  long until the playhead reaches a word's onset. The 2.2.2 colour turn
-  (`.caption-word`), the 2.2.3 pop (`.word-glyph`) and the 2.3 crest
-  (`.word-ink`) all take it, so the BROWSER schedules them off the recording's
-  own timing — no JavaScript timer, no per-frame work. Three consequences worth
-  knowing:
-  * The colour keyframe has **no `to`**. An omitted endpoint makes the browser
-    animate toward the element's own computed value, so one rule turns each
-    word into whatever colour it is entitled to — speaker hue, neutral
-    `--caption-unknown`, the receded provisional mix — and a late speaker
-    correction on a finished animation lands as a direct colour write.
-    `backwards` fill is what paints the read-ahead during the delay.
-  * `animation-fill-mode` stays `none` on the geometry. A word delivered after
-    its own onset passed gets a delay negative enough that the browser treats
-    both animations as finished, so it paints settled and coloured. History
-    needs no branch.
-  * **Write `--turn-delay` imperatively, never through the `style` prop.**
-    React reapplies that prop on every render, and rewriting `animation-delay`
-    SHIFTS a running animation — a verifier respelling would visibly yank a
-    word that was mid-pop. `data-armed` on the DOM node distinguishes the two
-    cases that must differ: a re-render finds the flag and touches nothing; a
-    genuine remount arrives with a fresh node, re-derives the delay against the
-    new animation origin, and resumes at the same wall moment. The turn moment
-    itself is `onset − clockOffset + delay`, with no reference to "now", so
-    even a remount recomputes the same answer.
-  **THE CAPTION INVARIANT IS NOW STRUCTURAL.** Text may be revised only AHEAD
-  of the playhead; once the colour turn passes a word it is frozen. Hypothesis
-  churn happens in the white zone, which is where it belongs, and coloured
-  words never move because deletions only ever affect the tail. This replaces
-  a page of guards with a property of time.
-  `web/src/lib/caption-store.ts` still owns the pure revision reducer and React
-  keys are still semantic `word_id`s.
+- **THE PLAYHEAD. READ THIS BEFORE TOUCHING LIVE MOTION.**
+  Captions are presented from a clock running `display.read_ahead_delay_s`
+  (**1.2 s**) BEHIND the acoustic clock. That is what makes this a CWI renderer:
+  CWI 2.2.1 needs the line on screen before it is spoken, and a live recognizer
+  cannot produce text early — but ASR delivers a word ~0.6 s AFTER it was
+  spoken, so colouring only up to `now - 1.2 s` leaves real, recognized,
+  still-uncoloured text ahead of the colour. Nothing is predicted.
+  **THE DELAY IS THE LAG, ONE FOR ONE.** A word's turn and pop happen at
+  `onset + delay`. Shipped at 2.5 s first; the user's verdict was "motion should
+  be real-time... motion applies after the determination of speaker", and both
+  halves were right — MEASURED, a word's TEXT arrives at a median 0.62 s but
+  durable speaker attribution at 4.48 s, so at 2.5 s the word popped NEUTRAL and
+  took its colour ~2 s later. 1.2 s clears the text latency and reads as
+  synchronized. Read-ahead is thin there (median 0-1 words) and that is the
+  trade. Do NOT gate the turn on attribution: it must happen on time in whatever
+  colour is known.
+  `web/src/lib/caption-clock.ts` is the clock, and is pure. It recovers acoustic
+  time from `level.t` (~64 ms cadence, same timeline as `word.t`) with a
+  **max-filter plus 5 ms/s decay**: jitter can only make a sample look late, so
+  the truth is the maximum. Word events are NOT a clock source — they are
+  replayed to every new connection and an old timestamp reads as a restart. A
+  backwards jump over 1.5 s IS a restart (`--sample --loop`): the clock snaps
+  and bumps `epoch`, and **words under an older epoch must settle, never be
+  re-derived** — recomputing puts them in the future and a full stage of read
+  captions turns white again.
+  **ONE `animation-delay` DRIVES THE WHOLE CAPTION.** `--turn-delay` is how long
+  until the playhead reaches a word's onset; the 2.2.2 turn, the 2.2.3 pop and
+  the 2.3 phase all take it, so the BROWSER schedules them. No JS timer, no
+  per-frame work, no reveal queue at all (no slots, gaps, catch-up, backlog
+  ceiling or watchdog — all of it existed to guess a moment the recording knows).
+  * The colour keyframe has **no `to`**: an omitted endpoint animates toward the
+    element's own computed value, so one rule yields speaker hue, neutral, or
+    the receded provisional mix, and a late correction lands as a direct write.
+    `backwards` fill paints the read-ahead during the delay.
+  * `animation-fill-mode` stays `none`. A word delivered after its own onset
+    gets a delay negative enough that the browser treats it as finished, so it
+    paints settled. History needs no branch.
+  * **Write `--turn-delay` imperatively, never via the `style` prop** — React
+    reapplies that prop every render and rewriting `animation-delay` SHIFTS a
+    running animation. `data-armed` on the node separates a re-render (leave it
+    alone) from a genuine remount (re-derive against the new origin). The turn
+    moment is `onset - clockOffset + delay`, with no reference to "now", so a
+    remount recomputes the same answer.
+  **NO CATCH-UP SLEW.** The server blocks ~1.3 s at each endpoint, and the
+  obvious theory — source floods its queue, max-filter swallows it, playhead
+  skips — was implemented and measured: late words 13 with the cap and 13
+  without. `newest - playhead` sits at a steady 1.22 s, goes negative during the
+  stall, returns to 1.22 s. The words stop; the clock does not. Removed rather
+  than shipped unmeasured.
 - **Stage is a stable caption stack, not a second live-text panel.**
   `selectStableCaptionStack()` flattens revisable speaker and utterance
   partitions into fixed-width rows of **as many words as the stage can carry**
@@ -173,6 +143,31 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   both. The initial block gets the same entry; an initial replay containing
   multiple rows does not. Text/color/speaker updates with identical row IDs must return
   no stack motion; removal or reappearance of a seen row must also return none.
+  **ROWS NEVER MOVE ONCE LAID OUT.** Rows were chunked by INDEX, so row
+  membership was a function of how many words preceded a word — the verifier
+  deleting or inserting ONE word anywhere earlier shifted everything after it
+  and re-flowed the stack, rearranging text the viewer had already read. (It is
+  also why `rearmedWords` measured 53 of 64.) Two parts, both needed:
+  * **Row starts are anchored to word ids** (`StageMemory.starts`): once a word
+    starts a row it keeps starting that row, so an earlier edit cannot pull
+    words across a boundary. A row that would overrun capacity opens a new
+    anchor there — capacity still wins, because `--row-budget-em` is sized for
+    `wordsPerRow` and `nowrap` CLIPS an over-long row. A one-word row is the
+    acceptable cost.
+  * **A late word may only APPEND, never insert.** Anchors alone still let an
+    insertion lengthen its row and push the tail out: measured live, the
+    verifier turned "Something without" into "Give me something without" and
+    `[it, Look, just, Something, without]` became
+    `[it, Look, just, Give, Something] + [without …]`. A word the stage has
+    never placed, whose onset falls behind the furthest word it HAS placed, is
+    not shown — it stays in the model and in Transcript. Appends are untouched,
+    so a word arriving late after the endpoint stall still appears.
+  MEASURED: already-read words changing row 7 -> 3 (anchors) -> **0** (append
+  rule). Hold the memory in lazily-initialised STATE, not a ref: the chunker
+  reads it during render, which `react-hooks/refs` forbids for a ref.
+  Guards that refused deletions/insertions in the REDUCER were tried first and
+  measured 7 vs 7 — no effect, because settled words are already `final`, which
+  that branch never deletes. Reverted rather than shipped unmeasured.
   **THE ROW WIDTH AND THE RETAINED ROW COUNT ARE BOTH MEASURED, NOT CONFIGURED
   (2026-07-30).** `useStageLayout` reads the feed's real width, gutters, height
   term and a rendered row's height, calls `planStageLayout`, and passes BOTH
@@ -318,685 +313,90 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   spec. Treat `docs/DESIGN.md` as a changelog of superseded interpretation.
   `docs/RESEARCH.md` maps prior DHH-captioning research onto design decisions
   here and is unaffected.
-- **ALL PRESENTATIONS SHARE THE CWI MOTION SEMANTICS.** (Current live contract
-  updated 2026-07-24.) The legacy live diagnostics consume
-  `autocwi/cwi_motion_core.js`; the Next product UI expresses the same
-  first-paint/rest/reveal invariants with typed event state and independent CSS
-  envelopes. The shared JavaScript module holds `typeOf`,
-  `intonationAt`, `scaleOf`/`liftOf`/`wghtOf`, `charColorAt`,
-  `charLiftOf`/`charScaleOf`, and optional `resolveNeighborPush`. The
-  presentations intentionally do not share tuning:
-  authored `cc` can use the full reference wave against known text, while a
-  stacked live transcript uses calmer `motion.live_sync` amplitudes and never
-  moves settled neighbors.
-  * **`cc`** drives the same curve family off the global media clock `t` (pure
-    function of `t`; read-ahead is real). *(NOTE: `livepage.py` consumes the
-    module; `ccpage.py` still has an inline authored-clock implementation. Its
-    character amplitude is additionally wait-aware through
-    `wave_hold_floor`/`wave_hold_full_s`, so the two are contract-equivalent,
-    not byte-identical. Migrating those authored-clock inputs into
-    `cwi_motion_core.js` is a future structural cleanup, not a visual change.)*
-  * **legacy live** runs the shared synchronization/character primitives plus its
-    independent variable-font envelopes on a PER-WORD first-paint clock.
-    `virtualT()` maps the full synchronization rise/peak/return onto 520–720 ms
-    according to the acoustic word span (680 ms for a first-phone onset hint).
-    Raw decoder spans are not played directly; doing so compressed long-word
-    attacks into a few frames. A separate `displayCharacterMotionWord()` gives
-    internal character turns 0.18 s of virtual spacing (capped at 2.20 s)
-    before mapping the curve into that window. `smoothCharacterChannel()` then
-    blends neighbouring samples by 0.72, so long spelling never compresses the
-    wrapper and the alphabet hand-off reads as one ribbon. The independent
-    cue/commit clock owns colour and never starts or restarts geometry.
-    See `resolveCCLine`/`motionTick`/`settleWord`/`playWordMotion` in
-    `livepage.py`. Verify with `scratchpad`-style sweep probes and
-    `scripts/live_render_probe.py`.
-  * **SUPERSEDED 2026-08-01 — the presentation-backlog era.** Two long entries
-    lived here about a reveal queue that could not keep up with conversational
-    English: peak-vs-series backlog statistics, the `max_simultaneous_reveals`
-    2→3 change, and `word_motion_backlog_ceiling_s`. All of it was scheduling a
-    word's motion from its ARRIVAL, so a decoder burst or a cold start created a
-    queue that had to be drained. The playhead removed the queue: a word's
-    motion happens at its recorded onset or not at all, and a word that arrives
-    after that moment paints settled with no branch. There is nothing left to
-    drain, so there is no backlog to measure. Kept only so nobody re-derives it.
-  * **MEASURED 2026-08-01 via `scripts/studio_probe.py` (sample.mp4 looped,
-    40–50 samples).** Read-ahead **2.43 s** median against a 2.5 s configured
-    delay; words not visible **0**; unarmed words in the DOM **0**; peak
-    simultaneous motions **4**; capture restarts (epoch) **0** single-pass.
-    `lateWords` 35–40 total but only **5 during steady state** — the rest is the
-    backlog a browser inherits when it attaches to a capture already running.
-  * **THE TIME WINDOW IS NOT THE WORD COUNT, AND THE WORD COUNT IS THE HONEST
-    NUMBER (2026-08-01).** `readAheadMs` is `newest − playhead`, and it read
-    2.43 s while only **1–2 words** were actually past the playhead. Both are
-    true: `fast` mode holds a word back until the following one is stable, so
-    the far edge of the window is a lone hypothesis word at the capture head
-    with a gap behind it. Measured across delays:
+- **THE MOTION SYSTEM, IN FULL.** The PDF describes exactly three things and
+  the studio implements exactly those. `docs/cwi-design-system-v1.0.pdf`
+  pp.26-41 — and READ THE PICTURES, not only the prose: they are what settled
+  most of the arguments below.
+  1. **2.2.2 colour turn** — the word takes its speaker colour at its spoken
+     onset ("when 'In' is spoken, not when 'ble' is").
+  2. **2.2.3 motion** — "a **15% increase in type size** before returning to its
+     original size". Constant on every word; a shout and a whisper get the same
+     cue. Amplitude is INTONATION, a different scope — collapsing the two is
+     what produced every wrong model here.
+  3. **2.3 intonation** — volume -> SIZE (2.3.5/2.3.6: 5% baseline, 3%..12%),
+     pitch -> WEIGHT (2.3.8: 160-200 Hz is Regular 400, a BAND not a pivot;
+     2.3.9: 80 Hz heavy, 250 Hz light), harmonics -> WIDTH (2.3.10's diagonal:
+     heavy goes with wide, light with condensed).
+  * **THE WORD GROWS FROM ITS BASELINE. IT DOES NOT MOVE.** Wrong three times.
+    Method that works: crop a popping word WITH a static neighbour and draw the
+    baseline guide from that neighbour **per frame** — the reference re-fits its
+    line while a word swells, so one guide from the first frame drifts and
+    manufactures a rise. Done properly, `intonation.mov` shows "louder" at ~4x
+    its neighbours with its ink bottom exactly on the shared baseline.
+    So: no `translateY`, AND no box-bottom pivot. `transform-origin` is
+    `50% calc(100% - var(--glyph-baseline-em))`, measured off the live face by
+    `useGlyphBaseline` (**.3799em Roboto Flex, .2598em Noto Sans KR**). It
+    cannot be a constant: two bad probes both returned an IDENTICAL number for
+    the two fonts, and that equality is the bug signal. One omitted the
+    `.caption-words` wrapper (so it read `line-height: normal`), the other
+    parented to `document.body` (so it never inherited the Korean face).
+    The diagram's "25% elevation" is just where the TOP ends up.
+  * **2.3 IS PER CHARACTER.** p.34 sets "Put that coffee **dOWn!**" under its
+    own waveform; p.38 varies weight across "neeee**eeeed**"; p.40 ramps one
+    sentence black -> hairline. One value per word cannot express any of it, and
+    `_prosody()` was computing the contour and discarding it with `np.median`.
+    `_intonation_envelope()` keeps 8 readings across the word's own audio
+    (`display.intonation_envelope_samples`), loudness through the SAME 2.3.5
+    pivot as the word-level value. `characterVoiceTypes()` samples it per
+    character and reuses the existing anchor functions unchanged.
+    Split with `Array.from`, never `split("")` — Hangul syllable blocks.
+    The slot cache fallback must match on SPAN as well as proximity: a slot is
+    50 ms, and a 0.02 s "You" inherited the envelope of the 0.72 s "know".
+  * **ONE PHASE PER WORD DRIVES EVERY CHARACTER.** `@property --voice-phase` is
+    animated once on `.caption-word`; each character computes
+    `calc(1em * (1 + phase * (charScale - 1)))`. Per-character animations do NOT
+    work: `animation-delay` counts from when the animation was applied, and live
+    words GROW as a hypothesis extends, so a span appended later ran behind its
+    neighbours — measured, half a Korean word sat at rest while the other half
+    was at its crest and the reservation under-read by 23px.
+    `.character-sizer` applies the same interpolation times the 2.2.3 pop, so it
+    tracks the visible curve at EVERY phase, not just the peak. Glyph-past-cell
+    0.0px both languages (was +18px en / +23px ko).
+  * **THE PUSH IS THE MOTION.** The reference's dominant motion is what a word
+    does to its NEIGHBOURS — `intonation.mov` frames 352->396, the line re-flows
+    around "louder". Look at the neighbours, not the word. The visible glyph is
+    out of flow and moves nothing, so the push comes from the in-flow
+    `.character-sizer`: the grid track is max(normal, crest), and growing the
+    crest grows the cell, which flex turns into a shove. Identical at phase 0,
+    so a settled row is exactly as wide as its words.
+    `motion.live_sync.neighbor_push` stays false — that flag is the LEGACY
+    renderer's.
+  * **RETURN-TO-NORMAL.** Every word begins and ends at 5% / Regular 400 /
+    width 100. The PDF's static pages show voice type persisting; the recordings
+    show it returning (`intonation.mov` frames 440-540) and the user chose
+    returning. `voice_scale_range` [0.72, 1.62] at response 0.62; with the 1.15
+    pop the largest crest is 1.86x. It was [0.90, 1.20] — a 1.33x span against
+    2.3.6's specified 4x — and that crush is what read as "no feeling".
+  * **LEADING: 1.38, and the arithmetic that said otherwise was wrong.**
+    `lineHeight >= capHeight * maxScale + descent` predicted 1.56, cost 4px of
+    type, and bought ONE pixel: forcing the true 1.863x crest measured a 10.5px
+    gap at 1.38 vs 11.5px at 1.58. Line-box geometry cannot answer this — a
+    scaled box overlaps its neighbour long before any letter does, and that
+    overlap grows WITH the leading. `scratchpad/ink_collision.py` reads pixels
+    and is the real test; the box check in `overflow.py` is informational.
+  * **Duration** is all that survives of the old scheduler:
+    `naturalMotionDurationMs` — 520 ms base, stretched by the spoken span and
+    delivery flow, capped at 720 ms. Freeze it per word at mount.
+  * **`cc` is the authored reference** and may drive the axes harder via
+    `closed_caption` overrides (merge with `ccprosody.merged_expression()`;
+    reading `cfg["expression"]` directly silently gets live's values). Its
+    per-character wave, neighbour bleed and `Antecipate` lead are safe there
+    because a caption plays through instead of accumulating.
+  * **Reduced motion keeps the colour turn** and drops only the geometry:
+    read-ahead and the onset turn involve no movement and are how a viewer knows
+    which word is being spoken. Pin `--voice-phase: 0 !important` rather than
+    cancelling the word's animation, which also carries the turn.
 
-    | `read_ahead_delay_s` | words past the playhead (median / max) |
-    |---|---|
-    | 2.5 | 1 / 6 |
-    | 4.0 | 2 / 8 |
-    | 5.5 | 6 / 16 |
-
-    So raising the delay DOES buy a fuller white line, roughly linearly, and
-    2.5 s is a deliberate choice of liveness over depth — not the most
-    read-ahead available. The probe asserts both numbers and flags a
-    disagreement between the DOM's white-word count and the schedule's, because
-    a gap there means the page is not showing what the scheduler believes.
-    **Also: `newestAcousticMs` must be read off the live model, never
-    accumulated as a high-water mark.** The reducer deletes non-final
-    hypothesis words routinely, and a running maximum kept counting text that
-    was no longer on screen — measured, it overstated read-ahead by ~1.5 s.
-  * **Remounts are supported but not free (2026-08-01).** `rearmedWords`
-    measured **53 of ~64** on the bundled sample: `selectStableCaptionStack`
-    keys a row on its first word's id, so an endpoint insertion or a hypothesis
-    deletion shifts every later chunk boundary and re-keys the rows after it.
-    Correctness is unaffected — a remounted word re-derives the same absolute
-    turn moment and resumes — but it is the reason `--turn-delay` must be
-    written imperatively and re-derived against the new animation origin rather
-    than restored from a stale relative value.
-  * **`--dump-dom` cannot read the studio.** It serializes at the load event,
-    before hydration and before any SSE word, returning essentially the raw
-    `web/out/index.html` shell. `live_render_probe.py`'s document.title trick
-    works only for the legacy non-React page. Use `scripts/studio_probe.py`,
-    which drives CDP over a websocket and calls `window.__cwiStudio.report()` on
-    a live page. Screenshots still work (they wait for paint) but give pixels,
-    not metrics.
-  * **THE SETTLED-TYPE ANCHORS ARE ABSOLUTE. NEVER RE-CENTRE THEM ON THE
-    SPEAKER (2026-07-31).** `web/src/lib/settled-type.ts` is now the single
-    source of CWI 2.3, and it is deliberately gamma-free. **SUPERSEDES** the two
-    entries that used to sit here — "there is no trigger threshold on amplitude"
-    (`deliveryExpressiveness`) and "axis response is expanded around the
-    speaker's own centre" (`expandAroundCenter`/`expandPitch`). Both belonged to
-    the era when voice was an ANIMATION amplitude; once voice became the resting
-    type, the same expansion destroyed the two anchors the PDF is most explicit
-    about. `web/src/lib/voice-sensitivity.ts` is deleted — nothing imported it.
-    The three defects, all measured on the bundled English sample
-    (233 SSE words / 111 rendered), all invisible to the integrity counters:
-    1. **2.3.5's baseline was off by 20%.** The server already normalizes
-       `loudness` onto the design system's own size axis — 0 is 3% of screen
-       height, 1 is 12%, and it pivots the speaker's running median onto the 5%
-       baseline at **0.2222** (`_word_event` in `live.py`). The client centred
-       that on **0.5**, as if it were a plain normalized level, so the MEDIAN
-       word rendered at **0.793×** the baseline: measured median 0.224 → 0.79.
-       Ordinary speech was captioned as permanently quiet, and the stage type
-       had been shrunk on top of that to clear a ceiling only shouts reached
-       (median word **28.0px**). The literal map is just `(3 + 9L) / 5`.
-    2. **2.3.8's neutral band did not exist.** "All captions within this vocal
-       range maintain this type-weight as a default" describes a **BAND**
-       (160–200 Hz → Regular 400), not a pivot. The client had a single pivot at
-       180 Hz *and* re-centred pitch on the speaker's running baseline with
-       gamma 0.62, so a word 10 Hz off that median was thrown across the whole
-       axis: **67 distinct weights spanning 100–876** on ordinary conversation,
-       with only **19%** of words on Regular. Use RAW Hz against the PDF's
-       absolute 80/160/200/250 anchors.
-    3. **2.3.10's diagonal was broken.** Width summed two always-positive terms,
-       so measured `font-stretch` **never once fell below 100%** — the condensed
-       half, i.e. the entire "thinner or sharper" reading, was unreachable — while
-       weight ran to 876. Loud/high words therefore rendered big + hairline +
-       normal-width, exactly the mismatch p.41 rules out. Width is now centred on
-       100% and driven by the same signed tone as weight (0.7 pitch / 0.3
-       texture), with the harmonics proxy allowed to pull TOWARD neutral but
-       never past it — a plain 0.7/0.3 blend does not hold the diagonal at mild
-       tones, and a 130 Hz word with a thin proxy still resolved heavy+condensed.
-    **Measured after** (`scratchpad/motionprobe.py`, CDP, 500 frames):
-    median settled scale **1.00** at **31.8px**, 65 distinct scales; median
-    weight exactly **400** with **32%** on Regular, 30 distinct weights,
-    200–726; **44%** of words condensed, 21 distinct widths; **0** off-diagonal
-    pairs. Pop still exactly 1.150 / 0.250em on every word, `motionStarts ==
-    motionPaintStarts`, every integrity counter 0, peak concurrency 3.
-    Config: `settled_scale_response` (0.60) is the live narrowing lever and it
-    compresses ABOUT the baseline, so 2.3.5 is exact at any value — the clamp
-    alone cannot do that, it flattens the top of the distribution into one
-    indistinguishable size. `settled_scale_range` [0.72, 1.55],
-    `weight_range` [200, 760], `width_range` [82, 124]; 400 and 100% must stay
-    strictly INSIDE the last two or the neutral band cannot be expressed.
-  * **`settledScaleAllowance`'s coefficient tracks the DISTRIBUTION, not the
-    range (2026-07-31).** It was 0.60, fitted while the median word rendered at
-    0.79× the baseline. Correcting that anchor moved the measured requirement to
-    **1.467** at a 1.55 ceiling, which 0.60 under-budgets by 13% — rows would
-    have overflowed the stage. Re-fitted across scale responses 0.45–1.0 the
-    requirement is `1 + (max−1)*0.85` to within 1.5%; shipped **0.88**.
-    Measure it by sliding a window over the recognizer's REAL word order with
-    each word at the settled size/weight/width its own voice earns and its
-    advance measured in the real caption face (`scratchpad/measure_widths.py`),
-    never by IID-sampling widths. Widening `width_range` from [88,115] to
-    [82,124] cost 0.004 of budget, because the widest row and the loudest run
-    are never the same row. Base type 35.45 → 32.73px, median word 28.0 →
-    31.8px — the corrected anchor buys size back despite the larger allowance.
-    Acceptance after any change here is `scratchpad/overflow.py`: sweep
-    theme × 1440×900 / 390×844, driving the theme through the REAL settings
-    toggle, and assert 0 wrapped rows, 0 orb overlap and no glyph past the clip
-    box while motions are active. Detect a wrapped row by vertical OVERLAP of
-    its words, NOT by equal box tops — words rest at different sizes on a shared
-    baseline, so equal tops flags every row. The one legitimate overflow is the
-    TOP edge on row 0: `justify-content: flex-end` clips the OLDEST row by
-    design (measured 5.95px at 390×844 light, 13 rows).
-  * **THE DESIGN SYSTEM PDF DESCRIBES EXACTLY THREE THINGS. BUILD THOSE.**
-    (2026-07-31, after the user cut short several rounds of inferring motion
-    from `docs/reference/*.mov` — that is the project's *website*, not the
-    spec.) `docs/cwi-design-system-v1.0.pdf` pp.26–41:
-    1. **2.2.2 colour sync** — the word turns the speaker colour at its spoken
-       onset ("when 'In' is spoken, not when 'ble' is spoken").
-    2. **2.2.3 motion** — "Each word should undergo a **15% increase in type
-       size** before returning to its original size, creating a 'pop' motion
-       effect", and the diagram labels the rise **25% elevation**.
-       **THE WORD GROWS FROM ITS FIXED BASELINE. IT DOES NOT MOVE AT ALL.**
-       Got this wrong three times; the user had to ask three times. Settled
-       2026-08-01 by LOOKING at all three recordings, not by measuring.
-       **THE METHOD THAT WORKS**, because it is the one that failed twice:
-       crop tight on a popping word WITH a static neighbour in frame, and draw
-       the baseline guide from that neighbour **PER FRAME**. The reference
-       re-fits its whole line while a word swells, so a guide taken once from
-       the first frame drifts and manufactures an apparent rise. That artifact
-       is the entire history of wrong answers here.
-       Done properly: `intonation.mov` shows "louder" reaching roughly **four
-       times** the text beside it with its ink bottom **exactly on the shared
-       baseline**; `character_identification.mov` shows read-ahead and spoken
-       words at visibly different sizes all sitting on one line. Zero vertical
-       displacement at any size.
-       Two separate things had to go. The `translateY(-0.25em)` (removed
-       earlier), AND the pivot: `transform-origin: 50% 100%` is the bottom of
-       the LINE BOX, which sits half-leading plus a descender BELOW the
-       baseline, so scaling about it lifted the word by `(scale - 1) * that`
-       — and because the scale carries the voice, **louder words lifted
-       further**, which is precisely a word-level lift. Opening
-       `voice_scale_range` made it obvious; it was always there.
-       The origin is now `50% calc(100% - var(--glyph-baseline-em))`, measured
-       off the live caption face by `useGlyphBaseline` — **.3799em for Roboto
-       Flex, .2598em for Noto Sans KR** at line-height 1.38. It cannot be a
-       constant, and two bad probes proved it: one omitted the `.caption-words`
-       wrapper and so measured `line-height: normal`, the other parented to
-       `document.body` and so never inherited the Korean face. **Both returned
-       an identical number for the two fonts — that equality IS the bug signal.**
-       The diagram's "25% elevation" is simply where the TOP of the word ends up
-       when it grows from a fixed baseline. `sync_elevation_em` is gone from the
-       studio path (`closed_caption` keeps its own, separately tuned), and the
-       2.2.3 pop and 2.3 voice scale are now ONE transform on `.word-glyph`
-       rather than two nested ones with two origins that could drift apart.
-       One transient, per word, once, and **its amplitude is a CONSTANT** —
-       verify `popScale` p50 == max == 1.15.
-       Acceptance is `scratchpad/baseline_strip.py` — the same look, applied to
-       our own render.
-    3. **2.3 intonation** — volume → type SIZE (2.3.3/2.3.6: 3%…12% of screen
-       height, 5% baseline), pitch → type WEIGHT (2.3.8: 160–200 Hz is Regular
-       400; 2.3.9: 80 Hz heavy, 250 Hz light), harmonics → type WIDTH
-       (2.3.9/2.3.10). **THIS IS THE RESTING TYPE, NOT AN ANIMATION.** The pages
-       show whole STATIC sentences with a different size and weight on every
-       word — p.34 "Put that coffee **dOWn!** Coffee's for closers only!",
-       p.40 "The higher the pitch, the lighter the font becomes."
-    **We had it inverted, and that was the whole problem.** Every word settled
-    to IDENTICAL typography and all the voice was crammed into transients: a
-    word-wide size swell with six delivery variants, a word-wide weight+width
-    swell with six more, and a travelling character bulge — nine animations in
-    flight on up to three words where the PDF has one. That is what read as
-    "messy and promiscuous", and because every channel returned to the same rest
-    state the voice never actually showed, which is what "the font size effect
-    and word level lifting doesn't happen" meant.
-    Now: `settledTypeFor()` writes `--settled-scale` / `--settled-weight` /
-    `--settled-width` once per word from the frozen prosody, NEVER animated (the
-    caption invariant is satisfied by construction — there is nothing to re-run),
-    and `@keyframes word-sync-pop` is the only caption animation in the
-    stylesheet. **The MAPPINGS shipped with this round were wrong and were
-    corrected 2026-07-31 — see the settled-type-anchors entry above for the three
-    defects and the current measurements.** Getting the animation count right did
-    not make the axes right: a channel can be present, continuous and still
-    anchored 20% off its stated baseline.
-    Consequences, all load-bearing:
-    * **`transform`, not `font-size`, for the cue.** It is transient and must
-      never reflow the row. `transform-origin: 50% 100%` so it grows from the
-      baseline, as the diagram shows.
-    * **One leading for every row, as a LENGTH** on `.caption-words`:
-      `1.12em * --settled-max + --sync-elevation-em`. Sized per-row from that
-      row's own biggest word instead, row heights varied, `useStageLayout`'s
-      capacity estimate (available height ÷ a *sampled* row's height) was wrong
-      for every other row, and the stack overran the top of the stage by a
-      measured **308px**. A NUMBER line-height fails differently: it is
-      re-multiplied by each word's own font-size, so the biggest word drives the
-      row height again.
-    * **The row budget carries the settled spread**, via
-      `settledScaleAllowance()`. MEASURED, not guessed: the widest row at settled
-      sizes is 15.42 / 18.37 / 21.16 / 24.44 em at N=3…6 against unscaled budgets
-      of 11.65 / 14.20 / 16.61 / 18.93 — a ratio of ~1.30, flat in N. Two traps:
-      the settled scales centre on **1.0 at the median loudness**, not on the
-      midpoint of the range (measured mean 1.024 against a [0.7,1.6] midpoint of
-      1.15, so the midpoint over-budgets by 12%); and multiplying a worst-case
-      WIDTH by a worst-case SCALE double-counts, because the widest row and the
-      loudest run are not the same row. Re-measure with
-      `scratchpad/scaleallow.js` if `settled_scale_range` changes.
-    * **Cost of the wide range:** the base type drops (47 → 35.5px at 1440×987)
-      because rows are ~30% wider. Typical words render near the base, loud words
-      at 1.6×. Narrowing `settled_scale_range` is the lever if that is too small.
-    * **No shadow anywhere inside `.caption-word`**, and no per-word delivery
-      motion families — the PDF has neither. Delivery survives as a readout and
-      through the settled weight/width axes.
-    **SUPERSEDED by this entry** (kept only so the reasoning is not re-derived):
-    the travelling character bulge, "the baseline is flat / nothing lifts", the
-    reflowing line, and "25% elevation is 25% of glyph height". All four came
-    from the recordings. The PDF's own diagram raises the word, and 2.2.4 says
-    words animate "fully, one by one" — syllable-at-a-time is the documented
-    *exception*, gated by `motion.syllable_fill`.
-
-  * **THE ENDPOINT BLOCKS THE LOOP FOR ~1.3 s, AND THAT IS THE HITCH AT EVERY
-    SENTENCE (2026-08-01, user: "a discrete lag when starting every sentence
-    after a little silence").** MEASURED off the SSE stream: the `level`
-    metronome runs at a 128 ms median but stalls **1.31 s** once per utterance,
-    with a second stall around 0.65 s. The cause is in `_process_result`:
-    `self.verifier.transcribe(audio)` (offline Parakeet over the whole
-    utterance) and `speaker_tracker.label_words(...)` run SYNCHRONOUSLY inside
-    the audio loop, so nothing is emitted while they run.
-    **It is not the per-character envelope**: measured with
-    `intonation_envelope_samples` at 0 and 8, the worst stall was 1442 ms and
-    1309 ms respectively, and word delivery latency was 0.51 s vs 0.58 s median.
-    **The playhead does NOT jump, and a catch-up slew does not help.** The
-    obvious theory -- source floods its queue, max-filter swallows the burst,
-    playhead skips -- was implemented as a rate cap on offset increases and
-    measured: late words in steady state were **13 with the cap and 13
-    without**. Reading the raw clock shows why. `newest - playhead` sits at a
-    steady **1.22 s**, goes NEGATIVE during each stall (the clock keeps
-    interpolating while no words arrive at all), then returns to exactly 1.22 s.
-    The words stop; the clock does not. The slew was removed rather than shipped
-    as an unmeasured improvement -- see the note in `caption-clock.ts`.
-    So the read-ahead genuinely DRAINS at every endpoint, and words spoken
-    during the stall arrive with onsets already behind the playhead, which is
-    why they paint settled with no motion. The real fixes are to stop blocking
-    the loop (move endpoint verification off the audio thread -- note
-    `label_words` LEARNS, so it cannot simply be threaded) or to run
-    `read_ahead_delay_s` longer than the stall. Neither is done.
-    **Beware the read-ahead median in `studio_probe.py`**: it averages over the
-    stall windows, where `newest - playhead` is negative and clamps to 0, so it
-    reported 86 ms while steady state was 1.22 s. Read the raw
-    `playheadMs`/`newestAcousticMs` series before believing it.
-  * **TEXT IS NOW FROZEN WHEN THE PLAYHEAD PASSES A WORD (2026-08-01, user:
-    "reduce the modifying words after caption shows").** The caption invariant
-    said text may be revised only AHEAD of the playhead. That was true of
-    hypothesis churn and false of endpoint verification: MEASURED, 44 text
-    changes over 74 words, **38 of them landing more than the read-ahead delay
-    after the word's own onset** -- "sixteen" became "1640" 4.5 s after it was
-    spoken, in place, on a caption the viewer had already read.
-    `settledTextRef` records what a word was WEARING when the playhead reached
-    it, and later revisions to that word are dropped. Only the spelling is
-    frozen; speaker colour, finality and timing still update, because a late
-    attribution correction is a direct colour write and the design system asks
-    for exactly that.
-    Two traps, both hit:
-    - The single-word event path (`cue`/`commit`/`word` carry `text` at the top
-      level, not in a `words` array) has to be filtered too, or endpoint
-      punctuation still rewrites coloured captions.
-    - Recording must happen ON THE PLAYHEAD TICK, not when a revision arrives.
-      The reducer routinely DELETES a non-final word and re-adds it with the
-      verifier's spelling; comparing against the live model let that path
-      through, because at the instant of re-insertion there was nothing to
-      compare to.
-    Measured on screen: coloured-caption rewrites **14 -> 5**, with ~53-134
-    revisions actively rejected per run. The remaining five are whole-word
-    re-alignments where the server reuses a POSITIONAL `word_id` for different
-    text ("sixteen" -> "1640"); freezing those would pin stale text to a slot
-    that now holds a genuinely different word, so they are allowed through.
-    Raising `read_ahead_delay_s` widens the window in which the verifier can
-    still win before the turn.
-  * **CWI 2.3 IS PER CHARACTER, AND THE PDF'S PICTURES ARE THE PROOF
-    (2026-08-01, user: "look at the pictures of description, not just the
-    description").** The prose says volume->size, pitch->weight,
-    harmonics->width and never says at what SCOPE. The illustrations do, and
-    every one of them is intra-word:
-    * **p.34** sets "Put that coffee **dOWn!** Coffee's for closers only!"
-      directly beneath its own waveform, time-aligned -- `d` medium, `O`/`W`
-      huge, `n!` dropping back.
-    * **p.38** does the same to weight: "Woooooo weeee neeee**eeeed** tooooo
-      fiiiiiiiiind hiiiiis soooo**oooo**n" under a pitch curve.
-    * **p.40** ramps ONE sentence from black to hairline ("The higher the pitch,
-      the lighter the font becomes.") and another from wide to condensed.
-    We collapsed all of it to one value per word, which is why the captions read
-    as flat however wide the band was opened. `_prosody()` computed the pitch
-    contour over the span and then threw it away with `np.median`.
-    Now: `_intonation_envelope()` keeps 8 evenly spaced readings of loudness,
-    pitch and spectral centroid across the word's own audio,
-    `display.intonation_envelope_samples`. Loudness goes through the SAME
-    2.3.5 pivot as the word-level value (one anchor, not two scales) and texture
-    through the same brightness range as `delivery_texture`. Frozen in
-    `envelope_cache` on the same `("§slot", utterance, round(start*20))` terms
-    as `delivery_cache`.
-    **The slot fallback must match on SPAN, not just proximity.** A slot is
-    50 ms, so two short words land in adjacent slots: measured, a 0.02 s "You"
-    inherited the envelope of the 0.72 s "know" beside it and was drawn with
-    that word's shape. Neighbour reuse now requires the spans to agree within
-    30%, which still absorbs the endpoint retiming it exists for.
-    Client: `characterVoiceTypes()` samples the contour at each character's
-    position and reuses the existing `voiceScale`/`voiceWeight`/`voiceWidth`
-    anchors unchanged, so 2.3.5/2.3.8/2.3.9 and 2.3.10's diagonal all still
-    hold per character. No envelope (a span too short to have a measurable
-    shape) falls back to the word-level voice for every character, which is
-    exactly the old behaviour.
-    **Split with `Array.from`, never `split("")`** -- Korean 어절 are Hangul
-    syllable blocks and any astral-plane character must stay one unit. Verified:
-    사파리라는 renders as 5 blocks with 5 distinct scales.
-  * **ONE PHASE PER WORD DRIVES EVERY CHARACTER (2026-08-01).** Each character
-    first got its own `font-size` animation. They share `--turn-delay`, but
-    `animation-delay` counts from when the animation was APPLIED to that
-    element, and live words GROW as the recognizer extends a hypothesis -- so a
-    span appended a moment later started its clock a moment later and ran behind
-    its neighbours. Measured on Korean: half a word sat at rest while the other
-    half was at its crest, and the width reservation under-read by 23px, so the
-    glyph ran outside its own cell and words touched.
-    Fixed structurally, not by compensation: `@property --voice-phase` is a
-    registered `<number>` animated ONCE on `.caption-word`, and each character
-    computes `calc(1em * (1 + phase * (charScale - 1)))` (and the same shape for
-    weight/width). One animation, one origin; a newly appended character reads
-    the current phase on its first frame. Also N fewer animations per word.
-    `.character-sizer` applies the identical interpolation times 2.2.3's pop --
-    which the visible glyph gets from its wrapper transform and the sizer
-    cannot -- so the reservation tracks the visible curve at EVERY phase, not
-    just at the peak. Measured after: glyph-past-cell 0.0px in both languages
-    (was +18px English, +23px Korean).
-    Reduced motion pins `--voice-phase: 0 !important` rather than cancelling the
-    word's animation, because that animation also carries the 2.2.2 colour turn,
-    which reduced motion KEEPS.
-  * **CWI 2.1 IS WHEEL GEOMETRY, NOT A LOOKUP (2026-08-01).** Speaker colour was
-    `palette[hash(speakerId) % palette.length]`, which can hand speakers 1 and 2
-    adjacent hues -- the exact confusion 2.1.3 spends a page of do/don't wheels
-    preventing -- and contradicted config.yaml's own comment ("assigned
-    deterministically by order of first appearance"). 2.1.1 wants three mains
-    "spaced as far apart as possible on the spectrum" with Hero and Villain
-    opposite; 2.1.2 picks supporting colours BETWEEN the mains; 2.1.4 gives
-    minor characters `HSB(h, 30%, 90%)` pastels from the wheel's centre.
-    `web/src/lib/speaker-colors.ts` assigns by first appearance, greedily
-    maximising the minimum hue distance to everyone already assigned, mains
-    before supporting, then generating pastels. Pure and stable: a speaker's
-    colour never changes because someone else spoke.
-    **Test optimality, not a fixed angle.** The CI mains sit at 0/31/60/120/180/
-    300 degrees, so nothing is truly opposite yellow and a hardcoded ">=150"
-    only encodes this palette; assert instead that no unused hue is farther.
-    The light stage substitutes `palette_light` BY INDEX, so the same speaker
-    keeps the same slot in both themes.
-  * **THE PUSH IS THE MOTION. A POP ALONE IS NOT THE DESIGN SYSTEM
-    (2026-08-01, user: "why are you doing just the pop motions").**
-    Everything above concerns what one word does. The reference's dominant
-    motion is what the word does TO ITS NEIGHBOURS: in
-    `docs/reference/intonation.mov` frames 352 -> 396, "feel when my voice gets"
-    slides left as "louder" balloons; in `character_identification.mov`,
-    "will distinguish chara" slides right as "colors" turns. **The line
-    re-flows around the word being spoken.** Look at the neighbours, not at the
-    word -- three rounds of analysis here stared at the popping word and missed
-    the thing carrying the motion.
-    The studio could not do this by construction: the visible glyph is
-    absolutely positioned and out of flow, so it moves nothing, and the crest
-    footprint was RESERVED permanently in `.word-sizer-crest` so the row never
-    changed width. The reservation is now an ANIMATION (`word-footprint`) on the
-    same `--turn-delay` clock: the grid track is max(normal sizer, crest sizer),
-    so growing the crest grows the word's cell and the row's flex layout turns
-    that into a shove. At 0% and 100% it is identical to the normal sizer, so a
-    settled row is exactly as wide as its words and returns to precisely the
-    geometry it had -- which is why the old "past captions never move again"
-    objection does not apply. The axes ride along with the size because weight
-    and width change a word's advance too.
-    `motion.live_sync.neighbor_push` remains false: that flag is the LEGACY
-    renderer's, and the studio does this in CSS.
-    Row width during a swell is still bounded by `--row-budget-em`, which was
-    always sized for full crest reservation -- so the push cannot clip. It also
-    means a settled row is narrower than the budget; buying that slack back as
-    type size needs the reference's other trick, re-fitting the line when a
-    swell would exceed the box.
-  * **THE LEADING DOES NOT NEED TO GROW WITH THE CREST, AND THE ARITHMETIC THAT
-    SAID IT DID WAS WRONG (2026-08-01).** With growth anchored at the baseline a
-    word rises purely upward, so `line-height` is the only thing between a loud
-    word and the row above. `lineHeight >= capHeight * maxScale + descent`
-    predicted 1.56 and the leading was raised 1.38 -> 1.58 on that basis, which
-    cost the caption 40.9 -> 36.6px. Forcing the TRUE worst case — injecting a
-    maximum-loudness word so the crest actually reaches 1.863x, instead of
-    waiting for the sampler to stumble on one (it only ever found 1.62x) —
-    measured the clear gap to the row above at **10.5px at 1.38 and 11.5px at
-    1.58**. One pixel, because taller lines also shrink the type. Reverted.
-    The estimate ignored that a descender must sit directly above the swelling
-    word for any of it to matter.
-    **Line-box geometry cannot answer this question at all**: a scaled box
-    overlaps its neighbour long before any letter does, and that overlap grows
-    WITH the leading even as the real ink gap improves — which is why the
-    box-based check in `scratchpad/overflow.py` is informational only.
-    `scratchpad/ink_collision.py` reads PIXELS and is the real test. Re-run it
-    if `voice_scale_range` grows.
-  * **THE VOICE BAND WAS CRUSHED, AND THAT IS WHAT "NO FEELING" MEANT
-    (2026-08-01, user direction: "the reference has more feelings on motion...
-    the reference's motions fully depend on the audio").**
-    `voice_scale_range` was **[0.90, 1.20]** — a 1.33x span between a whisper
-    and a shout, against 2.3.6's specified 0.6x..2.4x. About a twelfth of the
-    design system's excursion, i.e. the channel did not really exist.
-    LOOK at `docs/reference/intonation.mov` frames 350-440 next to our stage:
-    "louder" reaches roughly **four times** the text around it. Two things are
-    visible there and both matter:
-    1. the swell is **TRANSIENT** — "louder" is back to normal by frame 440,
-       which independently confirms the 2026-07-31 return-to-normal call;
-    2. **the rest of the LINE shrinks to make room** and is restored afterwards.
-    Now **[0.72, 1.62]** at response **0.62**; with 2.2.3's 1.15 pop the largest
-    crest is 1.86x (was 1.38x).
-    **The cost is base type, and it is the reference's own trick that avoids
-    it.** Rows here reserve each word's crest footprint (`.word-sizer-crest`) so
-    a swelling word cannot collide, and that reservation is paid globally and
-    permanently: `--word-em-spread` 4.45 -> 6.60 and the caption went
-    45.3 -> 40.9px at 1440x900. Only the SPREAD term moved, because the mean
-    footprint is unchanged (the voice scale still centres on 1.0 at the median
-    loudness) — what grew is the variance, which is what `spread*sqrt(N)` is
-    for. Raising `linear` would have over-budgeted every ordinary row.
-    **THE NEXT REAL STEP is the line re-fit**, which is how the reference
-    affords the full 0.6..2.4 at readable size: scale the ROW to fit its box
-    while a word is swelling instead of reserving worst-case width forever.
-    That would let the band open further and give the base type back. Not
-    attempted yet — it needs a per-row fit factor that does not thrash layout,
-    and rows here grow word by word rather than arriving complete.
-    **Still not addressed:** the reference modulates continuously with the
-    audio; ours applies one frozen per-word crest with a single envelope shape.
-    Amplitude now tracks the voice; within-word contour does not.
-  * **RETURN-TO-NORMAL IS STRUCTURAL (2026-07-31, USER CORRECTION).**
-    **SUPERSEDES** the "settled-type anchors" and "resting type" implementation
-    entries immediately above. The §2.3 anchors remain absolute, but in the live
-    studio they define the voice-shaped CREST of a word's one motion window, not
-    permanent caption typography. Every word begins and ends at normal 5% /
-    Regular 400 / width 100.
-    `web/src/lib/caption-motion.ts` builds the pure plan:
-    normal → §2.3 voice crest composed with §2.2.3's constant 1.15 / 0.25em cue
-    → normal. CSS implements it with an invisible `.word-sizer` that owns layout
-    and an absolutely overlaid `.word-glyph`; no width measurement or frozen
-    inline size exists. Both keyframes have explicit normal endpoints and use
-    the default `animation-fill-mode: none`, so pixels return to normal even if
-    an `animationend` callback is delayed. The callback only clears logical
-    state/concurrency. Config keys are `voice_scale_range` ([0.90, 1.20]) and
-    `voice_scale_response` (0.25); composed with the fixed 1.15 cue, the largest
-    live crest is 1.38x. There is no `settledScaleAllowance`.
-
-  * **Speech rate is no longer a throughput problem (rewritten 2026-08-01).**
-    It was, when a queue with N slots had to play every word through them: a
-    fixed 520–720 ms clock capped the studio at ~3.8 words/s and anything
-    faster grew an unbounded presentation buffer, which is what
-    `adaptiveMotionDurationMs` and its backlog target / rate headroom /
-    catch-up scale existed to fight. Words now animate at their own recorded
-    onsets, concurrently, so fast speech produces overlapping pops rather than a
-    growing queue — which is what the design system's own reference does.
-    `naturalMotionDurationMs` survives and is all that is left: 520 ms base,
-    stretched by the word's spoken span and its delivery flow, capped at 720 ms.
-    Freeze it per word at mount; a verifier respelling revises `end`, and a
-    caption already in flight must not have its clock reshaped underneath it.
-    In the legacy renderer, acoustic span continuously maps the complete
-    motion to 520–720 ms; `_motionPaceGain` also eases from
-    0.58 on a minimum-duration word to 1.0 on a slow/drawn-out word. A
-    `slow_delivery_curve_delay` of 0.06 shifts the independent axis peaks later
-    inside a slow word's already-longer clock, so it feels languid rather than
-    like the fast shape played at a lower frame rate. In the bundled browser
-    sample, fast words attacked weight/size/width at about 156/218/260 ms;
-    drawn words at about 244/346/397 ms. Character turns remained roughly
-    53–110 ms apart.
-  * **Weight and width animate per frame.** The word box is frozen at its
-    resting width (`el.style.width`, measured once in `resolveCCLine`; CSS
-    `text-align:center; white-space:nowrap`), so the variable axes cannot reflow
-    or overlap the row. `live_sync.neighbor_push` is false: no earlier caption
-    moves because a new word is active.
-  * **Colour has a separate clock.** An ordinary moving word receives a
-    150–280 ms white→speaker-colour sweep; a drawn-out word uses measured
-    syllable/phoneme stops over 180–900 ms. Colour may begin while geometry is
-    active. A late colour decision on a settled word is a direct colour write,
-    never a delayed motion trigger. Paint `.cwi-ch` spans individually; do not
-    restore `background-clip:text` on their parent. Chromium can collapse the
-    inline children onto one origin while compositing that effect, producing
-    the piled-up glyph corruption seen in the 2026-07-24 sample.
-  * **THE CAPTION INVARIANT IS STRUCTURAL, NOT ENFORCED (2026-08-01).**
-    SUPERSEDES the whole "visual-first-paint, once only" entry that stood here
-    — reveal order, planned deadlines, the 60 ms catch-up floor, slot
-    occupancy, `MotionSnapshot`, `--motion-phase-delay`, `confirmMotionPaint`,
-    the discovery frontier and the `_first_presentation` motion-eligibility
-    flag. Every one of those was a guard around the question "has this word
-    already been shown?", asked because motion was triggered by arrival.
-    The playhead answers it by construction: a word's colour turn is a fixed
-    moment on the acoustic timeline, so text may be revised only while the word
-    is still AHEAD of the playhead, and anything behind it is frozen history.
-    What remains, and still matters:
-    - A late colour decision on a word the playhead has passed is a direct
-      colour write — which the `to`-less colour keyframe gives for free.
-    - Corrections never change a word's duration or its axes: both are frozen
-      at mount.
-    - Reconnect replay needs no special case. Replayed words carry old
-      timestamps, land behind the playhead, and settle.
-    - A capture restart is the one thing that must be handled explicitly: see
-      the `epoch` rule in the playhead entry above.
-  * **Next studio motion is independently phased, never one canned keyframe.**
-    `.word-glyph` owns size/lift, `.word-ink` owns separate weight and width
-    envelopes, and `.caption-character` owns the local
-    hand-off. The conservative semantic `delivery_profile` remains diagnostic;
-    a separate `data-motion` family lets trustworthy continuous contour, flow,
-    force/attack, or texture choose rising, falling, sustained, forceful,
-    gentle, or textured timing without making an emotion claim. Each family
-    owns both a glyph path and its own weight/width intonation clock. Every CSS
-    family starts near the baseline
-    (`opacity >= .66`, scale >= .975), uses the zero-slope
-    `cubic-bezier(.42,0,.22,1)`, and rises to its own early/middle/late crest;
-    falling/forceful must never start already at peak displacement. Character
-    handoff uses a still-subordinate 0.085 em / 3% ribbon;
-    keep its upward-only, zero-slope path so it cannot become a second ziggle.
-    **The word wrapper freezes its resting layout width before paint, IN em —
-    never in px.** (Fixed 2026-07-30.) The freeze exists so the animating
-    weight/width axes cannot reflow the row, but the stage font-size is
-    `min(clamp(20px, 16cqh, 64px) * --caption-scale, --caption-width-cap)`, so a
-    pixel box goes stale the
-    instant the window is resized or the Caption scale slider moves: the glyphs
-    re-render at the new size against the old box. Measured at scale 1.8, every
-    word spilled its own box — 15px on "a", 43px on "tab" — and the words
-    overlapped each other. Glyph advances are linear in font-size and the word
-    inherits the feed's size at 1em, so an em width tracks them exactly and never
-    needs re-measuring; max spill after the fix is 0.9px (sub-pixel slack). A
-    change of FACE, not size, would still need a re-measure, but the caption font
-    is locked before the first word arrives. Measure with
-    `getBoundingClientRect().width`, not `offsetWidth`, which rounds down and
-    clipped the last letter of every word the previous time this was done in
-    integers. A descendant's transform never affects the wrapper's own border box,
-    so reading it mid-motion is safe.
-    All four channels return to identity/Regular 400/100% width. Nothing has to
-    signal completion any more: with `animation-fill-mode: none` the browser
-    drops the animated values by itself, and there is no queue slot to release.
-    The stage resting size is `min(clamp(20px, 16cqh, 64px) * scale,
-    --caption-width-cap)` — measured **47.1px** at 1440×900 — with **1.38**
-    line-height and `-.012em` tracking (raised 2026-07-30 from
-    `clamp(18px, 2.65vh, 34px)`/1.14 when the light stage dropped the captions
-    box, the frame, and the per-block speaker label). Leading is not decoration
-    here: a word's transient lift reaches 0.25 em, so tight leading puts a
-    moving word into the line above it. **Type size and
-    `display.studio_stack_words_per_block` are one decision.** At this size
-    eight words sat exactly on the wrap boundary, so a verifier respelling that
-    changed a word's width flipped a row between one and two visual lines and
-    the whole stack below it jumped; six words leave ~25% slack and a
-    correction lands in place. Re-check a full six-row stack at 1440×900 and
-    390×844, with a long-word utterance, before changing either.
-    **STAGE ROWS DO NOT WRAP (2026-07-30, at the user's request).** A Stage block
-    is already a fixed-width row of six words, so a second visual line inside one
-    block was a wrap accident that moved every row beneath it whenever a verifier
-    respelling changed a word's width. `.caption-feed .caption-words` is
-    `nowrap` + `max-width: none`; Transcript still wraps, because there viewport
-    width legitimately chooses the visual lines.
-    Two consequences, both load-bearing:
-    1. **WORDS-PER-ROW AND TYPE SIZE ARE ONE CALCULATION (2026-07-30, second
-       pass).** `min(clamp(20px, 16cqh, 64px) * scale, var(--caption-width-cap))`
-       where `--caption-width-cap` is
-       `93.6cqw / (--row-budget-em + --caption-gutter-em)`, with `.caption-stage`
-       as a **`size`** container so both `cqw` and `cqh` track it. Without the cap
-       `nowrap` does not wrap an oversized row, it CLIPS it.
-       Holding words-per-row at SIX hands the caption size to the window's aspect
-       ratio, and that was the whole bug. Measured: 1440×900 → 47px type, 86% of
-       the stage filled; **862×998 → 23.6px type, 40% of the stage EMPTY**, because
-       six words still had to cross a 538px stage. `planStageLayout`
-       (`web/src/lib/stage-layout.ts`) now picks BOTH: the largest type whose stack
-       still shows `display.studio_stack_min_rows` (10) rows, over
-       `studio_stack_words_min`(3)…`studio_stack_words_per_block`(6). The narrow
-       window gets **3 words at 35.8px and 91% fill**; 1440 keeps 6 at 47px. Both
-       terms are load-bearing: maximise type alone and a wide stage collapses to
-       three-word rows at the height ceiling using 65% of its width; require rows
-       alone and you are back at 23.6px.
-       **`rowBudgetEm` is `N*linear + spread*√N`, NOT `N * perWord`.** The per-word
-       cost RISES as rows shorten — a short row cannot average a long word away.
-       Measured by sliding a window over the recognizer's real word order: English
-       worst-case rows are 10.82 / 12.92 / 15.26 / 17.60 em at N = 3…6, i.e.
-       **3.61em per word at three but 2.93em at six**, so a constant fitted to
-       six-word rows under-budgets a three-word row by 19% — which is exactly how
-       the first attempt shipped rows that overflowed. Fitting N=3 and N=6 gives
-       linear 1.31 / spread 3.98 and predicts the unfitted N=4/N=5 rows to within
-       2%. Shipped +8%: **en 1.40/4.30, ko 2.20/4.35** (ko measured 12.73/16.50/
-       18.50/21.53 em, +10% because that sample is only 65 어절). Do NOT budget by
-       IID-sampling the word-width distribution: real text does not put three long
-       words together at random, and sampling predicted 15.5em for a three-word row
-       against a measured 10.8em.
-       **Declare `--caption-width-cap` on `.studio-shell`, never on `:root`.** A
-       custom property resolves its own `var()`s at computed-value time ON THE
-       ELEMENT THAT DECLARES IT; only relative UNITS (`cqw`) stay unresolved until
-       use. On `:root` it baked in `:root`'s `--stack-words: 6`, so React's
-       per-stage override changed the row width and left the type at the six-word
-       value — measured, three-word rows still rendered at 24.2px.
-       Because the cap binds at 100%, **the Caption scale slider only reduces**
-       (0.6–1.0): 100% is the largest type that still fits a full row.
-    2. **THREE OF `.caption-feed`'s FOUR PADDINGS ARE CLIP GUTTERS, NOT SPACING.**
-       `overflow` clips at the PADDING box, so a padding strip is room *inside* the
-       clip that layout does not consume — the only way to keep a transform from
-       being cut off without moving where the words sit. Current value
-       `.40em 1.50em .66em .60em`:
-       * **right** — clears the trailing orb, whose `right: -1.66em` positions its
-         RIGHT edge, so that number is (clearance + the orb's own .82em width).
-         Clearance is MEASURED: the last word's ink reaches −0.005em past the row
-         edge at rest (p99) but **0.842em** while its scale channel is mid-motion,
-         because scale grows the ink by (scale−1)/2 of the word's own width. At
-         −.78em the orb's LEFT edge sat .04em INSIDE the row and the moving word
-         ran straight over it.
-       * **`.caption-feed .caption-words` must also be `flex: 0 0 auto`.** It is a
-         flex ITEM of `.caption-surface`, so it inherited `flex-shrink: 1` and got
-         squeezed to the surface width whenever the row was wider, while its own
-         children (`flex: 0 0 auto`) refused to shrink and simply overflowed it.
-         The orb then attached to the SHRUNKEN right edge — measured 84px on top of
-         the last word — and every probe that measured this box under-reported the
-         true row width, so an over-wide row read as fitting. Same failure as the
-         earlier `max-width: none` fix (measured −19px overlap at 390px), arriving
-         by a second route: the box has to hug its content for the orb to trail it.
-       * **left** — a first-paint motion scales a word to 1.38 about
-         `transform-origin: 50% 100%`, so the FIRST word of every row grows
-         LEFTWARD past the row origin and Chrome clipped it mid-motion. This was
-         the reported "when the word gets large it overflows on the left side";
-         `padding-left` was 0.
-       * **bottom** — the box hugs its content, so the newest row's bottom edge IS
-         the content edge, and the Stage FLIP entry starts that row at
-         `translateY(0.58em)`. Measured, the entering row and its orb were cut off
-         for the whole 620 ms entry. Safe to spend: `flex-end` sends eviction
-         overflow to the TOP, so the bottom strip is never used by it.
-       * **top** — the same scale grows upward, plus up to .25em of transient lift,
-         which exceeds the 1.38 line box's leading.
-    Verify all of this with the CDP probe, not by eye: sweep theme × 1440×900 /
-    390×844 × scale, and assert wrapped rows 0, no glyph past ANY edge of the clip
-    box while motions are active, and the orb neither clipped nor overlapping the
-    last word. Drive the theme through the real settings toggle, not by stamping
-    `data-theme` on the DOM — the latter bypasses `useStackCapacity`.
-  * **Diarization must consume speech, not synthetic verifier slots.** A
-    verifier-confirmed post-punctuation suffix whose claimed slots are quiet
-    while stronger speech follows is moved onto the first substantial activity
-    cluster by `repair_verified_tail_timing`; later sound-effect islands are
-    excluded. Short turns below the normal ERes2Net cosine threshold may match
-    only an already-stable profile and only above
-    `short_stable_min_margin`. Do not “fix” this by lowering enrollment
-    thresholds globally.
-  * `motion.live_sync.enabled: false` still settles words directly. Do not feed
-    the full authored `closed_caption` response into live: accumulated live
-    words require the compressed range documented in `config.yaml`.
 - **Input gain applies only to the recognizer's copy of the audio.**
   `AudioChunk.samples` must stay at the true captured level because prosody
   measures `loudness_db` from it; the gained copy is `asr_samples`. Gaining
@@ -1038,27 +438,17 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   its model license. Freeze a smoothed estimate only onto future/unseen words.
   Never use an utterance-end result to animate or reweight historical words;
   that recreates the late-motion defect. See `docs/RESEARCH.md`.
-- **THE ONSET SIDECAR IS OFF (2026-08-01, user request).** `live.onset_prefix`
-  made a single speculative letter appear before the recognizer had a word
-  (`H` -> `He` -> `Hel`) and it resets after `reset_s` of silence, so it fired at
-  the START OF EVERY SENTENCE -- which is what the user reported as a hitch
-  there ("if speaker say H~~~~ello then H appears first, and it creates the
-  lag"). MEASURED on the bundled clip: 39 text changes with it on, 14 of them
-  from a 1-2 letter stub, versus 23 changes and 0 stubs with it off. It was
-  ~40% of all visible churn.
-  It is NOT the ~1.3 s sentence hitch: worst stall 1261 ms on, 1315 ms off.
-  That is the endpoint verifier blocking the audio loop (see the entry above).
-  **Do not confuse this with CWI 2.2.1 read-ahead** -- they are unrelated, and
-  the confusion cost a round trip. Read-ahead is the design system's white
-  preview of the whole line; the onset prefix is a speculative first phoneme.
-  The rest of this entry describes the feature as built, for whoever re-enables
-  it:
-- **The onset sidecar owns a provisional prefix, not durable spelling.**
-  `PhonemeOnsetDetector` advances one confidence-gated phone at a time on the
-  authoritative first slot (`H → He → Hel`, always `uN:w0`). Extensions require
-  repeated compatible observations. Timing keepalives set `sustain_active` and
-  grow only the bounded paint-on trail after the final known character.
-  Nemotron/Parakeet replace that same node; no onset event enters
+- **THE ONSET SIDECAR IS OFF (`live.onset_prefix.enabled: false`).** It made a
+  speculative letter appear before the recognizer had a word (`H` -> `He` ->
+  `Hel`) and reset after silence, so it fired at the START OF EVERY SENTENCE —
+  reported as a hitch there. MEASURED: 39 text changes with it on, 14 from a
+  1-2 letter stub, versus 23 and 0 with it off — ~40% of all visible churn.
+  It is NOT the ~1.3 s sentence stall (1261 ms on, 1315 ms off).
+  **Do not confuse it with CWI 2.2.1 read-ahead** — unrelated, and the confusion
+  cost a round trip. Read-ahead is the design system's uncoloured preview of the
+  line; this was a speculative first phoneme. Korean always had it off.
+  If re-enabled: it owns a provisional prefix, not durable spelling; extensions
+  need repeated compatible observations; no onset event enters
   `live_events.jsonl`, and no prefix revision may replay motion.
 - Offline stages must stay independently runnable via their subcommands,
   reading/writing JSON intermediates in `--out`.
@@ -1140,70 +530,6 @@ words-per-row constant—chooses its visual lines.
 
 ## State / open threads (2026-07)
 
-- **THE DESIGN SYSTEM PDF IS IN THE REPO AND IT OUTRANKS EVERYTHING ELSE.**
-  `docs/cwi-design-system-v1.0.pdf` (54 pp.). Read it with
-  the Read tool's `pages` argument. Two rounds of work were spent inferring
-  motion from the AE template and three screen recordings when the document
-  states it outright. **Section 2.2.3, verbatim:**
-
-  > Caption with Intention adds a motion element to **each word as it changes
-  > color**. Each word should undergo a **15% increase in type size before
-  > returning to its original size**, creating a "pop" motion effect.
-
-  ...and its diagram labels the rise **25% elevation**. So:
-  * The sync cue is **per WORD**, never per character. 2.2.4 is explicit:
-    "In most cases, words will be spoken and animated **fully, one by one**" —
-    syllable-at-a-time is the documented exception (`motion.syllable_fill`).
-  * Its amplitude is a **CONSTANT**, identical for a shout and a whisper. Its
-    job is to point the eye at the word being spoken. Per-word amplitude is
-    INTONATION (2.3.3-2.3.6), a different scope. **Every wrong model shipped
-    here came from collapsing those two** — the result is motion that is large
-    on words the reference leaves still and absent on words it moves.
-  * **Size IS animated.** The AE template has no scale animator and this
-    project followed the template for several rounds; the written system wins.
-  Implemented as `closed_caption.sync_pop: 0.15` / `sync_elevation_em: 0.25`
-  in `syncAt()`, anchored on `w.start` (2.2.2: the word turns "as soon as the
-  sound of the word begins to be pronounced, not after"). The recordings now
-  supply only the cue's TIMING (rise 70-100 ms, peak +70-100 ms past the turn,
-  fall 160-190 ms) and the per-word prosody.
-- **Other numbers the PDF states outright**, all now in `config.yaml` with
-  section numbers: baseline type size **5%** of screen height (2.3.5); range
-  **3% whisper .. 12% shout** (2.3.6), so the reachable envelope is exactly
-  0.6x..2.4x; **Regular 400 at 160-200 Hz** (2.3.8) over a **100..1000** axis
-  spanning 80..250 Hz inverted (2.3.9); width 150..25 on harmonics; captions
-  box 90% black (2.4.1); at most **two** lines per frame (2.4.2); work area =
-  lower **20%** of the frame with 7.5% bottom margin (2.4.3).
-- **`Word.motion` bakes each word's MEASURED curves into the spec**
-  (`lift` in glyph heights, `scale`, `dwght`; uniform `t0`+`dt` grid so the
-  sampler is an index plus one lerp). `closed_caption.motion_source: measured`
-  replays them verbatim; **`spec` is the default and is what ships.** The
-  curves exist to check the derivation against the recording, not to drive the
-  render — the design system does that.
-- **Flicker had six causes, all confirmed, none of them the motion model.**
-  The two that dominated: (1) `speaking` required `t` to be INSIDE a word, so
-  during every inter-word gap it went empty and `visible` fell back to
-  `holding` in DOCUMENT order — the PREVIOUS line popped back on, 12 spurious
-  flips in 30 s. A line is now "speaking" across its whole `[start, end]` and
-  both fallback pools rank by recency. (2) `font-variation-settings` is
-  animated per frame and is **on the layout path**: every weight step reflowed
-  the flex row while `layout()` was separately pushing neighbours from resting
-  widths — two competing horizontal displacements of the same word, every
-  frame. `sizeAll()` now freezes each word's box at its measured resting width
-  (`getBoundingClientRect().width`, fractional — `offsetWidth` rounds down and
-  wrapped the last letter of every word) with `text-align:center` and
-  `white-space:nowrap`. Also: `settle()` and `frame()` must emit BYTE-IDENTICAL
-  rest strings (one `wordTransform`/`varSettings` helper, `restWght` rounded
-  onto the same /4 grid) or the `setStyle` cache misses in both directions;
-  no `"none"`-vs-transform branch (layer promotion thrash); `will-change` on
-  `.cc-word`, never gated on `.on`. **Measure it, do not eyeball it:**
-  `?churn=1` -> `window.__ccChurn.report()`. Target is flips == line count.
-- **Two independent measurements, and each fails where the other works.**
-  Per-glyph TRACKING is clean but breaks on a word that swells past 3x (its
-  glyphs merge and grow, violating the association gates) or is short enough
-  to segment as one run. Per-frame, spatially attributed measurement survives
-  both but smears at word boundaries. Take the tracked curve by default, the
-  framed one where tracking produced nothing or under-read by >15%.
-
 - Live mode: pre-capture English/Korean selection + confidence-aware speaker
   attribution. English uses its three-stage ASR path; Korean uses the
   authoritative 174M chunk-16 online Zipformer and finalizes directly at its
@@ -1276,12 +602,6 @@ words-per-row constant—chooses its visual lines.
   travelling-wave neighbour bleed (safe here because a caption plays through
   instead of accumulating — which is why it stays off live). Playback is a pure
   function of `t`, so scrubbing back reproduces a frame exactly.
-- **The unit of animation is the CHARACTER, not the word** (proven by the
-  reference captures in `docs/`): the colour boundary lands mid-word
-  ("Roya|le"), and a travelling wave lifts/scales individual letters
-  ("a-ni-mati-o" at different heights). `cc` renders one span per character.
-  Films use the calm version (one baseline, colour sweep only) — set
-  `closed_caption.wave_reach: 0` for that.
 - **A line being spoken outranks a line that has not started.** In `cc`,
   ranking visible lines by recency (`slice(-max_lines)`) let the NEXT line's
   read-ahead window — which opens `read_ahead_s` early — evict the caption
@@ -1305,83 +625,6 @@ words-per-row constant—chooses its visual lines.
 - **Every envelope must leave and return to rest with zero slope.** `sin(pi x)`
   has a non-zero derivative at its ends, so motion started and stopped with a
   visible kick; `sin^2` and smoothstep (`ease()`) do not.
-- **`frame(t)` animates only the VISIBLE lines**, and `setStyle` skips writing
-  an unchanged value (font-variation-settings recalcs force the whole line to
-  re-lay-out). It used to restyle every character in the file every frame, so
-  cost grew with transcript length, not with what is on screen: measured on a
-  1360-word spec, 5.47 ms -> 0.215 ms per frame. `will-change` likewise belongs
-  on `.cc-line.on .cc-ch` only — on every span it is a compositor layer per
-  letter of the whole transcript.
-- **THREE SEPARATE, COMPOSABLE SYSTEMS — do not collapse them into one generic
-  text wave.** (The framing is right and still holds; system 2's numbers below
-  are the FITTED ones and are superseded by 2.2.3's stated 15% pop / 25%
-  elevation. Kept because the fitted timings are still what `sync_rise_s` /
-  `sync_peak_s` / `sync_fall_s` use.) Each is on a different scope, and every wrong model shipped here
-  came from merging two of them:
-    1. **Intonation** — the WORD wrapper. Uniform scale/weight envelope across
-       all its letters: swells from `emphasis_lead_s` before the SPOKEN ONSET
-       (may still be white), peaks near the stressed portion, holds while the
-       word is spoken, decays over `emphasis_tail_s` to the common resting
-       typography. Amplitude is prosody. **Never send size/weight through a
-       word letter by letter** — only the sync wave travels.
-    2. **Synchronization** — each CHARACTER span, **purely vertical**, and ONE
-       bump **CENTRED ON THE LETTER'S OWN COLOUR TURN**. The .aep drives the
-       lift and the fill from a SINGLE range selector: they are the same event,
-       so the letter is at the top of its rise exactly as it turns (less the
-       template's one-frame `anticipation_ms` lead). An approach-only bump —
-       peaking before the turn and reaching zero AT it — leaves the letter
-       perfectly still at the instant it changes colour, and the motion reads
-       as **disconnected from the speech**. `wave_dip`/`wave_pop` (the scale
-       bounce) exist but default to **0**: a lift AND a dip AND a pop is three
-       oscillations per letter at ~15 letters/sec, which is what reads as the
-       letters *vibrating*. Size belongs to the word envelope, and the AE
-       template's only per-character property is `Position 3D` too.
-       **FITTED to all three recordings in `docs/`** (`scratchpad/fit.py`
-       method: track individual glyphs frame to frame, find each one's colour
-       turn from its saturation, align that glyph's trajectory on its OWN turn,
-       average). Consistent across all three:
-
-       | | measured |
-       |---|---|
-       | crouch before the turn | -9.9% of glyph height, from -220 ms |
-       | crosses baseline | at the colour turn |
-       | peak above | +9.9% at +80 ms |
-       | settled | +240 ms, **no undershoot** |
-       | size | flat until the turn, 1.13 at +110 ms, rest by +280 ms |
-       | colour crossfade | 52 ms (10-90%) |
-
-       So the shape is a CROUCH then a rise THROUGH the turn — which is the
-       .aep's two position animators seen from the other end: `Antecipate`
-       (`y = +2`, DOWNWARD, ahead) handing off to `Up`/`Yellow` (`y = -5`).
-       10% of glyph height = 0.052 em (lowercase ink height is 0.529 em).
-       Our curve reproduces it to a mean error of 0.80 pct-points on lift and
-       0.004 on size — under the measurement's own ~2% quantization floor.
-       Do NOT apply `anticipation_ms` on top: the fit is relative to the turn,
-       so the lead is already in its shape, and adding it ran the letter 35 ms
-       early. The crouch is a PLATEAU (down ~60 ms, hold ~120 ms, release
-       ~40 ms), not a sine hump.
-    3. **Speaker identity** — colour only. Never a reason to swell or lift.
-  They compose: `word scale x char scale + char lift`. Wrong models tried and
-  rejected: prosody baked in permanently; no size motion at all (the .aep has
-  no scale animator, but the website does — and without it the motion is dead);
-  a single transient swell at the turn; and the emphasis attack sweeping letter
-  by letter (that is system 2's job, not system 1's).
-- **A swelling word PUSHES its neighbours aside** — words to its left slide
-  left, words to its right slide right, and the row stays centred. Static
-  margin cannot do this and two attempts at it failed: the growth is symmetric
-  about the word's own centre, so the row must be resolved as a whole.
-  `layout()` does it analytically each frame from resting widths measured once:
-  `shift_i = SUM(dW_j, j<i) + dW_i/2 - SUM(all dW)/2`, where `dW = W(S-1)`.
-  Rows are keyed on resting `offsetTop` so a wrapped line resolves each row
-  independently. Pure arithmetic on stored measurements — never touches the
-  layout path (0.21 ms/frame on 1360 words).
-- **Measuring resting widths requires the lines to be LAID OUT.** `.cc-line` is
-  `display:none` until it is on screen, and a hidden element reports
-  `offsetWidth` 0 — so every width was 0, every shift resolved to 0, and the
-  overlap fix silently did nothing (twice, in two different forms). `sizeAll()`
-  adds `.measuring` to force `display:flex` for the measuring pass only. Also
-  re-measure on `document.fonts.ready`: the font is embedded but still loads
-  async, so the first pass can land on the fallback face.
 - Verify overlap by measuring the real rendered gap between adjacent words
   (`getBoundingClientRect`) across the whole timeline — the worst gap must stay
   positive. Eyeballing a screenshot missed it.
@@ -1402,14 +645,6 @@ words-per-row constant—chooses its visual lines.
   rescaling the range by `size_pct / baseline` in BOTH `typeOf` (JS) and
   `ccprosody.forward` (Python): CWI's anchors are ratios around its baseline
   and only read as absolute percentages when the resting size IS that baseline.
-- **(Superseded, kept for the reasoning.) The quiet side once could not leave
-  the deadband.** Scaled
-  whisper floor -> emphScale 0.833, `quiet_deformation: 0.35` compresses that
-  to a deviation of 0.058, and `emphasis_deadband: 0.10` swallows it. So no
-  word, however quiet, animates — consistent with the brief ("quiet words
-  should produce little or almost no visible deformation"), but it means
-  `quiet_deformation` is a no-op at these settings. Lower the deadband below
-  0.058 if quiet words should visibly shrink.
 - **`emphScale` depends only on `loudness - median_loudness`.** The map is
   translation-invariant, so the absolute loudness level is a gauge freedom and
   there is no fixed point unless the MEDIAN word's target is exactly 1.0 —
@@ -1424,132 +659,30 @@ words-per-row constant—chooses its visual lines.
   one; it already asserts caption-line reconstruction, monotone non-degenerate
   timings, ≥3 distinct loudness values, and ≥70% of words carrying equal-length
   measured motion arrays.
-- **`cc` may drive the axes harder than live, via `closed_caption` overrides.**
-  `size_response`, `weight_response`, `width_response`, `wght_range`,
-  `wdth_range` fall back to `expression` unless `closed_caption` names them.
-  Live must stay compressed (words accumulate; a settled word must not
-  restyle); `cc` plays through and is gone, and the reference genuinely swells
-  further than live's compression allows. Measured, "sizes," reaches 1.43x its
-  own resting height and "weights" 1.49x in ink density; live's
-  `size_response: 0.42` caps the reachable swell at exactly 1.43 (so the
-  measured value CLAMPED, and the effect read as too weak) and
-  `wght_range: [280,500]` leaves +70 units above the anchor, which is
-  invisible. `cc` uses 0.60 and [250,700]. **Merge via
-  `ccprosody.merged_expression()` — three call sites need it, and a caller that
-  reads `cfg["expression"]` directly silently gets live's values.**
-- **Measure "rest" from the SETTLED TAIL, not the whole window.** An emphasised
-  word is enlarged for much of its own window, so a full-window median absorbs
-  the swell into the baseline and under-reports the ratio — "sizes," measured
-  1.355 that way against a true 1.433.
-- **THE PEAK LANDS AFTER THE TURN, AND THE RISE SPANS THE GAP.** Aggregated
-  over all three trimmed recordings the lift peaks at **+70..100 ms** past the
-  colour turn and the rise takes **70..100 ms** — longer than fast speech's
-  ~60 ms gap, so the rise cannot be bounded by the gap. Model: the rise runs
-  from the previous character's turn to `tTurn + wave_peak_s`, then releases
-  over `wave_release_s` (measured fall 160-190 ms). With a long gap the same
-  ramp simply stretches, which is why "is" is already near its peak and
-  descending by the time it turns — one model, both cases. Verified at both
-  ends: fast speech 17.6% at +80 ms (measured ~16% at +70..100 ms), held "is"
-  77.5% (measured 77%).
-- **SYNCHRONIZATION COMPOSES WORD AND CHARACTER GEOMETRY.** The PDF's base
-  elevation/pop belongs to the word event and remains on the wrapper. But the
-  website recording is unambiguous at frame level: the `i/s` split and the
-  moving letter inside “spoken” occupy different baselines inside one word.
-  The renderer therefore adds a wait-aware character crouch/lift/pop around
-  each letter's own colour-turn time. A held first letter may rise farther;
-  fast intra-word turns use `wave_hold_floor`, preventing the full held-pause
-  amplitude from becoming a stutter on every character. Intonation size and
-  weight remain uniform across the word. Every character transform is
-  explicitly reset to `none` at rest.
 - **A JS syntax error takes the whole page down silently.** Twice a bad edit
   left an unbalanced brace and the only symptom was a probe reporting
   "built is not defined". Check first with an `onerror` handler injected before
   the cfg script — it reports the message and line directly.
-- **A WORD HOLDS RAISED UNTIL IT IS SPOKEN.** The anticipation window is the
-  WAIT — from the previous character's colour turn to this one's — never a
-  fixed duration, and the rise GROWS with it. Measured on "precisely as each
-  word |is| spoken.": the speaker pauses **1.47 s** before "is", and through it
-  "is" dips to -21% of its glyph height, rises, and then **sits raised and
-  white at 39->77% for ~0.75 s**, turning colour only at the end and landing
-  ~0.24 s after. Ordinary fast speech (wait ~60 ms) reaches only ~14%.
-  One fixed window with one amplitude cannot do both: it leaves a held word at
-  rest through the pause (which is what read as "is should hold for a time")
-  and makes fast speech leap. Knobs: `wave_hold_max_s`, `wave_hold_floor`,
-  `wave_hold_full_s`; `linkTurns()` gives each word its predecessor's last turn.
-- **The continuity prior in the timing fit must stay WEAK (0.12, not 0.8).** It
-  pulls inter-word gaps toward the median gap, which actively flattens a real
-  pause: the measured 1.47 s before "is" came out as 0.32 s, taking the held
-  anticipation with it. Measured gaps are DATA; only unobserved words should
-  lean on the prior. Weakening it also improved every residual (12-77 ms ->
-  12-32 ms).
-- **The config now has room for the real range** (it did not before): `cc`
-  overrides `size_response: 1.0` (uncompressed), `quiet_deformation: 1.0` and
-  `emphasis_deadband: 0.05`, reachable emphScale **0.88..2.20** (2.83 at a low
-  median) and emphWght **200..900**. Before this the ceiling was 1.43 and the
-  quiet side was entirely inside the deadband, so "louder" clamped and
-  "softer." could not shrink at all however quiet it measured.
-- **`cc` never clamped the RENDERED type axes.** `expression.wght_range` /
-  `wdth_range` were applied in `livepage.py` and **zero** times in `ccpage.py`,
-  so the uncompressed response curve resolved an 80 Hz voice to wght 1000 and a
-  250 Hz one to 100 — ultra-black and hairline beside ordinary text. This file
-  already documented the fix for live; `cc` had never received it. Now clamped
-  in both `typeOf` (JS) and `ccprosody.forward` (Python), reachable span
-  280..500 instead of 100..1000.
 - **A silently CONSTANT prosody column looks exactly like an unimplemented
   effect.** Twice the derived specs carried one loudness value (0.5) or one
   pitch (165 Hz) for every word, so the size and weight envelopes could not
   fire and the renderer appeared not to implement them. `test_derived_reference
   _specs_replay_the_recordings` now asserts >= 3 distinct values in each
   column. When a channel looks dead, check the DATA before the renderer.
-- **What reads as "noisy" is COUNT, not amplitude.** The fix was to make fewer
-  things move, not to move them less:
-    * `emphasis_deadband` pins ordinary words to exactly 1.0 so they never
-      animate at all — 1 word in 17 (6%) on the reference line, which is the
-      "only occasional emphasis" the film stills show. An envelope on every
-      word means something is always moving.
-    * `wave_window_s` 0.16 (not the brief's 0.20-0.22): at conversational pace
-      the wider window held ~6 letters in motion at once.
-  Instrument it rather than eyeballing — count characters whose transform has
-  a non-zero lift or a scale != 1. Now max 5, mean 2.8. **Careful:** the browser
-  normalises `translate3d(0,0,0)` to `translate3d(0px, 0px, 0px)`, so a string
-  compare against the written value counts every settled character as moving
-  (it reported 70).
-- `transform-origin: 50% 100%` on both scopes, so letters grow from the
-  baseline rather than floating from their centre.
-- **Word-level timing, character-level appearance.** The AE template drives a
-  WORD-index range selector (`textLenWords`, animator literally named "Words")
-  but with Ease High/Low set, while the website resolves the hand-off on
-  character spans. So "alphabet-level motion" and "word-level sync" are
-  composable scopes, not competing interpretations;
-  `closed_caption.sync_granularity` switches the turn timing and live uses the
-  alphabet appearance within its active word.
-- **THE CAPTION INVARIANT: a word that has been shown must stop changing once
-  its MOTION WINDOW passes.** (Refined 2026-07-24 for expressive live motion.)
-  A word animates through one 520–720 ms first-paint transient and returns to
-  **its own settled typography**. During that window only its own `transform`
-  may change; `font-size`, the variable-font axes, line geometry, and earlier
-  words stay fixed. Speaker colour has an independent clock and may sweep during
-  motion or write directly afterward.
-  **REST IS NOT UNIFORM (2026-07-31).** A word rests at the size/weight/width its
-  own voice earned (CWI 2.3 — see the PDF entry above); "returns to rest" means
-  `transform: none`, not Regular 400 at width 100. Resetting every word to
-  identical typography is exactly what erased the voice. The settled values are
-  computed once from the frozen prosody, so they cannot change afterwards and the
-  invariant holds by construction.
-  Verification may add/remove/respell words and recolour them, but
-  it may never start a second motion. Enforced by: server
-  freezes `loudness`/prosody per time SLOT in `prosody_cache` (key
-  `("§slot", utterance, round(start*20))` — text-keyed missed exactly when the
-  verifier respelled), and freezes force/attack/contour/flow/texture separately
-  in `delivery_cache` on the first event even during cold-start calibration;
-  page's `typeCache` is first-write-wins and geometry is
-  frozen on the node as `el._type`; the motion loop marks `dataset.moving` for
-  the window and writes rest once at its end; tentative words and the sidebar
-  `project()` instead of `fold()` so they never vote in the running median.
-  Verify with slot determinism (server) and `window.__cwiChurn.report()` (page,
-  `display.debug_churn: true`) — whose "settled" now means turned AND
-  `dataset.moving !== "true"`, so bounded transform writes during the window are
-  expected and a settled word must still show ~0 mutations.
+- **THE CAPTION INVARIANT IS STRUCTURAL.** A word's colour turn is a fixed
+  moment on the acoustic timeline, so text may be revised only while the word is
+  still AHEAD of the playhead; behind it is frozen history. Enforced, not merely
+  documented: `settledTextRef` records what a word wore when the playhead
+  reached it and later revisions to it are dropped (spelling only — colour,
+  finality and timing still update, because a late attribution correction is a
+  direct colour write). Two traps, both hit: the single-word event path
+  (`cue`/`commit`/`word` carry `text` at the top level) needs the same filter,
+  and recording must happen ON THE PLAYHEAD TICK, because the reducer deletes a
+  non-final word and re-adds it with the verifier's spelling. Measured on
+  screen: coloured-caption rewrites 14 -> 0.
+  Corrections never change a word's duration or axes: both frozen at mount.
+  Replay needs no special case — replayed words land behind the playhead and
+  settle. A capture restart is the one explicit case (see `epoch`).
 - **Typography bugs are visual — screenshot before theorising.** Four real
   ones were invisible to metrics and only found by looking (see the recipe
   above): (a) live loudness used a `median - 5 dB` floor while real speech
@@ -1561,15 +694,6 @@ words-per-row constant—chooses its visual lines.
   overflow moves an unseen word to a new box; (d) syllable fills froze at
   `--fill 0%` (solid white words) when the rAF chain stalled, so a 1.5 s sweep
   finalizes them.
-- Type axes are anchored to the speaker's running baseline via `expression`
-  in config.yaml. Mapping CWI's absolute anchors straight onto per-word
-  acoustics made ordinary speech render as fabricated whispers/shouts (size
-  swung 3.2x, weight 577). Do not raise `*_response` to 1.0 without re-checking
-  that.
-- A word's synchronization activation runs exactly once. `dataset.moved`
-  guards re-entry, and endpoint/speaker verification never restarts it.
-  `neighbor_bleed` is 0 and `live_sync.neighbor_push` is false; stacked live
-  must not shift row-mates while somebody may still be reading them.
 - `display.mode` has four settings (config.yaml). Default **`fast`** adds the
   accurate stream's own white tail (~35% less revision than the draft) to
   committed words. `stable` hides the tail and shows committed words only.

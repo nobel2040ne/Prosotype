@@ -41,7 +41,7 @@ live: startup UI ─► lock en/ko ─► load matching local recognizer ─► 
 browser: SSE ─► revision reducer ─► per-word reveal queue ─► stable word identity
                                                         ├─► six-row audience stack
                                                         ├─► acoustic sequential reveal
-                                                        ├─► one first-paint voice envelope
+                                                        ├─► per-character voice envelope
                                                         └─► complete Transcript history
          level ─► separate meter frame (never caption layout)
 
@@ -156,26 +156,30 @@ downgrade a settled word.
 
 ## How live rendering works
 
-The browser reduces the event stream into stable, per-word DOM nodes and gives
-each word its motion exactly once, at first paint. The pipeline:
+The browser reduces the event stream into stable, per-word DOM nodes and
+presents them from a **playhead** that runs `display.read_ahead_delay_s` behind
+the acoustic clock. Because ASR delivers a word after it was spoken, that delay
+is what lets a word be on screen *before* its own colour turn — CWI 2.2.1's
+read-ahead, without predicting anything. The pipeline:
 
 ```text
 SSE event
-  → merge by word_id, coalesce a burst into one animation frame
-  → update text / attribution / finality only if changed
-  → queue unseen words in acoustic order (at most two active)
-  → reserve a slot + freeze the word's acoustic snapshot
-  → the word's layout commit confirms first paint and starts the clock
-  → one phase-locked size/lift/weight/width motion, then a return to normal
-  → an independent color sweep; later revisions reuse the same node
+  → merge by word_id (revisions collapse onto the same node)
+  → recover acoustic time from `level.t`; the playhead trails it by the delay
+  → freeze each word's turn moment: onset − clockOffset + delay
+  → hand that to CSS as one `--turn-delay`
+  → the browser schedules the 2.2.2 colour turn, the 2.2.3 pop and the
+    2.3 per-character voice phase off it — no JS timer, no queue
 ```
 
-The load-bearing invariant: **a word animates once and then settles.** Later
-corrections (spelling, timing, speaker, color) update it in place but never
-restart its motion, and a settled word's typography returns exactly to normal.
-The full behavioral detail — reveal scheduling, the throughput-aware duration,
-the Stage stack, delivery dynamics — is in
-[docs/LIVE.md](docs/LIVE.md), and the frontend's
+There is no reveal scheduler: slots, gaps, catch-up and backlog ceilings all
+existed to guess, from arrival order, a moment the recording already knows.
+
+The load-bearing invariant: **text may be revised only ahead of the playhead.**
+Once the colour turn passes a word it is frozen — spelling included — so
+corrections land in the read-ahead zone where they are invisible. A settled
+word's typography returns exactly to normal.
+The full behavioral detail is in [docs/LIVE.md](docs/LIVE.md), and the frontend's
 non-negotiables are listed in [web/README.md](web/README.md).
 
 ## Speaker attribution

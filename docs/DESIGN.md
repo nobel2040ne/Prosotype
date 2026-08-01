@@ -1,5 +1,13 @@
 # Caption with Intention — Design System V1.0, extracted values
 
+> **READ THE PDF, NOT THIS FILE, FOR ANY NUMBER YOU ARE ABOUT TO IMPLEMENT.**
+> `cwi-design-system-v1.0.pdf` is the source of truth. This file mixes the
+> PDF's stated values with interpretations fitted to `reference/*.mov`, and
+> where the two disagree the fitted material has been wrong every time — the
+> recordings are the project's *website*, not the spec. Treat it as a
+> changelog of superseded interpretation. `../CLAUDE.md` holds the current
+> contract.
+
 Source: [Design System PDF](https://download.captionwithintention.org/Caption-With-Intention_Design-System_V1.0.pdf)
 (V1.0 | 2025.1, 54 pp., captionwithintention.org, with the Chicago Hearing
 Society). These are the exact values our implementation uses; section numbers

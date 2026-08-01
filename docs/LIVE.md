@@ -143,16 +143,18 @@ glyphs (so completed captions never shake when a later audio block arrives):
 
 ## Live motion
 
-Motion is a **one-time interpretation of the voice at first paint**, not a
-permanent font style. The key rules:
+Motion is a **one-time interpretation of the voice**, not a permanent font
+style. Each word's motion is scheduled by the playhead — at its own recorded
+onset — so the browser runs it from a single `animation-delay`. The key rules:
 
-- Words reveal in acoustic order, with at most **three** animating at once. A
-  fourth word waits hidden until a slot frees, then appears *with* its motion —
-  it is never shown motionless and animated later.
+- Words animate at their spoken onset, concurrently if speech is fast. There is
+  no concurrency cap: overlapping pops during quick speech are the design system
+  working, not a scheduling failure.
 - Every word starts and ends at normal 5% / Regular 400 / width 100 typography.
   During its one motion window, volume shapes size, pitch shapes weight, and the
-  harmonics proxy shapes width. Those §2.3 values are transient and cannot
-  restyle a completed word.
+  harmonics proxy shapes width — **per character**, sampled from the word's own
+  intonation contour (§2.3, PDF pp.34/38/40). Those values are transient and
+  cannot restyle a completed word.
 - **Every word receives the same synchronization cue as it turns colour**: a
   15% increase in type size with a 25% rise, then back (§2.2.3). This cue is
   independent of the voice-shaped axes and of the Expression control.
@@ -203,7 +205,7 @@ these yet.
 - `display.debug_render` and `?renderdiag=1` expose per-word render diagnostics.
 - `window.__cwiStudio.report()` (studio) summarizes the read-ahead playhead and
   motion state; `window.__cwiRenderDiag.report()` (legacy) summarizes the older
-  renderer's reveal queue.
+  renderer's playhead schedule.
 - `scripts/live_render_probe.py` injects a deterministic event burst into a
   headless browser and reports DOM, queue, and motion metrics.
 

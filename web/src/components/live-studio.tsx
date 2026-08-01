@@ -37,6 +37,8 @@ import {
   planCaptionStackMotion,
   selectStableCaptionStack,
   type CaptionParagraph,
+  createStageMemory,
+  type StageMemory,
   type CaptionStackPosition,
 } from "@/lib/caption-paragraphs";
 import type {CaptionWord, LevelEvent} from "@/lib/caption-store";
@@ -1078,6 +1080,12 @@ export function LiveStudio() {
   );
 
   const stageRef = useRef<HTMLDivElement>(null);
+  // Which words start a row. Persisted so a later edit to earlier text cannot
+  // re-chunk rows the viewer has already read -- see selectStableCaptionStack.
+  // Held as lazily-initialised state rather than a ref: the object identity is
+  // stable for the life of the component, and reading it during render is what
+  // the chunker needs, which a ref is not allowed to provide.
+  const [stageMemory] = useState<StageMemory>(createStageMemory);
   const paragraphs = useMemo(
     () => buildCaptionParagraphs(
       model.words,
@@ -1100,6 +1108,7 @@ export function LiveStudio() {
       paragraphs,
       stageLayout.rows,
       stageLayout.wordsPerRow,
+      stageMemory,
     )
     : paragraphs;
   const speakers = useMemo(() => {

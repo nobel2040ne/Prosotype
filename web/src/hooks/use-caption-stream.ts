@@ -387,7 +387,9 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       // ("it" -> "it,", "okay" -> "okay?") still rewrite coloured captions.
       event = freezeText(event as CaptionEvent & {text: string});
     }
-    setModel((current) => reduceCaptionEvent(current, event, id));
+    setModel((current) => reduceCaptionEvent(
+      current, event, id, new Set<string>(),
+    ));
   }, []);
 
   useEffect(() => {

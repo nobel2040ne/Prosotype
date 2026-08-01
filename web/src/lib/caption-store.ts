@@ -114,6 +114,8 @@ export const initialCaptionModel: CaptionModel = {
   sound: null,
 };
 
+const EMPTY_SETTLED: ReadonlySet<string> = new Set<string>();
+
 const STAGE_RANK: Record<string, number> = {
   hypothesis: 0,
   cue: 1,
@@ -281,10 +283,19 @@ function eventWords(event: CaptionEvent, sseId: number): CaptionWord[] {
   return [];
 }
 
+/**
+ * Word ids the playhead has already reached, so the reducer can leave them be.
+ *
+ * The reducer is pure and knows nothing about time; the caller owns the
+ * playhead and passes in what it has settled.
+ */
+export type SettledIds = ReadonlySet<string>;
+
 export function reduceCaptionEvent(
   state: CaptionModel,
   event: CaptionEvent,
   sseId = 0,
+  settled: SettledIds = EMPTY_SETTLED,
 ): CaptionModel {
   if (event.type === "boot") {
     return {...state, bootStage: String(event.stage ?? "starting")};
@@ -308,7 +319,13 @@ export function reduceCaptionEvent(
         stageRank(word) < STAGE_RANK.commit &&
         utterances.has(numeric(word.utterance)) &&
         sources.has(word.src ?? "accurate") &&
-        !incomingIds.has(key)
+        !incomingIds.has(key) &&
+        // A word the playhead has passed is history and must not vanish.
+        // Deleting one shifts every later word's index, and the Stage stack
+        // chunks by index -- so one dropped hypothesis word re-flowed rows the
+        // viewer was still reading. Hypothesis churn stays confined to the
+        // words ahead of the playhead, which is where it belongs.
+        !settled.has(key)
       ) {
         delete words[key];
       }
