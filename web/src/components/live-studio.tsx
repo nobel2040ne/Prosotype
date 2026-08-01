@@ -80,6 +80,7 @@ function voiceRanges(runtime: RuntimeConfig): VoiceTypeRanges {
   return {
     scale: runtime.voiceScaleRange,
     scaleResponse: runtime.voiceScaleResponse,
+    scaleResponseQuiet: runtime.voiceScaleResponseQuiet,
     weight: runtime.weightRange,
     width: runtime.widthRange,
   };
@@ -176,6 +177,7 @@ const MotionWord = memo(function MotionWord({
   color,
   intensity,
   runtime,
+  holdGapS,
   clockEpoch,
   scheduleWord,
 }: {
@@ -184,6 +186,8 @@ const MotionWord = memo(function MotionWord({
   color: string;
   intensity: number;
   runtime: RuntimeConfig;
+  /** Silence before this word, in seconds -- how long it had to wait. */
+  holdGapS: number;
   clockEpoch: number | null;
   scheduleWord: (
     id: string,
@@ -228,6 +232,30 @@ const MotionWord = memo(function MotionWord({
    * astral-plane character must stay one unit, and Korean is a shipped language.
    */
   const characters = Array.from(word.text);
+  /*
+   * The envelope no longer sets each character's TYPE -- 2.3 is per word (see
+   * below). It sets how hard each character STRETCHES, so the wave still rides
+   * the audio the way the reference's does.
+   */
+  /*
+   * How far this WORD's volume departs from normal, 0..1 -- normalised against
+   * whichever side of `voice_scale_range` it is on, so a whisper and a shout
+   * both read as 1.
+   */
+  const voiceRange = voiceRanges(runtime).scale;
+  const voiceDeviation = clamp(
+    Math.abs(motion.voice.scale - 1) /
+      Math.max(1e-6, motion.voice.scale >= 1
+        ? voiceRange[1] - 1
+        : 1 - voiceRange[0]),
+    0,
+    1,
+  );
+  const waveSuppression = Math.max(
+    runtime.characterWaveFloor,
+    1 - voiceDeviation * runtime.characterWaveFalloff,
+  );
+
   const characterTypes: CaptionType[] = characterVoiceTypes(
     characters.length,
     motionWord.env_loudness && motionWord.env_pitch && motionWord.env_texture
@@ -249,10 +277,23 @@ const MotionWord = memo(function MotionWord({
       <span
         className={crest ? "character-sizer" : "caption-character"}
         key={index}
-        style={{
-          "--char-scale": (characterTypes[index]?.scale ?? 1).toFixed(3),
-          "--char-weight": String(characterTypes[index]?.weight ?? 400),
-          "--char-width": `${characterTypes[index]?.width ?? 100}%`,
+        style={crest ? undefined : {
+          // Where this letter sits in the wave, and how hard it stretches.
+          "--char-index": index,
+          /*
+           * THE TWO SCOPES TRADE OFF. Amplitude is this letter's departure
+           * from its own WORD's size -- so the wave describes variation
+           * INSIDE the word -- scaled down by how far the whole word's volume
+           * has departed from normal. A loud or hushed word therefore moves as
+           * a word with its letters held together ("louder" is six glyphs at
+           * one size), while an ordinary-volume word lets the wave carry it
+           * ("animation," scatters hard).
+           */
+          "--char-wave": (waveSuppression * clamp(
+            0.85 + ((characterTypes[index]?.scale ?? 1) - motion.voice.scale) * 1.6,
+            0.45,
+            1.30,
+          )).toFixed(3),
         } as CSSVars}
       >
         {character === " " ? "\u00a0" : character}
@@ -269,6 +310,28 @@ const MotionWord = memo(function MotionWord({
     // 2.2.3 is constant; the Expression control changes §2.3, not this cue.
     "--sync-pop": motion.sync.scale.toFixed(3),
     "--motion-duration": `${duration.toFixed(0)}ms`,
+    // CWI 2.3 is a WORD-level property: in intonation.mov every glyph of
+    // "louder" is the same size and weight, and every glyph of "softer" is
+    // uniformly small. Only the wave below is per character.
+    "--voice-scale": motion.voice.scale.toFixed(3),
+    "--voice-weight": String(motion.voice.weight),
+    "--voice-width": `${motion.voice.width}%`,
+    // The wave hands off letter to letter across ~55% of the window, so it
+    // travels visibly instead of pulsing the word as one block.
+    "--wave-step": `${(duration * 0.40 / Math.max(1, characters.length))
+      .toFixed(1)}ms`,
+    "--wave-span": `${(duration * 0.72).toFixed(0)}ms`,
+    /* A word that waited rises and lands as it turns. Zero for ordinary
+       speech, so nothing moves unless the speaker actually held. */
+    "--hold-lift": `${(
+      clamp(
+        (holdGapS - runtime.holdMinS) /
+          Math.max(1e-6, runtime.holdFullS - runtime.holdMinS),
+        0,
+        1,
+      ) * runtime.holdLiftEm
+    ).toFixed(3)}em`,
+    "--hold-land": `${runtime.holdLandMs}ms`,
   };
   const status = speakerStatus(word);
 
@@ -591,6 +654,28 @@ function CaptionFeed({
    * and because the words themselves take no playhead prop, their memoisation
    * is untouched by it.
    */
+  /*
+   * How long the speaker paused before each word. `t` is on the stream
+   * timeline while `start`/`end` are utterance-relative, so the word's end on
+   * the stream clock is `t + (end - start)`.
+   */
+  const holdGaps = new Map<string, number>();
+  {
+    let previousEnd: number | null = null;
+    for (const paragraph of paragraphs) {
+      for (const {id, word} of paragraph.words) {
+        const onset = number(word.t ?? word.start, Number.NaN);
+        if (previousEnd !== null && Number.isFinite(onset)) {
+          holdGaps.set(id, Math.max(0, onset - previousEnd));
+        }
+        const span = number(word.end) - number(word.start);
+        if (Number.isFinite(onset) && Number.isFinite(span)) {
+          previousEnd = onset + Math.max(0, span);
+        }
+      }
+    }
+  }
+
   const spokenRow = Math.max(
     0,
     paragraphs.findLastIndex((paragraph) => paragraph.words.some(
@@ -641,6 +726,7 @@ function CaptionFeed({
                   <MotionWord
                     id={id}
                     word={word}
+                    holdGapS={holdGaps.get(id) ?? 0}
                     clockEpoch={clockEpoch}
                     scheduleWord={scheduleWord}
                     color={speakerColor(

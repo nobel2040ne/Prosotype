@@ -4820,6 +4820,12 @@ def _studio_runtime_config(
             float(display.get("word_motion_min_duration_s", 0.32)) * 1000
         ),
         "syncPop": live_sync.get("sync_pop", 0.15),
+        "characterWaveFalloff": live_sync.get("character_wave_falloff", 0.78),
+        "characterWaveFloor": live_sync.get("character_wave_floor", 0.18),
+        "holdLiftEm": live_sync.get("hold_lift_em", 0.382),
+        "holdFullS": live_sync.get("hold_full_s", 0.70),
+        "holdMinS": live_sync.get("hold_min_s", 0.22),
+        "holdLandMs": live_sync.get("hold_land_ms", 190),
         "voiceScaleRange": [
             float(v) for v in live_sync.get(
                 "voice_scale_range", [0.90, 1.20]
@@ -4827,6 +4833,9 @@ def _studio_runtime_config(
         ],
         "voiceScaleResponse": float(
             live_sync.get("voice_scale_response", 0.25)
+        ),
+        "voiceScaleResponseQuiet": float(
+            live_sync.get("voice_scale_response_quiet", 0.26)
         ),
         "widthRange": [
             float(v) for v in live_sync.get("width_range", [82, 124])

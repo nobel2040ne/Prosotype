@@ -21,8 +21,20 @@
 export interface VoiceTypeRanges {
   /** Reachable multiples of the 2.3.5 baseline. The PDF's span is 0.6..2.4. */
   scale: readonly [number, number];
-  /** How much of the 2.3.6 excursion is used by the live presentation. */
+  /** How much of the 2.3.6 excursion is used above the 2.3.5 baseline. */
   scaleResponse: number;
+  /**
+   * ...and below it. Deliberately smaller.
+   *
+   * The two directions are not symmetric in what they cost. Growing a word
+   * makes it easier to read and reads as emphasis; SHRINKING it makes it
+   * harder to read, and the speaker's own loudness percentiles put a great
+   * many ordinary words below the median. Measured on the bundled clip with a
+   * symmetric response, 48% of all words rendered smaller than normal, down to
+   * 0.75x -- ordinary unstressed speech drawn as if it were whispered, which
+   * reads as instability rather than as intonation.
+   */
+  scaleResponseQuiet: number;
   /** Reachable `font-weight`. 400 is fixed at the 2.3.8 neutral band. */
   weight: readonly [number, number];
   /** Reachable `font-stretch` %. 100 is the neutral width. */
@@ -99,7 +111,10 @@ export function voiceScale(
   const pct = SIZE_MIN_PCT + level * (SIZE_MAX_PCT - SIZE_MIN_PCT);
   const literal = pct / SIZE_BASELINE_PCT;
   const [minimum, maximum] = ranges.scale;
-  return clamp(1 + ranges.scaleResponse * (literal - 1), minimum, maximum);
+  const response = literal >= 1
+    ? ranges.scaleResponse
+    : ranges.scaleResponseQuiet;
+  return clamp(1 + response * (literal - 1), minimum, maximum);
 }
 
 /** Pitch -> type weight, with §2.3.8's complete neutral band held at 400. */

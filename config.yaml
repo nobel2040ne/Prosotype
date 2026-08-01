@@ -546,6 +546,33 @@ motion:
       # about the glyph box's bottom (a descender below the baseline) raises the
       # word's TOP by ~0.15em on its own, which is what the diagram labels.
       sync_pop: 0.15
+      # A WORD THAT WAITS RISES, AND LANDS AS IT TURNS.
+      # synchronization.mov f236-292: the speaker holds before "is", and "is"
+      # sits ABOVE the baseline in white for ~40 frames, then lands on the line
+      # in the same moment it turns colour. MEASURED at 21px against a 54.9px
+      # font = 0.382em. It is wait-dependent, not universal: "or softer."
+      # follows immediately in intonation.mov and never leaves the line.
+      # THE TWO SCOPES TRADE OFF. A word carried by VOLUME -- loud or hushed --
+      # moves as a WORD and its letters stay together; a word at ordinary
+      # volume has little word-level motion, and the character wave is what
+      # carries it. The reference is explicit: "louder" (intonation.mov f395)
+      # is six glyphs at one size with no scatter at all, while "animation,"
+      # (f194-216) is ordinary volume and its letters scatter hard.
+      # 0 keeps the wave constant; 1 suppresses it completely at the extremes.
+      character_wave_falloff: 0.78
+      # Floor, so an extreme word still reads as type rather than a solid block.
+      character_wave_floor: 0.18
+      hold_lift_em: 0.382
+      hold_full_s: 0.70        # gap at which the lift reaches its maximum
+      hold_min_s: 0.22         # below this a word is ordinary speech: no lift
+      hold_land_ms: 190        # how long the descent onto the baseline takes
+      # 2.3's swell HOLDS, it does not just peak. intonation.mov: "louder" is
+      # up by f388 and still up at f430, back to normal by f442 -- roughly a
+      # 0.35 s sustain inside a 0.73 s swell. A single symmetric crest read as
+      # a twitch. The sustain lives in `@keyframes voice-phase` (28%..62% of the
+      # motion window) and CANNOT be configured from here: a keyframe selector
+      # may not contain a `var()`, and a build silently drops the rule if it
+      # does. Change it in globals.css.
       # ------------------------------------------------------------------
       # 2.3 VOICE-SHAPED CREST. Every anchor is absolute; do not re-centre one
       # on the speaker's running median. The CSS animation returns all three
@@ -582,6 +609,14 @@ motion:
       # 0.25 kept 2.3.5's anchor exact while flattening everything around it;
       # 0.62 keeps the anchor and lets the distribution actually spread.
       voice_scale_response: 0.62
+      # ...and the QUIET half, deliberately gentler. The two directions do not
+      # cost the same: growing a word makes it easier to read and reads as
+      # emphasis, while shrinking it makes it harder to read. MEASURED on the
+      # bundled clip at a symmetric 0.62, 48% of ALL words rendered below normal
+      # (down to 0.75x) -- ordinary unstressed speech drawn as if whispered,
+      # which reads as instability rather than intonation. At 0.26 only a
+      # genuinely hushed word visibly shrinks.
+      voice_scale_response_quiet: 0.26
       # 2.3.8: 160-200 Hz is Regular 400 -- a BAND, not a pivot, so ordinary F0
       # jitter must not move the weight at all. 2.3.9: 80 Hz -> heavy,
       # 250 Hz -> light. The design system reaches 100..1000; live narrows it

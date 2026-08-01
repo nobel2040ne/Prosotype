@@ -858,11 +858,17 @@ button {
    shove. It reserves nothing at rest -- at 0% and 100% it is identical to the
    normal sizer, so a settled row is exactly as wide as its words.
    `line-height: 0` keeps this a width-only channel; row height never moves. */
+/* Reserves the word's crest footprint on the same clock as the visible ink,
+   so a swelling word pushes its neighbours and a settled row is exactly as wide
+   as its words. Word-level, matching the type above; the character wave is a
+   transform and needs no room. */
 .word-sizer-crest {
-  /* A plain container at NORMAL size. The reservation lives on the character
-     spans below, because with per-character type a word's crest width is the
-     sum of its letters' own crests, not `widest letter x count`. */
-  font-size: 1em;
+  font-size: calc(
+    1em * (1 + var(--voice-phase) * (var(--voice-scale, 1) - 1))
+        * (1 + var(--voice-phase) * (var(--sync-pop, 1.15) - 1))
+  );
+  font-weight: calc(400 + var(--voice-phase) * (var(--voice-weight, 400) - 400));
+  font-stretch: calc(100% + var(--voice-phase) * (var(--voice-width, 100%) - 100%));
   line-height: 0;
 }
 
@@ -883,16 +889,6 @@ button {
 .character-sizer {
   display: inline-block;
   vertical-align: baseline;
-  /* The same interpolation, times 2.2.3's pop -- which the visible glyph gets
-     from its wrapper transform and this one cannot. Identical at phase 0, so a
-     settled row is exactly as wide as its words; identical to the visible ink
-     at every phase, so the push is exact and nothing overflows its cell. */
-  font-size: calc(
-    1em * (1 + var(--voice-phase) * (var(--char-scale, 1) - 1))
-        * (1 + var(--voice-phase) * (var(--sync-pop, 1.15) - 1))
-  );
-  font-weight: calc(400 + var(--voice-phase) * (var(--char-weight, 400) - 400));
-  font-stretch: calc(100% + var(--voice-phase) * (var(--char-width, 100%) - 100%));
   line-height: 0;
   white-space: pre;
 }
@@ -935,37 +931,49 @@ button {
    colour belongs to speaker identity. Texture still reaches the screen through
    the weight/width axes and the `textured` motion family's own timing. */
 
-/* The word wrapper carries no type of its own any more -- 2.3 lives on the
-   characters below. It only needs to not disturb their line box. */
+/* CWI 2.3 IS A WORD-LEVEL PROPERTY. In `intonation.mov` every glyph of
+   "louder" is the same size and the same weight, and every glyph of "softer" is
+   uniformly small -- the voice shapes the WORD, not its letters one by one.
+   Driving size/weight/width per character (from the intra-word envelope) is
+   what made ours read as "very character-level". The letters get the wave
+   below instead, which is what the reference actually varies per glyph. */
+/* A WORD THAT WAITED RISES, AND LANDS AS IT TURNS.
+   synchronization.mov f236-292: the speaker holds before "is", and "is" sits
+   0.382em ABOVE the baseline in white for ~40 frames, then lands on the line in
+   the same moment it turns colour. `backwards` fill is what holds it aloft for
+   the whole read-ahead delay, however long that is -- the same trick the colour
+   turn uses. `--hold-lift` is 0 for ordinary speech, so nothing moves unless
+   the speaker actually paused. */
 .word-ink {
+  animation: word-hold-land var(--hold-land, 190ms)
+    cubic-bezier(.32,0,.24,1) var(--turn-delay) backwards;
   display: inline-block;
-  font-weight: 400;
-  font-stretch: 100%;
+  font-size: calc(1em * (1 + var(--voice-phase) * (var(--voice-scale, 1) - 1)));
+  font-weight: calc(400 + var(--voice-phase) * (var(--voice-weight, 400) - 400));
+  font-stretch: calc(100% + var(--voice-phase) * (var(--voice-width, 100%) - 100%));
+  will-change: font-size, font-weight, font-stretch;
 }
 
-/* CWI 2.3, PER CHARACTER. p.34 sets "Put that coffee dOWn!" under its own
-   waveform with the O and W huge and the d and n! small; p.38 varies weight
-   across "neeeeeeeeed" under a pitch curve; p.40 ramps one sentence from black
-   to hairline. A single value per word cannot express any of that, and
-   collapsing to one is what made the captions read as flat.
-   `font-size`, not `transform`: the letters have to take real horizontal room,
-   or a shouted O simply overlaps its neighbours instead of pushing them along.
-   `inline-block` + `vertical-align: baseline` keeps every character sitting on
-   the shared baseline whatever size it takes, which is the one thing all three
-   recordings agree on.
-   Both endpoints are normal type, per the 2026-07-31 return-to-normal
-   correction re-confirmed 2026-08-01, so the row is uniform at rest. Same
-   `fill-mode: none` reasoning as the glyph. */
+/* THE CHEWY BIT: A TRAVELLING STRETCH, PER CHARACTER, ON EVERY MOTION.
+   Watch "animation," in intonation.mov f194-f216 or "spo|ken" in
+   synchronization.mov f282: as the colour passes through a word the letters
+   stretch — mostly UP AND DOWN, a little in width — scatter off the line, and
+   close back up. That elastic open-and-close is what reads as chewy, and it is
+   the one thing the reference genuinely varies per glyph.
+   It is a TRANSFORM, so it cannot disturb layout: the row's width is owned by
+   the word-level sizer, which is why this needs no reservation of its own and
+   cannot desynchronise from it.
+   Each letter is offset by `--wave-step` so the stretch travels instead of
+   pulsing the word as a block, and `--char-wave` scales its amplitude with that
+   letter's own loudness, so the wave still rides the audio. */
 .caption-character {
   display: inline-block;
   vertical-align: baseline;
-  /* Interpolated by hand off the word's single phase. At phase 0 this is
-     exactly normal type; at phase 1 it is the character's own CWI 2.3 crest. */
-  font-size: calc(1em * (1 + var(--voice-phase) * (var(--char-scale, 1) - 1)));
-  font-weight: calc(400 + var(--voice-phase) * (var(--char-weight, 400) - 400));
-  font-stretch: calc(100% + var(--voice-phase) * (var(--char-width, 100%) - 100%));
   white-space: pre;
-  will-change: font-size, font-weight, font-stretch;
+  transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
+  will-change: transform;
+  animation: character-wave var(--wave-span, 240ms) cubic-bezier(.34,0,.28,1)
+    calc(var(--turn-delay) + var(--char-index, 0) * var(--wave-step, 26ms));
 }
 
 .caption-word[data-sustain="true"] .word-glyph::after {
@@ -1616,9 +1624,16 @@ button {
    `from` keyframe for the entire delay, which may be many seconds. */
 /* Normal -> the character's own 2.3 crest -> normal, exactly the shape the
    2026-07-31 return-to-normal correction requires, expressed once per word. */
+/* THE SWELL HOLDS; IT DOES NOT JUST PEAK. In intonation.mov "louder" is up by
+   f388 and still up at f430, back to normal by f442 -- roughly a 0.35 s sustain
+   inside a 0.73 s swell. A single symmetric crest read as a twitch, which is
+   not how a loud word sounds. `--voice-attack` / `--voice-release` are where
+   the voice reaches and leaves its crest, as fractions of the motion window. */
 @keyframes voice-phase {
   0%, 100% { --voice-phase: 0; }
-  42% { --voice-phase: 1; }
+  /* Literal on purpose: a keyframe SELECTOR cannot take a `var()`, and a
+     build that silently drops the rule leaves the swell doing nothing. */
+  28%, 62% { --voice-phase: 1; }
 }
 
 @keyframes word-color-turn {
@@ -1651,6 +1666,47 @@ button {
    One path, on the whole word, once. `transform`, not `font-size`, keeps the cue
    transient and out of layout. The permanent -50% X translation centres the
    overlaid glyph on the normal-type sizer beneath it. */
+/* THE CHEWY BIT. Up and down hard, sideways only a little -- the proportions
+   the reference shows when the colour passes through a word ("animation," in
+   intonation.mov f194-216, "spo|ken" in synchronization.mov f282). Each letter
+   is offset by `--wave-step`, so the stretch TRAVELS instead of pulsing the
+   word as one block, and `--char-wave` scales its amplitude with that letter's
+   own loudness. Both endpoints are identity, so a settled row is plain type,
+   and because it is a transform it cannot disturb the row's layout. */
+@keyframes word-hold-land {
+  from { transform: translateY(calc(-1 * var(--hold-lift, 0em))); }
+  to { transform: translateY(0); }
+}
+
+@keyframes character-wave {
+  0%, 100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  /* AMPLITUDES HALVED 2026-08-01 (user: "the motion waves seem a bit too
+     distracted"). Was .26/-.045 with a .10em rise, measured at +29% vertical
+     on screen. At that size every letter of every word was visibly moving and
+     the wave competed with the colour turn for attention instead of supporting
+     it -- the 2.2.3 cue is what should point the eye, and the wave is texture
+     under it. The rebound is gentler still: an overshoot the same size as the
+     rise is what makes a wave read as a wobble. */
+  38% {
+    transform:
+      translateY(calc(-.05em * var(--char-wave, 1)))
+      scale(
+        calc(1 - .022 * var(--char-wave, 1)),
+        calc(1 + .13 * var(--char-wave, 1))
+      );
+  }
+  72% {
+    transform:
+      translateY(calc(.014em * var(--char-wave, 1)))
+      scale(
+        calc(1 + .010 * var(--char-wave, 1)),
+        calc(1 - .032 * var(--char-wave, 1))
+      );
+  }
+}
+
 @keyframes word-sync-pop {
   0% {
     transform: translate3d(-50%, 0, 0) scale(1);

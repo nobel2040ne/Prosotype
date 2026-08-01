@@ -18,6 +18,7 @@ import {
 const RANGES: VoiceTypeRanges = {
   scale: [0.90, 1.20],
   scaleResponse: 0.25,
+  scaleResponseQuiet: 0.25,
   weight: [200, 760],
   width: [82, 124],
 };
@@ -25,6 +26,7 @@ const RANGES: VoiceTypeRanges = {
 const LITERAL: VoiceTypeRanges = {
   scale: [0.6, 2.4],
   scaleResponse: 1,
+  scaleResponseQuiet: 1,
   weight: [100, 1000],
   width: [25, 150],
 };

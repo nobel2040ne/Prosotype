@@ -341,17 +341,81 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     `.caption-words` wrapper (so it read `line-height: normal`), the other
     parented to `document.body` (so it never inherited the Korean face).
     The diagram's "25% elevation" is just where the TOP ends up.
-  * **2.3 IS PER CHARACTER.** p.34 sets "Put that coffee **dOWn!**" under its
-    own waveform; p.38 varies weight across "neeee**eeeed**"; p.40 ramps one
-    sentence black -> hairline. One value per word cannot express any of it, and
-    `_prosody()` was computing the contour and discarding it with `np.median`.
-    `_intonation_envelope()` keeps 8 readings across the word's own audio
-    (`display.intonation_envelope_samples`), loudness through the SAME 2.3.5
-    pivot as the word-level value. `characterVoiceTypes()` samples it per
-    character and reuses the existing anchor functions unchanged.
-    Split with `Array.from`, never `split("")` — Hangul syllable blocks.
-    The slot cache fallback must match on SPAN as well as proximity: a slot is
-    50 ms, and a 0.02 s "You" inherited the envelope of the 0.72 s "know".
+  * **TWO SCOPES, AND THEY OWN DIFFERENT CHANNELS.** This is the thing that
+    took the longest to see, because the PDF states neither scope.
+    **2.3 intonation is per WORD, uniform.** In `intonation.mov` f395 every
+    glyph of "louder" is the same size and the same weight; f470, every glyph of
+    "or softer." is uniformly small. Driving size/weight/width per character off
+    the intra-word envelope is what made ours read as "very character-level".
+    **The per-character channel is a travelling STRETCH**, and it is what makes
+    the reference feel chewy: as the colour passes through a word the letters
+    stretch — hard UP AND DOWN, only a little in width — scatter off the line
+    and close back up (`animation,` f194-216, `spo|ken` f282). It happens on
+    every motion, not only long words.
+    Shipped as a TRANSFORM on `.caption-character`: ±13% scaleY, ∓2.2% scaleX,
+    a small translateY, staggered by `--wave-step` so it travels.
+    **THE TWO SCOPES TRADE OFF, AND THIS IS THE RULE THAT TIES THEM TOGETHER.**
+    A word carried by VOLUME — loud or hushed — moves as a WORD and its letters
+    stay together; a word at ordinary volume has little word-level motion and
+    the character wave is what carries it. The reference is explicit: "louder"
+    (f395) is six glyphs at one size with no scatter at all, while "animation,"
+    (f194-216) is ordinary volume and scatters hard.
+    So `--char-wave` = (this letter's departure from its own WORD's size) x
+    (1 − wordVolumeDeviation x `character_wave_falloff`), floored at
+    `character_wave_floor`. MEASURED on injected words:
+    SHOUTING 66.2px swell / +5% wave, ordinary 53.5px / **+13%**, whispered
+    40.9px / +7% — the wave peaks at ordinary volume and is suppressed at BOTH
+    extremes.
+    It also fixed the headroom problem as a side effect: the loudest words no
+    longer stack a big wave on top of a big swell, and ink clearance went
+    **3.0px back to 10.5px**.
+    **AMPLITUDES HALVED 2026-08-01** (user: "the motion waves seem a bit too
+    distracted"). Was ±26%/∓4.5% with a .10em rise, measuring +29% vertical on
+    screen; now +11%. At the old size every letter of every word was visibly
+    moving and the wave COMPETED with the colour turn instead of supporting it
+    — 2.2.3's cue is what should point the eye and the wave is texture under
+    it. The rebound is gentler still (∓3.2% vs ∓8%): an overshoot as large as
+    the rise is what makes a wave read as a wobble.
+    A transform cannot disturb layout, so the row's width stays owned by the
+    word-level sizer and the wave needs no reservation — which also means it
+    cannot desynchronise from the footprint the way per-character `font-size`
+    did.
+    **The envelope is still used**, just for amplitude rather than type.
+  * **THE QUIET HALF IS DELIBERATELY GENTLER THAN THE LOUD HALF.**
+    `voice_scale_response` 0.62 up, `voice_scale_response_quiet` **0.26** down.
+    The two directions do not cost the same: growing a word makes it easier to
+    read and reads as emphasis, while shrinking it makes it harder to read — and
+    the speaker's own loudness percentiles put a great many ordinary words below
+    the median. MEASURED on the bundled clip at a symmetric 0.62: **48% of all
+    words rendered below normal, down to 0.75x** — ordinary unstressed speech
+    drawn as if whispered, which reads as instability rather than intonation.
+    At 0.26 that is **31% of words and a 0.90x floor**, so only a genuinely
+    hushed word visibly shrinks, and the loud side is untouched (p90 1.45,
+    max 1.62). If the quiet channel ever needs to be louder, raise this — do NOT
+    raise the symmetric response, which drags every unstressed word down with it.
+  * **A HELD WORD WAITS ALOFT, AND LANDS AS IT TURNS.** `synchronization.mov`
+    f236-292: the speaker holds before "is", and "is" sits above the baseline in
+    white for ~40 frames, then lands on the line in the same moment it turns
+    colour. MEASURED at 21px against a 54.9px font = **0.382em**, which is
+    `hold_lift_em`. Wait-dependent, not universal — "or softer." follows
+    immediately in `intonation.mov` and never leaves the line — so the lift
+    ramps from `hold_min_s` (0.22 s of silence) to `hold_full_s` (0.70 s).
+    Implemented as `word-hold-land` on `.word-ink` with **`backwards` fill**:
+    that is what holds the word aloft for the whole read-ahead delay, however
+    long it is, and it is the same trick the colour turn uses. Verified live:
+    15.6px of lift, airborne across 134 samples, landing on the turn.
+    The gap is computed in the component, and note `t` is on the STREAM
+    timeline while `start`/`end` are utterance-relative — a word's end on the
+    stream clock is `t + (end - start)`.
+  * **THE SWELL HOLDS; IT DOES NOT JUST PEAK.** `intonation.mov`: "louder" is
+    up by f388 and still up at f430, back to normal by f442 — a ~0.35 s sustain
+    inside a ~0.73 s swell. A single symmetric crest read as a twitch, which is
+    not how a loud word sounds. `@keyframes voice-phase` holds 28%..62% of the
+    motion window.
+    **The stops are literal on purpose.** A keyframe SELECTOR cannot contain a
+    `var()` — the build silently DROPS the whole rule if it does, and the swell
+    then does nothing at all. That is why there are no `voice_attack` /
+    `voice_release` config keys: dead knobs are worse than none.
   * **ONE PHASE PER WORD DRIVES EVERY CHARACTER.** `@property --voice-phase` is
     animated once on `.caption-word`; each character computes
     `calc(1em * (1 + phase * (charScale - 1)))`. Per-character animations do NOT
@@ -384,6 +448,14 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     scaled box overlaps its neighbour long before any letter does, and that
     overlap grows WITH the leading. `scratchpad/ink_collision.py` reads pixels
     and is the real test; the box check in `overflow.py` is informational.
+    **Headroom at the forced worst case is 10.5px.** It fell to 5.0px when the
+    character wave landed and to 3.0px when the held lift did — then returned to
+    10.5px once the wave/word trade-off went in, because a loud word no longer
+    stacks a full wave on top of a full swell. Re-run `ink_collision.py` after
+    any change to `voice_scale_range`, the wave amplitude, `hold_lift_em` or
+    `character_wave_falloff`. Still clear, but re-run `ink_collision.py` after ANY change
+    to `voice_scale_range` or the wave amplitude — this is the first constraint
+    that will break.
   * **Duration** is all that survives of the old scheduler:
     `naturalMotionDurationMs` — 520 ms base, stretched by the spoken span and
     delivery flow, capped at 720 ms. Freeze it per word at mount.

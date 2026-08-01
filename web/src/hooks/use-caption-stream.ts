@@ -94,6 +94,15 @@ export interface RuntimeConfig {
   wordMotionSpanStretch: number;
   wordMotionMinMs: number;
   syncPop: number;
+  /** How far the character wave is suppressed as the WORD's own volume departs
+   *  from normal: the two scopes trade off. See config.yaml. */
+  characterWaveFalloff: number;
+  characterWaveFloor: number;
+  /** CWI, from the recordings: a word that waits rises, and lands on its turn. */
+  holdLiftEm: number;
+  holdFullS: number;
+  holdMinS: number;
+  holdLandMs: number;
   deliveryMotionEnabled: boolean;
   /** A drawn-out word holds its 2.2.3 cue slightly longer. */
   deliveryFlowDurationMs: number;
@@ -109,6 +118,8 @@ export interface RuntimeConfig {
    * 1 is the design system's literal 3%..12%.
    */
   voiceScaleResponse: number;
+  /** The same, below the baseline -- smaller, because shrinking costs legibility. */
+  voiceScaleResponseQuiet: number;
   deliveryMinConfidence: number;
   languages: LiveLanguageOption[];
   selectedLanguage: string | null;
@@ -136,12 +147,19 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   wordMotionSpanStretch: 0.42,
   wordMotionMinMs: 320,
   syncPop: 0.15,
+  characterWaveFalloff: 0.78,
+  characterWaveFloor: 0.18,
+  holdLiftEm: 0.382,
+  holdFullS: 0.70,
+  holdMinS: 0.22,
+  holdLandMs: 190,
   deliveryMotionEnabled: true,
   deliveryFlowDurationMs: 90,
   weightRange: [200, 760],
   widthRange: [82, 124],
   voiceScaleRange: [0.90, 1.20],
   voiceScaleResponse: 0.25,
+  voiceScaleResponseQuiet: 0.30,
   deliveryMinConfidence: 0.38,
   languages: [
     {
