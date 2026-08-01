@@ -3,6 +3,9 @@ import test from "node:test";
 
 import {
   captionMotionFor,
+  characterVoiceTypes,
+  peakCharacterScale,
+  sampleContour,
   NORMAL_CAPTION_TYPE,
   voiceScale,
   voiceTone,
@@ -120,4 +123,76 @@ test("every voice target stays inside its configured band", () => {
       }
     }
   }
+});
+
+test("a contour is read by linear interpolation, endpoints included", () => {
+  const values = [0, 1, 0];
+  assert.equal(sampleContour(values, 0), 0);
+  assert.equal(sampleContour(values, 0.5), 1);
+  assert.equal(sampleContour(values, 1), 0);
+  assert.equal(sampleContour(values, 0.25), 0.5);
+  // Degenerate contours must not produce NaN styling.
+  assert.equal(sampleContour([0.4], 0.9), 0.4);
+  assert.ok(Number.isNaN(sampleContour([], 0.5)));
+});
+
+test("2.3 varies WITHIN a word, following its own contour", () => {
+  // p.34's "dOWn!": quiet at the edges, shouted in the middle. The letters
+  // must not all come out the same size -- that collapse is the defect.
+  const envelope = {
+    loudness: [0.1, 0.9, 0.9, 0.1],
+    pitch: [200, 90, 90, 200],
+    texture: [0.8, 0.1, 0.1, 0.8],
+  };
+  const types = characterVoiceTypes(
+    4,
+    envelope,
+    {loudness: 0.5, pitchHz: 180, texture: 0.5},
+    RANGES,
+  );
+  assert.equal(types.length, 4);
+  assert.ok(types[1].scale > types[0].scale, "loud middle is larger");
+  assert.ok(types[1].weight > types[0].weight, "low middle is heavier");
+  // 2.3.10's diagonal has to hold per character too: heavy goes with wide.
+  for (const type of types) {
+    if (type.weight > 400) assert.ok(type.width >= 100, "heavy is not condensed");
+    if (type.weight < 400) assert.ok(type.width <= 100, "light is not expanded");
+  }
+});
+
+test("without an envelope every character keeps the word-level voice", () => {
+  const word = {loudness: 0.8, pitchHz: 120, texture: 0.2};
+  const types = characterVoiceTypes(3, null, word, RANGES);
+  const single = voiceTypeFor(word, RANGES);
+  assert.equal(types.length, 3);
+  for (const type of types) assert.deepEqual(type, single);
+});
+
+test("expression scales the per-character shape toward normal", () => {
+  const envelope = {
+    loudness: [0.1, 0.9],
+    pitch: [220, 90],
+    texture: [0.9, 0.1],
+  };
+  const word = {loudness: 0.5, pitchHz: 180, texture: 0.5};
+  const off = characterVoiceTypes(4, envelope, word, RANGES, 0);
+  for (const type of off) assert.deepEqual(type, NORMAL_CAPTION_TYPE);
+  const on = characterVoiceTypes(4, envelope, word, RANGES, 1);
+  assert.ok(on.some((type) => type.scale !== 1 || type.weight !== 400));
+});
+
+test("the layout reservation follows the widest character, never below 1", () => {
+  assert.equal(peakCharacterScale([]), 1);
+  assert.equal(
+    peakCharacterScale([
+      {scale: 0.8, weight: 400, width: 100},
+      {scale: 1.4, weight: 400, width: 100},
+    ]),
+    1.4,
+  );
+  // An all-quiet word still reserves its normal footprint.
+  assert.equal(
+    peakCharacterScale([{scale: 0.7, weight: 400, width: 100}]),
+    1,
+  );
 });

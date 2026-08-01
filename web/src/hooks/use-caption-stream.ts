@@ -62,6 +62,8 @@ export interface RuntimeConfig {
   palette: string[];
   /** Speaker colors for the light stage: same hues, darkened to >=4.5:1. */
   paletteLight: string[];
+  /** How many trailing entries of `palette` are CWI 2.1.2 supporting colours. */
+  paletteSupportCount: number;
   displayMode: string;
   maxWords: number;
   paragraphWordLimit: number;
@@ -115,6 +117,7 @@ export interface RuntimeConfig {
 export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   palette: ["#e6ff2e", "#56e39f", "#55d7ff", "#c387ff", "#ff667d", "#ffb84d"],
   paletteLight: ["#6d7816", "#31805a", "#307b91", "#895fb4", "#bd4c5d", "#936a2c"],
+  paletteSupportCount: 0,
   displayMode: "fast",
   maxWords: 8,
   paragraphWordLimit: 0,

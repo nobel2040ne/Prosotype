@@ -49,6 +49,12 @@ export interface CaptionWord {
   sustain_active?: boolean;
   /** CWI 2.1.5: an off-camera voice is set in italic, keeping its colour. */
   off_camera?: boolean;
+  /* CWI 2.3's contour INSIDE the word -- one reading per sub-window of its own
+     span, so each character can take its own size/weight/width the way p.34 and
+     p.38 show. Absent when the span is too short to have a measurable shape. */
+  env_loudness?: number[];
+  env_pitch?: number[];
+  env_texture?: number[];
   sustain_s?: number;
   _render_stage?: RenderStage;
   _sse_id?: number;

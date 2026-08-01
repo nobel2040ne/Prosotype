@@ -154,6 +154,84 @@ export function voiceTypeFor(
  * Expression only interpolates the §2.3 voice target. The §2.2.3 cue remains
  * the same 15% / 25% on every word, as required by the PDF.
  */
+/**
+ * The word's own intonation contour, sampled evenly across its spoken span.
+ *
+ * `loudness` is already on the 2.3.5-pivoted 0..1 scale (the server normalises
+ * it through the same function as the word-level value), `pitch` is Hz, and
+ * `texture` is 0..1 brightness, matching what `voiceWidth` already consumes.
+ */
+export interface VoiceEnvelope {
+  loudness: readonly number[];
+  pitch: readonly number[];
+  texture: readonly number[];
+}
+
+/** Linear interpolation of a sampled contour at a 0..1 position. */
+export function sampleContour(
+  values: readonly number[],
+  position: number,
+): number {
+  if (!values.length) return Number.NaN;
+  if (values.length === 1) return values[0];
+  const at = clamp(position, 0, 1) * (values.length - 1);
+  const low = Math.floor(at);
+  const high = Math.min(values.length - 1, low + 1);
+  return values[low] + (values[high] - values[low]) * (at - low);
+}
+
+/**
+ * CWI 2.3 IS PER CHARACTER. One `CaptionType` for each letter of the word.
+ *
+ * The design system's illustrations are the argument: p.34 sets "Put that
+ * coffee dOWn!" beneath its own waveform with the `O` and `W` huge and the `d`
+ * and `n!` small; p.38 varies weight across "neeee**eeeed**" under a pitch
+ * curve; p.40 ramps one sentence from black to hairline. A single value per
+ * word cannot express any of that, and collapsing to one is what made the
+ * captions read as flat.
+ *
+ * Each character is placed at the centre of its share of the span and reads the
+ * contour there. This is deliberately uniform rather than advance-weighted: the
+ * recognizer gives no per-character alignment, so anything finer would be
+ * invented rather than measured. Without an envelope every character falls back
+ * to the word-level voice, which is exactly the previous behaviour.
+ */
+export function characterVoiceTypes(
+  characterCount: number,
+  envelope: VoiceEnvelope | null | undefined,
+  wordVoice: {loudness: number; pitchHz: number; texture: number},
+  ranges: VoiceTypeRanges,
+  expression = 1,
+): CaptionType[] {
+  const count = Math.max(0, Math.floor(characterCount));
+  const amount = clamp(Number.isFinite(expression) ? expression : 1, 0, 1);
+  const types: CaptionType[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const position = count === 1 ? 0.5 : (index + 0.5) / count;
+    const loudness = envelope?.loudness?.length
+      ? sampleContour(envelope.loudness, position)
+      : wordVoice.loudness;
+    const pitchHz = envelope?.pitch?.length
+      ? sampleContour(envelope.pitch, position)
+      : wordVoice.pitchHz;
+    const texture = envelope?.texture?.length
+      ? sampleContour(envelope.texture, position)
+      : wordVoice.texture;
+    const target = voiceTypeFor({loudness, pitchHz, texture}, ranges);
+    types.push({
+      scale: 1 + (target.scale - 1) * amount,
+      weight: Math.round(400 + (target.weight - 400) * amount),
+      width: Math.round(100 + (target.width - 100) * amount),
+    });
+  }
+  return types;
+}
+
+/** The widest any character of this word gets, for the layout reservation. */
+export function peakCharacterScale(types: readonly CaptionType[]): number {
+  return types.reduce((peak, type) => Math.max(peak, type.scale), 1);
+}
+
 export function captionMotionFor(
   voice: {loudness: number; pitchHz: number; texture: number},
   ranges: VoiceTypeRanges,

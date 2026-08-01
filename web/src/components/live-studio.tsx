@@ -42,10 +42,13 @@ import {
 import type {CaptionWord, LevelEvent} from "@/lib/caption-store";
 import {
   captionMotionFor,
+  characterVoiceTypes,
+  type CaptionType,
   type VoiceTypeRanges,
 } from "@/lib/caption-motion";
 import {acousticTimeMs, naturalMotionDurationMs} from "@/lib/motion-timing";
 import {baselineOffsetEm, formatBaselineEm} from "@/lib/glyph-metrics";
+import {assignSpeakerColors} from "@/lib/speaker-colors";
 import {planStageLayout, rowBudgetEm} from "@/lib/stage-layout";
 
 type CSSVars = CSSProperties & Record<`--${string}`, string | number>;
@@ -91,18 +94,67 @@ function speakerNumber(speaker: string | null): string {
   return String(match ? Number(match[0]) : 1).padStart(2, "0");
 }
 
-// Both fallbacks are CSS variables rather than literals: they have to follow the
-// stage theme, and every consumer of the returned string writes it straight into
-// a custom property, so the indirection resolves for free.
+/**
+ * CWI 2.1, via `assignSpeakerColors` -- see that module for why this is wheel
+ * geometry and not a lookup.
+ *
+ * This used to be `palette[hash(speakerId) % palette.length]`, which could hand
+ * speakers 1 and 2 adjacent hues -- exactly the confusion 2.1.3 devotes a page
+ * of do/don't wheels to preventing.
+ *
+ * Both fallbacks stay CSS variables rather than literals: they have to follow
+ * the stage theme, and every consumer writes the result straight into a custom
+ * property, so the indirection resolves for free.
+ */
 function speakerColor(
   speaker: string | null,
   status: string,
-  palette: string[],
+  colors: SpeakerColorMap,
 ): string {
   if (!speaker || status === "unknown") return "var(--caption-unknown)";
-  let hash = 0;
-  for (const char of speaker) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return palette[hash % palette.length] ?? "var(--accent)";
+  return colors.get(speaker)?.color ?? "var(--accent)";
+}
+
+type SpeakerColorMap = ReturnType<typeof assignSpeakerColors>;
+
+/**
+ * Resolve the assignment once per roster, then swap in the themed palette by
+ * INDEX so the light stage shows the same speaker in the same slot.
+ */
+function useSpeakerColors(
+  paragraphs: CaptionParagraph[],
+  runtime: RuntimeConfig,
+  lightStage: boolean,
+): SpeakerColorMap {
+  return useMemo(() => {
+    // Order of FIRST APPEARANCE, which is what config.yaml has always claimed.
+    const order: string[] = [];
+    const seen = new Set<string>();
+    for (const paragraph of paragraphs) {
+      for (const {word} of paragraph.words) {
+        const speaker = word.speaker;
+        if (!speaker || seen.has(speaker)) continue;
+        seen.add(speaker);
+        order.push(speaker);
+      }
+    }
+    const mains = runtime.palette.length - runtime.paletteSupportCount;
+    const assigned = assignSpeakerColors(order, {
+      main: runtime.palette.slice(0, mains),
+      support: runtime.palette.slice(mains),
+    });
+    if (!lightStage || !runtime.paletteLight.length) return assigned;
+    const themed: SpeakerColorMap = new Map();
+    for (const [speaker, entry] of assigned) {
+      themed.set(speaker, {
+        ...entry,
+        color: entry.index >= 0
+          ? runtime.paletteLight[entry.index] ?? entry.color
+          : entry.color,
+      });
+    }
+    return themed;
+  }, [paragraphs, runtime, lightStage]);
 }
 
 function useElapsed(startedAt: number): string {
@@ -167,6 +219,44 @@ const MotionWord = memo(function MotionWord({
     runtime.syncPop,
   );
 
+  /*
+   * CWI 2.3 IS PER CHARACTER (PDF p.34 / p.38 / p.40), so the word is split and
+   * each letter reads the word's own intonation contour at its own position.
+   * `Array.from` rather than `split("")`: a Hangul syllable block or any
+   * astral-plane character must stay one unit, and Korean is a shipped language.
+   */
+  const characters = Array.from(word.text);
+  const characterTypes: CaptionType[] = characterVoiceTypes(
+    characters.length,
+    motionWord.env_loudness && motionWord.env_pitch && motionWord.env_texture
+      ? {
+          loudness: motionWord.env_loudness,
+          pitch: motionWord.env_pitch,
+          texture: motionWord.env_texture,
+        }
+      : null,
+    {loudness, pitchHz: pitch, texture},
+    voiceRanges(runtime),
+    intensity,
+  );
+
+  // One span per character, keyed by INDEX so a verifier respelling reuses the
+  // existing spans instead of remounting the word and restarting its motion.
+  const renderCharacters = (crest: boolean) =>
+    characters.map((character, index) => (
+      <span
+        className={crest ? "character-sizer" : "caption-character"}
+        key={index}
+        style={{
+          "--char-scale": (characterTypes[index]?.scale ?? 1).toFixed(3),
+          "--char-weight": String(characterTypes[index]?.weight ?? 400),
+          "--char-width": `${characterTypes[index]?.width ?? 100}%`,
+        } as CSSVars}
+      >
+        {character === " " ? "\u00a0" : character}
+      </span>
+    ));
+
   /* Frozen at mount: a verifier respelling can revise `end`, and a caption
      already in flight must not have its clock reshaped underneath it. */
   const [duration] = useState(
@@ -174,13 +264,6 @@ const MotionWord = memo(function MotionWord({
   );
   const style: CSSVars = {
     "--speaker-color": color,
-    // The 2.2.3 pop and the 2.3 voice size are ONE scale on one element now, so
-    // this is both the animated crest and the width the sizer must reserve.
-    "--motion-footprint-scale": (
-      motion.voice.scale * motion.sync.scale
-    ).toFixed(3),
-    "--voice-weight": String(motion.voice.weight),
-    "--voice-width": `${motion.voice.width}%`,
     // 2.2.3 is constant; the Expression control changes §2.3, not this cue.
     "--sync-pop": motion.sync.scale.toFixed(3),
     "--motion-duration": `${duration.toFixed(0)}ms`,
@@ -266,10 +349,12 @@ const MotionWord = memo(function MotionWord({
         {word.text}
       </span>
       <span className="word-sizer word-sizer-crest" aria-hidden="true">
-        {word.text}
+        {renderCharacters(true)}
       </span>
       <span className="word-glyph" aria-label={word.text}>
-        <span className="word-ink" aria-hidden="true">{word.text}</span>
+        <span className="word-ink" aria-hidden="true">
+          {renderCharacters(false)}
+        </span>
       </span>
     </span>
   );
@@ -362,7 +447,7 @@ function VoiceOrb({
 
 function CaptionFeed({
   paragraphs,
-  palette,
+  speakerColors,
   level,
   intensity,
   runtime,
@@ -373,7 +458,7 @@ function CaptionFeed({
   reducedMotion,
 }: {
   paragraphs: CaptionParagraph[];
-  palette: string[];
+  speakerColors: SpeakerColorMap;
   level: LevelEvent;
   intensity: number;
   runtime: RuntimeConfig;
@@ -517,7 +602,7 @@ function CaptionFeed({
   return (
     <div className={transcript ? "transcript-feed" : "caption-feed"}>
       {paragraphs.map((paragraph, paragraphIndex) => {
-        const color = speakerColor(paragraph.speaker, paragraph.status, palette);
+        const color = speakerColor(paragraph.speaker, paragraph.status, speakerColors);
         const isLatest = paragraphIndex === spokenRow;
         const firstWord = paragraph.words[0]?.word;
         return (
@@ -559,7 +644,7 @@ function CaptionFeed({
                     color={speakerColor(
                       word.speaker ?? null,
                       speakerStatus(word),
-                      palette,
+                      speakerColors,
                     )}
                     intensity={intensity}
                     runtime={runtime}
@@ -1029,16 +1114,22 @@ export function LiveStudio() {
     );
   }, [paragraphs]);
   const currentParagraph = paragraphs.at(-1);
-  // The CI palette (CWI 2.1.1) is built for the black captions box and measures
-  // as low as 1.19:1 on the light stage, so the light theme draws speakers from
-  // `palette_light` -- same hues, darkened to >=4.5:1. Both arrive from
-  // config.yaml via /runtime-config.json; neither is hardcoded here.
-  const palette = settings.lightStage && runtime.paletteLight.length
+  // CWI 2.1 assignment (wheel geometry, first-appearance order). The CI palette
+  // is built for the black captions box and measures as low as 1.19:1 on the
+  // light stage, so the light theme substitutes `palette_light` by INDEX --
+  // same hues, darkened to >=4.5:1, same speaker in the same slot. Both arrive
+  // from config.yaml via /runtime-config.json; neither is hardcoded here.
+  const speakerColors = useSpeakerColors(
+    paragraphs,
+    runtime,
+    settings.lightStage,
+  );
+  const fallbackColor = (settings.lightStage && runtime.paletteLight.length
     ? runtime.paletteLight
-    : runtime.palette;
+    : runtime.palette)[0];
   const activeColor = currentParagraph
-    ? speakerColor(currentParagraph.speaker, currentParagraph.status, palette)
-    : palette[0];
+    ? speakerColor(currentParagraph.speaker, currentParagraph.status, speakerColors)
+    : fallbackColor;
   const direction = number(level.direction_deg ?? level.azimuth_deg, Number.NaN);
   const directionKnown = Number.isFinite(direction);
   const inputGood = level.status === "good";
@@ -1175,7 +1266,7 @@ export function LiveStudio() {
           )}
           <CaptionFeed
             paragraphs={stageParagraphs}
-            palette={palette}
+            speakerColors={speakerColors}
             level={level}
             intensity={settings.motionIntensity}
             runtime={runtime}
@@ -1257,7 +1348,7 @@ export function LiveStudio() {
           <div className="speaker-list">
             {speakers.length ? speakers.map(([speaker, word]) => {
               const status = speakerStatus(word);
-              const color = speakerColor(speaker, status, palette);
+              const color = speakerColor(speaker, status, speakerColors);
               return (
                 <div className="speaker-card" key={speaker}>
                   <span className="speaker-avatar" style={{"--speaker-color": color} as CSSVars}>

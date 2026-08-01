@@ -158,6 +158,24 @@
    back. An unregistered custom property is a raw token, so `getComputedStyle`
    would hand JS the literal string "clamp(20px, 16cqh, 64px)" and the layout
    planner would have to duplicate the constant to use it. */
+/* ONE CLOCK FOR EVERY CHARACTER OF A WORD.
+   Each character used to run its own `font-size` animation. They share a
+   `--turn-delay`, but `animation-delay` counts from when the animation was
+   APPLIED to that element -- and live words grow as the recognizer extends a
+   hypothesis, so a span appended a moment later started its clock a moment
+   later and ran behind its neighbours. Measured, half a Korean word sat at rest
+   while the other half was at its crest, and the width reservation (which
+   animated in lockstep with the early characters) under-read by 23px.
+   Animating a single registered number on the WORD removes the failure mode
+   rather than compensating for it: there is one animation, one origin, and a
+   newly appended character reads the current phase on its first frame.
+   `@property` is what makes a custom property interpolable at all. */
+@property --voice-phase {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
 @property --caption-height-cap {
   syntax: "<length>";
   inherits: true;
@@ -786,9 +804,12 @@ button {
   font-weight: 400;
   font-stretch: 100%;
   opacity: 1;
-  /* CWI 2.2.1 + 2.2.2. See the keyframes for why there is no `to`. */
-  animation: word-color-turn var(--color-turn-ms, 90ms) linear
-    var(--turn-delay) backwards;
+  /* CWI 2.2.1 + 2.2.2 (colour), and the 2.3 phase every character reads. */
+  animation:
+    word-color-turn var(--color-turn-ms, 90ms) linear
+      var(--turn-delay) backwards,
+    voice-phase var(--motion-duration) cubic-bezier(.42,0,.22,1)
+      var(--turn-delay);
 }
 
 /* CWI 2.1.5: an off-camera voice is italic, and keeps its speaker colour. */
@@ -838,13 +859,42 @@ button {
    normal sizer, so a settled row is exactly as wide as its words.
    `line-height: 0` keeps this a width-only channel; row height never moves. */
 .word-sizer-crest {
+  /* A plain container at NORMAL size. The reservation lives on the character
+     spans below, because with per-character type a word's crest width is the
+     sum of its letters' own crests, not `widest letter x count`. */
   font-size: 1em;
-  font-weight: 400;
-  font-stretch: 100%;
   line-height: 0;
-  will-change: font-size;
-  animation: word-footprint var(--motion-duration) cubic-bezier(.42,0,.22,1)
-    var(--turn-delay);
+}
+
+/* THE PUSH, AND THE RESERVATION, ARE THE SAME ANIMATION.
+   The visible glyph is absolutely positioned and moves nothing, so the shove a
+   swelling word gives its neighbours has to come from these in-flow sizers: the
+   grid track is max(normal sizer, crest sizer), so growing these grows the
+   word's cell, and the row's flex layout turns that into a push.
+
+   IT MUST TRACK THE VISIBLE CURVE, NOT JUST ITS PEAK. This previously animated
+   the wrapper's font-size 0 -> 1em while the visible letters went 1em -> crest,
+   and two different curves through the same window do not agree in between:
+   measured, the glyph ran up to 18px outside the cell it had been given and
+   neighbouring words touched. Interpolating 1em -> (char crest x 2.2.3 pop) is
+   the same shape the viewer sees, exact at both rest and peak. (A single eased
+   curve slightly OVER-reserves mid-flight versus the product of the two curves
+   the visible glyph composes, which is the safe direction.) */
+.character-sizer {
+  display: inline-block;
+  vertical-align: baseline;
+  /* The same interpolation, times 2.2.3's pop -- which the visible glyph gets
+     from its wrapper transform and this one cannot. Identical at phase 0, so a
+     settled row is exactly as wide as its words; identical to the visible ink
+     at every phase, so the push is exact and nothing overflows its cell. */
+  font-size: calc(
+    1em * (1 + var(--voice-phase) * (var(--char-scale, 1) - 1))
+        * (1 + var(--voice-phase) * (var(--sync-pop, 1.15) - 1))
+  );
+  font-weight: calc(400 + var(--voice-phase) * (var(--char-weight, 400) - 400));
+  font-stretch: calc(100% + var(--voice-phase) * (var(--char-width, 100%) - 100%));
+  line-height: 0;
+  white-space: pre;
 }
 
 .word-glyph {
@@ -885,23 +935,37 @@ button {
    colour belongs to speaker identity. Texture still reaches the screen through
    the weight/width axes and the `textured` motion family's own timing. */
 
-/* NO TRANSFORM HERE. The 2.2.3 pop and the 2.3 voice size were two nested
-   scales on the same clock, same easing, same 42% crest -- which meant two
-   transform origins that both had to stay on the baseline and could drift
-   apart. They are composed into the single scale on `.word-glyph` above
-   (`--motion-footprint-scale`, the value the crest sizer already reserves).
-   This element keeps only the axes that are font properties, not geometry. */
+/* The word wrapper carries no type of its own any more -- 2.3 lives on the
+   characters below. It only needs to not disturb their line box. */
 .word-ink {
   display: inline-block;
   font-weight: 400;
   font-stretch: 100%;
-  will-change: font-weight, font-stretch;
-  /* CWI 2.3, on the same clock. Both endpoints are normal type, per the
-     2026-07-31 return-to-normal correction, so the voice is visible at the
-     crest of the one motion window and the row is typographically uniform at
-     rest. Same `fill-mode: none` reasoning as the glyph above. */
-  animation: word-voice-shape var(--motion-duration) cubic-bezier(.42,0,.22,1)
-    var(--turn-delay);
+}
+
+/* CWI 2.3, PER CHARACTER. p.34 sets "Put that coffee dOWn!" under its own
+   waveform with the O and W huge and the d and n! small; p.38 varies weight
+   across "neeeeeeeeed" under a pitch curve; p.40 ramps one sentence from black
+   to hairline. A single value per word cannot express any of that, and
+   collapsing to one is what made the captions read as flat.
+   `font-size`, not `transform`: the letters have to take real horizontal room,
+   or a shouted O simply overlaps its neighbours instead of pushing them along.
+   `inline-block` + `vertical-align: baseline` keeps every character sitting on
+   the shared baseline whatever size it takes, which is the one thing all three
+   recordings agree on.
+   Both endpoints are normal type, per the 2026-07-31 return-to-normal
+   correction re-confirmed 2026-08-01, so the row is uniform at rest. Same
+   `fill-mode: none` reasoning as the glyph. */
+.caption-character {
+  display: inline-block;
+  vertical-align: baseline;
+  /* Interpolated by hand off the word's single phase. At phase 0 this is
+     exactly normal type; at phase 1 it is the character's own CWI 2.3 crest. */
+  font-size: calc(1em * (1 + var(--voice-phase) * (var(--char-scale, 1) - 1)));
+  font-weight: calc(400 + var(--voice-phase) * (var(--char-weight, 400) - 400));
+  font-stretch: calc(100% + var(--voice-phase) * (var(--char-width, 100%) - 100%));
+  white-space: pre;
+  will-change: font-size, font-weight, font-stretch;
 }
 
 .caption-word[data-sustain="true"] .word-glyph::after {
@@ -1550,6 +1614,13 @@ button {
 
    `backwards` fill is what actually paints the read-ahead: it applies the
    `from` keyframe for the entire delay, which may be many seconds. */
+/* Normal -> the character's own 2.3 crest -> normal, exactly the shape the
+   2026-07-31 return-to-normal correction requires, expressed once per word. */
+@keyframes voice-phase {
+  0%, 100% { --voice-phase: 0; }
+  42% { --voice-phase: 1; }
+}
+
 @keyframes word-color-turn {
   from {
     color: var(--read-ahead-color, #fff);
@@ -1585,7 +1656,7 @@ button {
     transform: translate3d(-50%, 0, 0) scale(1);
   }
   42% {
-    transform: translate3d(-50%, 0, 0) scale(var(--motion-footprint-scale));
+    transform: translate3d(-50%, 0, 0) scale(var(--sync-pop));
   }
   100% {
     transform: translate3d(-50%, 0, 0) scale(1);
@@ -1600,29 +1671,9 @@ button {
 /* The layout half of the cue: the word's own cell, on the glyph's clock. The
    axes are here as well as on `.word-ink` because weight and width change a
    word's advance, so the cell has to follow them or the push under-reads. */
-@keyframes word-footprint {
-  0%, 100% {
-    font-size: 1em;
-    font-weight: 400;
-    font-stretch: 100%;
-  }
-  42% {
-    font-size: calc(1em * var(--motion-footprint-scale));
-    font-weight: var(--voice-weight);
-    font-stretch: var(--voice-width);
-  }
-}
 
-@keyframes word-voice-shape {
-  0%, 100% {
-    font-weight: 400;
-    font-stretch: 100%;
-  }
-  42% {
-    font-weight: var(--voice-weight);
-    font-stretch: var(--voice-width);
-  }
-}
+
+
 
 /* Language is a session-level model decision, so this gate owns the entire
    viewport until Python confirms that the selected recognizer is listening. */
@@ -2011,12 +2062,24 @@ button {
    the geometry -- the 2.2.3 pop and the 2.3 crest. `.caption-word` therefore
    keeps its animation here, where it previously lost it along with everything
    else and every word rendered instantly in its speaker colour. */
-.studio-shell[data-reduced-motion="true"] .word-ink {
+.studio-shell[data-reduced-motion="true"] .word-ink,
+.studio-shell[data-reduced-motion="true"] .caption-character,
+.studio-shell[data-reduced-motion="true"] .character-sizer {
   animation: none !important;
   transform: none !important;
   font-variation-settings: "opsz" 14 !important;
+  font-size: 1em !important;
   font-weight: 400 !important;
   font-stretch: 100% !important;
+}
+
+/* Pin the phase rather than cancelling the word's animation: that animation
+   also carries the 2.2.2 colour turn, which reduced motion KEEPS -- read-ahead
+   and the onset turn involve no movement and are how a viewer knows which word
+   is being spoken. An `!important` author declaration outranks an animation, so
+   this flattens 2.3 while the colour still turns on time. */
+.studio-shell[data-reduced-motion="true"] .caption-word {
+  --voice-phase: 0 !important;
 }
 
 .studio-shell[data-reduced-motion="true"] .word-glyph {

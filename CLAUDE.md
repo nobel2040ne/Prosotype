@@ -577,6 +577,80 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     words animate "fully, one by one" — syllable-at-a-time is the documented
     *exception*, gated by `motion.syllable_fill`.
 
+  * **CWI 2.3 IS PER CHARACTER, AND THE PDF'S PICTURES ARE THE PROOF
+    (2026-08-01, user: "look at the pictures of description, not just the
+    description").** The prose says volume->size, pitch->weight,
+    harmonics->width and never says at what SCOPE. The illustrations do, and
+    every one of them is intra-word:
+    * **p.34** sets "Put that coffee **dOWn!** Coffee's for closers only!"
+      directly beneath its own waveform, time-aligned -- `d` medium, `O`/`W`
+      huge, `n!` dropping back.
+    * **p.38** does the same to weight: "Woooooo weeee neeee**eeeed** tooooo
+      fiiiiiiiiind hiiiiis soooo**oooo**n" under a pitch curve.
+    * **p.40** ramps ONE sentence from black to hairline ("The higher the pitch,
+      the lighter the font becomes.") and another from wide to condensed.
+    We collapsed all of it to one value per word, which is why the captions read
+    as flat however wide the band was opened. `_prosody()` computed the pitch
+    contour over the span and then threw it away with `np.median`.
+    Now: `_intonation_envelope()` keeps 8 evenly spaced readings of loudness,
+    pitch and spectral centroid across the word's own audio,
+    `display.intonation_envelope_samples`. Loudness goes through the SAME
+    2.3.5 pivot as the word-level value (one anchor, not two scales) and texture
+    through the same brightness range as `delivery_texture`. Frozen in
+    `envelope_cache` on the same `("§slot", utterance, round(start*20))` terms
+    as `delivery_cache`.
+    **The slot fallback must match on SPAN, not just proximity.** A slot is
+    50 ms, so two short words land in adjacent slots: measured, a 0.02 s "You"
+    inherited the envelope of the 0.72 s "know" beside it and was drawn with
+    that word's shape. Neighbour reuse now requires the spans to agree within
+    30%, which still absorbs the endpoint retiming it exists for.
+    Client: `characterVoiceTypes()` samples the contour at each character's
+    position and reuses the existing `voiceScale`/`voiceWeight`/`voiceWidth`
+    anchors unchanged, so 2.3.5/2.3.8/2.3.9 and 2.3.10's diagonal all still
+    hold per character. No envelope (a span too short to have a measurable
+    shape) falls back to the word-level voice for every character, which is
+    exactly the old behaviour.
+    **Split with `Array.from`, never `split("")`** -- Korean 어절 are Hangul
+    syllable blocks and any astral-plane character must stay one unit. Verified:
+    사파리라는 renders as 5 blocks with 5 distinct scales.
+  * **ONE PHASE PER WORD DRIVES EVERY CHARACTER (2026-08-01).** Each character
+    first got its own `font-size` animation. They share `--turn-delay`, but
+    `animation-delay` counts from when the animation was APPLIED to that
+    element, and live words GROW as the recognizer extends a hypothesis -- so a
+    span appended a moment later started its clock a moment later and ran behind
+    its neighbours. Measured on Korean: half a word sat at rest while the other
+    half was at its crest, and the width reservation under-read by 23px, so the
+    glyph ran outside its own cell and words touched.
+    Fixed structurally, not by compensation: `@property --voice-phase` is a
+    registered `<number>` animated ONCE on `.caption-word`, and each character
+    computes `calc(1em * (1 + phase * (charScale - 1)))` (and the same shape for
+    weight/width). One animation, one origin; a newly appended character reads
+    the current phase on its first frame. Also N fewer animations per word.
+    `.character-sizer` applies the identical interpolation times 2.2.3's pop --
+    which the visible glyph gets from its wrapper transform and the sizer
+    cannot -- so the reservation tracks the visible curve at EVERY phase, not
+    just at the peak. Measured after: glyph-past-cell 0.0px in both languages
+    (was +18px English, +23px Korean).
+    Reduced motion pins `--voice-phase: 0 !important` rather than cancelling the
+    word's animation, because that animation also carries the 2.2.2 colour turn,
+    which reduced motion KEEPS.
+  * **CWI 2.1 IS WHEEL GEOMETRY, NOT A LOOKUP (2026-08-01).** Speaker colour was
+    `palette[hash(speakerId) % palette.length]`, which can hand speakers 1 and 2
+    adjacent hues -- the exact confusion 2.1.3 spends a page of do/don't wheels
+    preventing -- and contradicted config.yaml's own comment ("assigned
+    deterministically by order of first appearance"). 2.1.1 wants three mains
+    "spaced as far apart as possible on the spectrum" with Hero and Villain
+    opposite; 2.1.2 picks supporting colours BETWEEN the mains; 2.1.4 gives
+    minor characters `HSB(h, 30%, 90%)` pastels from the wheel's centre.
+    `web/src/lib/speaker-colors.ts` assigns by first appearance, greedily
+    maximising the minimum hue distance to everyone already assigned, mains
+    before supporting, then generating pastels. Pure and stable: a speaker's
+    colour never changes because someone else spoke.
+    **Test optimality, not a fixed angle.** The CI mains sit at 0/31/60/120/180/
+    300 degrees, so nothing is truly opposite yellow and a hardcoded ">=150"
+    only encodes this palette; assert instead that no unused hue is farther.
+    The light stage substitutes `palette_light` BY INDEX, so the same speaker
+    keeps the same slot in both themes.
   * **THE PUSH IS THE MOTION. A POP ALONE IS NOT THE DESIGN SYSTEM
     (2026-08-01, user: "why are you doing just the pop motions").**
     Everything above concerns what one word does. The reference's dominant

@@ -241,6 +241,16 @@ display:
   # `lateWords` in window.__cwiStudio.report() climbs because words arrive
   # after their own onset has already passed.
   read_ahead_delay_s: 1.2
+  # CWI 2.3 IS PER CHARACTER, and this is how many readings of the word's own
+  # audio the client gets to shape them with. The design system's illustrations
+  # are unambiguous: p.34 sets "Put that coffee dOWn!" under its own waveform
+  # with the O and W huge and the d and n! small; p.38 does the same to weight
+  # across "neeeeeeeeed"; p.40 ramps a whole sentence from black to hairline.
+  # One median per word cannot express any of that.
+  # Eight samples resolve a syllable without bloating the SSE payload, and the
+  # cost is near zero -- the pitch analysis already runs over the span and was
+  # simply discarding the contour.
+  intonation_envelope_samples: 8
   # The reference motion breathes rather than jabs. Normal words get a 520 ms
   # zero-slope rise/return; a longer acoustic word may stretch toward 720 ms.
   # The two-word active cap still prevents overlap from becoming visual noise.

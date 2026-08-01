@@ -2816,6 +2816,87 @@ class StreamingCaptioner:
                 pass
         return db, pitch_hz, voiced_frac
 
+    def _intonation_envelope(
+        self, word: HypothesisWord, audio: np.ndarray, samples: int,
+    ) -> dict[str, list[float]] | None:
+        """CWI 2.3 INSIDE the word: the contour, not one number for the span.
+
+        The design system's own illustrations are per-CHARACTER, not per-word.
+        p.34 sets "Put that coffee dOWn!" directly beneath its waveform with the
+        `O` and `W` huge and the `d` and `n!` small; p.38 does the same to weight
+        with "neeee**eeeed**" under a pitch curve; p.40 ramps one sentence from
+        black to hairline. A single median per word cannot express any of it,
+        and `_prosody` above throws the contour away precisely when it computes
+        it.
+
+        Returns `samples` evenly spaced readings across the word's own span:
+        `loudness` in dB (normalised client-side against the same 2.3.5 pivot as
+        the word-level value), `pitch` in Hz, and `texture` as the spectral
+        centroid the width axis already uses. Returns None when the span is too
+        short to say anything honest about its shape -- the client then falls
+        back to the word-level value for every character.
+        """
+        i0 = max(0, int(word.start * SR))
+        i1 = min(len(audio), max(i0 + 1, int(word.end * SR)))
+        span = audio[i0:i1]
+        n = max(2, int(samples))
+        # Below roughly a 20 ms window per sample there is no contour left to
+        # measure, only noise; a flat envelope would be a fabricated shape.
+        if len(span) < n * int(0.02 * SR):
+            return None
+
+        edges = np.linspace(0, len(span), n + 1).astype(int)
+        loudness = [
+            _rms_db(span[a:b]) if b > a else -80.0
+            for a, b in zip(edges[:-1], edges[1:])
+        ]
+
+        pitch_track = [0.0] * n
+        p0, p1 = max(0, i0 - int(0.04 * SR)), min(len(audio), i1 + int(0.04 * SR))
+        if p1 - p0 >= int(0.04 * SR):
+            import parselmouth
+
+            try:
+                snd = parselmouth.Sound(audio[p0:p1].astype(np.float64),
+                                        sampling_frequency=SR)
+                pitch = snd.to_pitch_cc(
+                    pitch_floor=self.cfg["prosody"]["pitch_floor_hz"],
+                    pitch_ceiling=self.cfg["prosody"]["pitch_ceiling_hz"],
+                )
+                values = pitch.selected_array["frequency"]
+                times = pitch.xs() + (p0 - i0) / SR   # relative to the word
+                duration = max(1e-6, len(span) / SR)
+                for index in range(n):
+                    lo = index * duration / n
+                    hi = (index + 1) * duration / n
+                    window = values[(times >= lo) & (times < hi)]
+                    voiced = window[window > 0]
+                    # Unvoiced stays 0.0, which `voiceTone` already reads as
+                    # neutral rather than as an impossibly low voice.
+                    if len(voiced):
+                        pitch_track[index] = float(np.median(voiced))
+            except parselmouth.PraatError:
+                pass
+
+        texture = []
+        for a, b in zip(edges[:-1], edges[1:]):
+            chunk = span[a:b]
+            if len(chunk) < 32:
+                texture.append(0.0)
+                continue
+            spectrum = np.abs(np.fft.rfft(chunk * np.hanning(len(chunk))))
+            freqs = np.fft.rfftfreq(len(chunk), 1 / SR)
+            total = float(spectrum.sum())
+            texture.append(
+                float((spectrum * freqs).sum() / total) if total > 1e-9 else 0.0
+            )
+
+        return {
+            "loudness": [round(v, 2) for v in loudness],
+            "pitch": [round(v, 1) for v in pitch_track],
+            "texture": [round(v, 1) for v in texture],
+        }
+
     def _syllable_stops(self, word: HypothesisWord) -> list[dict] | None:
         """CWI 2.2.4 stops: how far the colour has advanced through the word.
 
@@ -2985,6 +3066,46 @@ class StreamingCaptioner:
             # the late-motion failure this layer is designed to prevent.
             delivery = _word_delivery_features(word, audio, self.cfg)
             delivery_cache[slot_key] = delivery
+
+        # CWI 2.3's contour, frozen on exactly the same terms as `delivery`:
+        # once a word has been drawn, the shape of its letters must not change
+        # underneath it because the verifier respelled it.
+        envelope_cache = getattr(self, "envelope_cache", None)
+        if envelope_cache is None:
+            envelope_cache = self.envelope_cache = {}
+        span_s = max(0.0, word.end - word.start)
+        cached = envelope_cache.get(slot_key)
+        if cached is None:
+            # The neighbouring-slot search exists so endpoint RETIMING -- the
+            # same word moving a few tens of ms -- keeps its frozen shape. It
+            # must not let a DIFFERENT word inherit it: a slot is 50 ms, so two
+            # short words land in adjacent slots easily. Measured, a 0.02 s
+            # "You" borrowed the envelope of the 0.72 s "know" beside it and was
+            # drawn with that word's contour. Matching the span rejects that
+            # while still absorbing the retiming it is there for.
+            for delta in (-1, 1, -2, 2):
+                neighbour = envelope_cache.get(
+                    ("§slot", self.utterance, slot + delta)
+                )
+                if neighbour is None:
+                    continue
+                other = neighbour["span_s"]
+                if abs(other - span_s) <= 0.3 * max(other, span_s, 1e-6):
+                    cached = neighbour
+                    break
+        if cached is None:
+            cached = {
+                "env": self._intonation_envelope(
+                    word,
+                    audio,
+                    self.cfg.get("display", {}).get(
+                        "intonation_envelope_samples", 8
+                    ),
+                ),
+                "span_s": span_s,
+            }
+            envelope_cache[slot_key] = cached
+        envelope = cached["env"]
         prosody_key = (word.text.casefold(), round(word.start * 100))
         features = self.prosody_cache.get(prosody_key)
         if frozen is not None:
@@ -3048,14 +3169,27 @@ class StreamingCaptioner:
         mapping = self.cfg["mapping"]["loudness_to"]
         pivot = ((mapping.get("baseline", 5) - mapping["min"]) /
                  max(1e-6, mapping["max"] - mapping["min"]))
-        if len(self.db_history) >= 6 and lo_db < med < hi_db:
-            if db <= med:
-                loudness = pivot * (db - lo_db) / max(1e-6, med - lo_db)
-            else:
-                loudness = pivot + (1 - pivot) * (db - med) / max(1e-6, hi_db - med)
-        else:
-            loudness = (db - lo_db) / max(1e-6, hi_db - lo_db)
-        loudness = float(np.clip(loudness, 0.0, 1.0))
+        calibrated = len(self.db_history) >= 6 and lo_db < med < hi_db
+
+        def _normalize_db(value: float) -> float:
+            """dB -> 0..1 on the 2.3.5-pivoted scale the client's axes expect."""
+            if calibrated:
+                if value <= med:
+                    return float(np.clip(
+                        pivot * (value - lo_db) / max(1e-6, med - lo_db), 0.0, 1.0
+                    ))
+                return float(np.clip(
+                    pivot + (1 - pivot) * (value - med) / max(1e-6, hi_db - med),
+                    0.0, 1.0,
+                ))
+            return float(np.clip(
+                (value - lo_db) / max(1e-6, hi_db - lo_db), 0.0, 1.0
+            ))
+
+        loudness = _normalize_db(db)
+        bright_lo, bright_hi = self.cfg.get("display", {}).get(
+            "intent_circle_brightness_hz", [500, 3500]
+        )
         if frozen is not None:
             loudness = frozen[3]
         elif len(self.db_history) >= 6:
@@ -3106,6 +3240,30 @@ class StreamingCaptioner:
             "conf": round(word.conf, 3),
             "conf_available": word.conf_available,
             **({"syllables": syllables} if syllables else {}),
+            # CWI 2.3 per CHARACTER (p.34/p.38/p.40). Absent for spans too short
+            # to have a measurable shape; the client then uses the word-level
+            # values for every character rather than inventing a contour.
+            **({
+                # Through the SAME pivot as `loudness` above, so the client's
+                # 2.3.5 anchor means one thing. Shape is frozen with the word;
+                # only the absolute level can still shift during the first few
+                # words, exactly as the word-level value does while the speaker's
+                # percentiles calibrate.
+                "env_loudness": [
+                    round(_normalize_db(v), 4) for v in envelope["loudness"]
+                ],
+                "env_pitch": envelope["pitch"],
+                # Spectral centroid -> the same 0..1 brightness the width axis
+                # already consumes as `delivery_texture` (0 = warm/low
+                # harmonics = wider, 1 = bright/high harmonics = condensed), on
+                # the configured brightness range so both agree.
+                "env_texture": [
+                    round(float(np.clip(
+                        (v - bright_lo) / max(1e-6, bright_hi - bright_lo), 0.0, 1.0
+                    )), 4)
+                    for v in envelope["texture"]
+                ],
+            } if envelope else {}),
             **salience,
         }
         if final:
@@ -4618,6 +4776,9 @@ def _studio_runtime_config(
         # Same speakers, same hues, darkened for the studio's light stage.
         "paletteLight": list(cfg.get("palette_light", []))
         + list(cfg.get("palette_support_light", [])),
+        # CWI 2.1.1 mains and 2.1.2 supporting colours arrive concatenated; the
+        # client has to know where the boundary is to exhaust the mains first.
+        "paletteSupportCount": len(cfg.get("palette_support", [])),
         "displayMode": display.get("mode", "fast"),
         "maxWords": display.get("max_words", 8),
         "paragraphWordLimit": display.get(
