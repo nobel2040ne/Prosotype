@@ -733,7 +733,31 @@ live:
   # English phones do not uniquely determine spelling ("phone", "hour",
   # "knife"), so extensions require repeat observations and stay provisional.
   onset_prefix:
-    enabled: true
+    # DISABLED 2026-08-01 at the user's request: "if speaker say H~~~~ello then
+    # H appears first, and it creates the lag."
+    #
+    # That is exactly what this does. A wav2vec2 phoneme model advances a
+    # speculative prefix one confidence-gated phone at a time on the first slot
+    # of each utterance (`H` -> `He` -> `Hel`), so a single letter appears
+    # before the recognizer has a word, then morphs. It resets after
+    # `reset_s` of silence, so it fires at the START OF EVERY SENTENCE -- which
+    # is where the flicker was reported.
+    #
+    # MEASURED on the bundled English clip, on/off over 30 s:
+    #   enabled  -> 39 text changes, 14 of them from a 1-2 letter stub
+    #               ('H' -> 'Uhimi', 'H' -> 'U', 'U' -> 'Something')
+    #   disabled -> 23 text changes, 0 from a stub (the 2 remaining are
+    #               ordinary endpoint punctuation, 'it' -> 'it.')
+    # So it accounts for ~40% of all visible text churn on its own.
+    #
+    # It is NOT the source of the ~1.3 s hitch at each sentence: the worst
+    # stall measured 1261 ms with it on and 1315 ms with it off. That is the
+    # endpoint verifier blocking the audio loop -- a separate, unfixed issue.
+    #
+    # Korean already had this false. What is lost by disabling: the first word
+    # of an utterance now appears when the recognizer produces it (~0.6 s)
+    # rather than a speculative letter appearing sooner. Set true to restore.
+    enabled: false
     model_dir: assets/phoneme-onset-en
     model_id: bihungba1101/wav2vec2-base-timit-phoneme-demo-google-colab
     hop_s: 0.08

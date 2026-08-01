@@ -85,6 +85,27 @@ export const RESYNC_TOLERANCE_MS = 1500;
  */
 export const DRIFT_DECAY_MS_PER_S = 5;
 
+/*
+ * NO CATCH-UP SLEW HERE, AND THE REASON IS MEASURED (2026-08-01).
+ *
+ * The server blocks ~1.3 s at every endpoint (`verifier.transcribe()` and the
+ * speaker embedding pass run inside the audio loop), and the obvious theory was
+ * that the paced source then floods its queue, the max-filter swallows the
+ * burst, and the playhead JUMPS past words that had not turned yet. A rate cap
+ * on offset increases was implemented against that theory.
+ *
+ * It changed nothing: late words in steady state measured 13 with the cap and
+ * 13 without. Reading the raw clock shows why -- the playhead does not jump.
+ * `newest - playhead` sits at a steady 1.22 s, collapses to NEGATIVE during
+ * each stall (the clock keeps interpolating while no words arrive at all), then
+ * returns to exactly 1.22 s. The words stop; the clock does not.
+ *
+ * So the read-ahead genuinely drains at every endpoint, and the words spoken
+ * during the stall arrive with onsets already behind the playhead. The fix is
+ * to stop blocking the loop, or to run a delay longer than the stall -- not to
+ * filter the clock. Left out rather than shipped as an unmeasured improvement.
+ */
+
 function finite(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : Number.NaN;

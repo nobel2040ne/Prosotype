@@ -9,6 +9,7 @@ import {
 import {
   initialCaptionModel,
   reduceCaptionEvent,
+  wordKey,
   type CaptionEvent,
   type CaptionModel,
   type CaptionWord,
@@ -301,6 +302,9 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
   const clockRef = useRef<PlayheadClock>(IDLE_CLOCK);
   const runtimeRef = useRef(runtime);
   const lateWordsRef = useRef(0);
+  const frozenTextRef = useRef(0);
+  // id -> the text the word was WEARING when the playhead reached it.
+  const settledTextRef = useRef(new Map<string, string>());
   const rearmedWordsRef = useRef(0);
   const minReadAheadRef = useRef(Number.POSITIVE_INFINITY);
   const eventIdRef = useRef(0);
@@ -340,6 +344,48 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       setLevel(incoming);
       setWaveform((values) => [...values.slice(-31), Number(incoming.rms_db)]);
       return;
+    }
+    /*
+     * THE CAPTION INVARIANT, ENFORCED RATHER THAN MERELY DOCUMENTED.
+     *
+     * "Text may be revised only AHEAD of the playhead; once the colour turn
+     * passes a word it is frozen." That was true of hypothesis churn, which
+     * happens in the white zone, but NOT of endpoint verification, which
+     * arrives seconds later and rewrote words the viewer had already read.
+     * Measured on the bundled clip: 44 text changes over 74 words, 38 of them
+     * landing more than the read-ahead delay after the word's own onset --
+     * "sixteen" became "1640" 4.5 s after it was spoken, in place, on screen.
+     *
+     * A word whose turn has passed therefore keeps the text it was drawn with.
+     * Only the spelling is frozen: speaker colour, finality and timing still
+     * update, because a late attribution correction is a direct colour write
+     * and that is exactly what the design system asks for.
+     *
+     * The verifier is not being ignored -- it simply loses the race for words
+     * the viewer has already read. Raising `display.read_ahead_delay_s` widens
+     * the window in which it can still win.
+     */
+    const freezeText = <T extends {text?: string}>(word: T): T => {
+      const key = wordKey(word as unknown as CaptionWord);
+      // Recorded when the playhead passed the word -- NOT read from the live
+      // model here. The reducer routinely deletes a non-final word and re-adds
+      // it a moment later with the verifier's spelling, and comparing against
+      // the model alone let exactly that path through: at the instant of
+      // re-insertion there was nothing to compare to. Measured, 14 coloured
+      // captions still rewrote themselves ("tab" -> "tab.", "right" ->
+      // "Right,") until this was remembered independently.
+      const settled = settledTextRef.current.get(key);
+      if (settled === undefined || settled === word.text) return word;
+      frozenTextRef.current += 1;
+      return {...word, text: settled};
+    };
+    if (Array.isArray(event.words)) {
+      event = {...event, words: event.words.map(freezeText)};
+    } else if (typeof event.text === "string") {
+      // `cue`/`commit`/`word` may carry a single word at the top level rather
+      // than in a `words` array. Missing this path let endpoint punctuation
+      // ("it" -> "it,", "okay" -> "okay?") still rewrite coloured captions.
+      event = freezeText(event as CaptionEvent & {text: string});
     }
     setModel((current) => reduceCaptionEvent(current, event, id));
   }, []);
@@ -563,6 +609,18 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
         now,
         runtimeRef.current.readAheadDelayMs,
       );
+      // A word's text is fixed the moment the playhead reaches it. Doing this
+      // on the tick rather than on the next revision means a word that is
+      // deleted and re-added still comes back wearing what the viewer read.
+      for (const [id, schedule] of scheduledRef.current) {
+        if (now < schedule.turnAtMs) continue;
+        if (settledTextRef.current.has(id)) continue;
+        const word = modelRef.current.words[id];
+        if (word?.text !== undefined) {
+          settledTextRef.current.set(id, word.text);
+        }
+      }
+
       const newest = newestAcousticMs(modelRef.current);
       if (Number.isFinite(newest) && scheduledRef.current.size > 0) {
         minReadAheadRef.current = Math.min(
@@ -633,6 +691,9 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
            * delay is shorter than the recognizer's real latency.
            */
           lateWords: lateWordsRef.current,
+          // Revisions REJECTED because the playhead had already passed the
+          // word. A healthy figure; zero would mean the invariant is unused.
+          frozenTextRevisions: frozenTextRef.current,
           rearmedWords: rearmedWordsRef.current,
           playheadMs: Number.isFinite(playhead) ? playhead : null,
           newestAcousticMs: Number.isFinite(newestAcousticMs(

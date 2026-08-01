@@ -577,6 +577,64 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     words animate "fully, one by one" — syllable-at-a-time is the documented
     *exception*, gated by `motion.syllable_fill`.
 
+  * **THE ENDPOINT BLOCKS THE LOOP FOR ~1.3 s, AND THAT IS THE HITCH AT EVERY
+    SENTENCE (2026-08-01, user: "a discrete lag when starting every sentence
+    after a little silence").** MEASURED off the SSE stream: the `level`
+    metronome runs at a 128 ms median but stalls **1.31 s** once per utterance,
+    with a second stall around 0.65 s. The cause is in `_process_result`:
+    `self.verifier.transcribe(audio)` (offline Parakeet over the whole
+    utterance) and `speaker_tracker.label_words(...)` run SYNCHRONOUSLY inside
+    the audio loop, so nothing is emitted while they run.
+    **It is not the per-character envelope**: measured with
+    `intonation_envelope_samples` at 0 and 8, the worst stall was 1442 ms and
+    1309 ms respectively, and word delivery latency was 0.51 s vs 0.58 s median.
+    **The playhead does NOT jump, and a catch-up slew does not help.** The
+    obvious theory -- source floods its queue, max-filter swallows the burst,
+    playhead skips -- was implemented as a rate cap on offset increases and
+    measured: late words in steady state were **13 with the cap and 13
+    without**. Reading the raw clock shows why. `newest - playhead` sits at a
+    steady **1.22 s**, goes NEGATIVE during each stall (the clock keeps
+    interpolating while no words arrive at all), then returns to exactly 1.22 s.
+    The words stop; the clock does not. The slew was removed rather than shipped
+    as an unmeasured improvement -- see the note in `caption-clock.ts`.
+    So the read-ahead genuinely DRAINS at every endpoint, and words spoken
+    during the stall arrive with onsets already behind the playhead, which is
+    why they paint settled with no motion. The real fixes are to stop blocking
+    the loop (move endpoint verification off the audio thread -- note
+    `label_words` LEARNS, so it cannot simply be threaded) or to run
+    `read_ahead_delay_s` longer than the stall. Neither is done.
+    **Beware the read-ahead median in `studio_probe.py`**: it averages over the
+    stall windows, where `newest - playhead` is negative and clamps to 0, so it
+    reported 86 ms while steady state was 1.22 s. Read the raw
+    `playheadMs`/`newestAcousticMs` series before believing it.
+  * **TEXT IS NOW FROZEN WHEN THE PLAYHEAD PASSES A WORD (2026-08-01, user:
+    "reduce the modifying words after caption shows").** The caption invariant
+    said text may be revised only AHEAD of the playhead. That was true of
+    hypothesis churn and false of endpoint verification: MEASURED, 44 text
+    changes over 74 words, **38 of them landing more than the read-ahead delay
+    after the word's own onset** -- "sixteen" became "1640" 4.5 s after it was
+    spoken, in place, on a caption the viewer had already read.
+    `settledTextRef` records what a word was WEARING when the playhead reached
+    it, and later revisions to that word are dropped. Only the spelling is
+    frozen; speaker colour, finality and timing still update, because a late
+    attribution correction is a direct colour write and the design system asks
+    for exactly that.
+    Two traps, both hit:
+    - The single-word event path (`cue`/`commit`/`word` carry `text` at the top
+      level, not in a `words` array) has to be filtered too, or endpoint
+      punctuation still rewrites coloured captions.
+    - Recording must happen ON THE PLAYHEAD TICK, not when a revision arrives.
+      The reducer routinely DELETES a non-final word and re-adds it with the
+      verifier's spelling; comparing against the live model let that path
+      through, because at the instant of re-insertion there was nothing to
+      compare to.
+    Measured on screen: coloured-caption rewrites **14 -> 5**, with ~53-134
+    revisions actively rejected per run. The remaining five are whole-word
+    re-alignments where the server reuses a POSITIONAL `word_id` for different
+    text ("sixteen" -> "1640"); freezing those would pin stale text to a slot
+    that now holds a genuinely different word, so they are allowed through.
+    Raising `read_ahead_delay_s` widens the window in which the verifier can
+    still win before the turn.
   * **CWI 2.3 IS PER CHARACTER, AND THE PDF'S PICTURES ARE THE PROOF
     (2026-08-01, user: "look at the pictures of description, not just the
     description").** The prose says volume->size, pitch->weight,
@@ -980,6 +1038,21 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   its model license. Freeze a smoothed estimate only onto future/unseen words.
   Never use an utterance-end result to animate or reweight historical words;
   that recreates the late-motion defect. See `docs/RESEARCH.md`.
+- **THE ONSET SIDECAR IS OFF (2026-08-01, user request).** `live.onset_prefix`
+  made a single speculative letter appear before the recognizer had a word
+  (`H` -> `He` -> `Hel`) and it resets after `reset_s` of silence, so it fired at
+  the START OF EVERY SENTENCE -- which is what the user reported as a hitch
+  there ("if speaker say H~~~~ello then H appears first, and it creates the
+  lag"). MEASURED on the bundled clip: 39 text changes with it on, 14 of them
+  from a 1-2 letter stub, versus 23 changes and 0 stubs with it off. It was
+  ~40% of all visible churn.
+  It is NOT the ~1.3 s sentence hitch: worst stall 1261 ms on, 1315 ms off.
+  That is the endpoint verifier blocking the audio loop (see the entry above).
+  **Do not confuse this with CWI 2.2.1 read-ahead** -- they are unrelated, and
+  the confusion cost a round trip. Read-ahead is the design system's white
+  preview of the whole line; the onset prefix is a speculative first phoneme.
+  The rest of this entry describes the feature as built, for whoever re-enables
+  it:
 - **The onset sidecar owns a provisional prefix, not durable spelling.**
   `PhonemeOnsetDetector` advances one confidence-gated phone at a time on the
   authoritative first slot (`H → He → Hel`, always `uN:w0`). Extensions require

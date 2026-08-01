@@ -2836,10 +2836,12 @@ class StreamingCaptioner:
         short to say anything honest about its shape -- the client then falls
         back to the word-level value for every character.
         """
+        n = int(samples)
+        if n < 2:
+            return None          # 0 disables the per-character channel entirely
         i0 = max(0, int(word.start * SR))
         i1 = min(len(audio), max(i0 + 1, int(word.end * SR)))
         span = audio[i0:i1]
-        n = max(2, int(samples))
         # Below roughly a 20 ms window per sample there is no contour left to
         # measure, only noise; a flat envelope would be a fabricated shape.
         if len(span) < n * int(0.02 * SR):
