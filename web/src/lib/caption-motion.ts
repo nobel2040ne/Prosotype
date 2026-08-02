@@ -35,8 +35,35 @@ export interface VoiceTypeRanges {
    * reads as instability rather than as intonation.
    */
   scaleResponseQuiet: number;
+  /**
+   * Fraction of each side's range where the size does not move at all.
+   *
+   * Ordinary speech lives near the speaker's median; without this band every
+   * unstressed word drifts smaller and the captions read as unstable.
+   */
+  scaleDeadband: number;
   /** Reachable `font-weight`. 400 is fixed at the 2.3.8 neutral band. */
   weight: readonly [number, number];
+  /**
+   * How much of the weight range an emphasised word takes, on top of 2.3.9.
+   *
+   * WITHOUT THIS THE WEIGHT CHANNEL ARGUES WITH THE VOLUME CHANNEL AND WINS.
+   * 2.3.9 maps high pitch to LIGHT, and a shout raises F0 -- the PR film's
+   * drill sergeant goes 140 Hz -> 278 Hz -- so the angriest voice in the film
+   * rendered here at weight 200, the configured Light floor: the thinnest text
+   * on the stage. The film does the opposite, unmistakably: crop its "louder"
+   * at peak (t=16.7 s) beside the same word settled (t=18.0 s) and it is
+   * Regular at rest and Black at 2.08x.
+   *
+   * The reconciliation is 2.3.7's own domain. "The frequency range of a
+   * typical human voice falls between 80 and 250 Hz", and the pitch->weight
+   * map describes a VOICE -- "lower voices ... are represented with a heavier
+   * weight", a property of who is speaking. A 278 Hz shout is not an airy
+   * voice, it is effort, and it leaves that domain entirely. So the Light half
+   * is withdrawn in proportion to emphasis, and emphasis adds weight of its
+   * own; ordinary speech, which is what 2.3.9 is about, is untouched.
+   */
+  weightEmphasis: number;
   /** Reachable `font-stretch` %. 100 is the neutral width. */
   width: readonly [number, number];
 }
@@ -102,26 +129,76 @@ export function voiceTone(pitchHz: number): number {
     (PITCH_CEILING_HZ - PITCH_NEUTRAL_HIGH_HZ);
 }
 
-/** Volume -> type size, anchored on §2.3.5 and bounded by §2.3.6. */
+/**
+ * Where the 2.3.5 baseline sits on the server's normalised 0..1 loudness.
+ *
+ * The server pivots each speaker's running median onto this point, so a word of
+ * ordinary volume arrives here and renders at exactly 1.0.
+ */
+const LOUDNESS_PIVOT =
+  (SIZE_BASELINE_PCT - SIZE_MIN_PCT) / (SIZE_MAX_PCT - SIZE_MIN_PCT);
+
+/**
+ * Volume -> type size, anchored on §2.3.5 and bounded by §2.3.6.
+ *
+ * THE DEADBAND IS WHAT MAKES THE QUIET HALF USABLE. Without one, every word
+ * below the speaker's median shrinks a little: measured on the bundled clip,
+ * 48% of ALL words rendered below normal, so ordinary unstressed speech was
+ * drawn as if whispered. Weakening the response instead only made the whole
+ * quiet channel invisible (a 10% floor that never reads on screen).
+ *
+ * A band around the median where the size does not move at all fixes both:
+ * ordinary words sit at exactly 1.0, and everything outside the band gets the
+ * FULL response, so a genuinely hushed word visibly shrinks. The band is a
+ * fraction of each side's own range, because the pivot is not centred -- the
+ * quiet half spans 0..0.22 and the loud half 0.22..1.
+ */
 export function voiceScale(
   loudness: number,
   ranges: VoiceTypeRanges,
 ): number {
   const level = clamp(Number.isFinite(loudness) ? loudness : 0.5, 0, 1);
-  const pct = SIZE_MIN_PCT + level * (SIZE_MAX_PCT - SIZE_MIN_PCT);
-  const literal = pct / SIZE_BASELINE_PCT;
+  const deviation = level - LOUDNESS_PIVOT;
+  const sideRange = deviation >= 0 ? 1 - LOUDNESS_PIVOT : LOUDNESS_PIVOT;
+  const dead = clamp(ranges.scaleDeadband, 0, 0.95) * sideRange;
   const [minimum, maximum] = ranges.scale;
-  const response = literal >= 1
+  if (Math.abs(deviation) <= dead) return 1;
+
+  // Re-span what is left of the side so the mapping stays continuous at the
+  // band edge and still reaches 2.3.6's limit at the extreme.
+  const shaped = (Math.abs(deviation) - dead) / Math.max(1e-6, sideRange - dead);
+  const limit = deviation >= 0
+    ? SIZE_MAX_PCT / SIZE_BASELINE_PCT
+    : SIZE_MIN_PCT / SIZE_BASELINE_PCT;
+  const response = deviation >= 0
     ? ranges.scaleResponse
     : ranges.scaleResponseQuiet;
-  return clamp(1 + response * (literal - 1), minimum, maximum);
+  return clamp(1 + response * shaped * (limit - 1), minimum, maximum);
 }
 
-/** Pitch -> type weight, with §2.3.8's complete neutral band held at 400. */
-export function voiceWeight(tone: number, ranges: VoiceTypeRanges): number {
+/**
+ * Pitch -> type weight, with §2.3.8's complete neutral band held at 400.
+ *
+ * `emphasis` is how far up the §2.3.6 size range this word already is, 0..1.
+ * At 0 this is exactly the PDF's mapping. Above it, the LIGHT half is
+ * withdrawn in proportion (a pushed voice is not an airy one -- see
+ * `weightEmphasis`) and the word gains weight with its size, which is what the
+ * PR film draws.
+ */
+export function voiceWeight(
+  tone: number,
+  ranges: VoiceTypeRanges,
+  emphasis = 0,
+): number {
   const [floor, ceiling] = ranges.weight;
-  const shaped = tone > 0 ? tone * (ceiling - 400) : tone * (400 - floor);
-  return Math.round(clamp(400 + shaped, floor, ceiling));
+  const pushed = clamp(Number.isFinite(emphasis) ? emphasis : 0, 0, 1);
+  const register = tone < 0 ? tone * (1 - pushed) : tone;
+  const shaped = register > 0
+    ? register * (ceiling - 400)
+    : register * (400 - floor);
+  const pressed = pushed * clamp(ranges.weightEmphasis ?? 0, 0, 1) *
+    (ceiling - 400);
+  return Math.round(clamp(400 + shaped + pressed, floor, ceiling));
 }
 
 /**
@@ -147,6 +224,55 @@ export function voiceWidth(
   return Math.round(clamp(100 + shaped, floor, ceiling));
 }
 
+/**
+ * The size band `voiceScale` can ACTUALLY produce, which is not `ranges.scale`.
+ *
+ * `scale` is a clamp; the response is what the mapping really reaches, and on
+ * the quiet side the two differ a lot -- configured 0.72, reachable 0.78,
+ * because `scaleResponseQuiet` is 0.55. Anything that asks "how far from
+ * normal is this word, as a fraction of the possible" has to divide by the
+ * REACHABLE extreme or it can never reach 1: measured, the most hushed word in
+ * the film scored 0.786, so a wave suppression keyed on the configured range
+ * left 21% of the wave running on "softer." -- a word the reference sets as
+ * six glyphs held together, with no scatter at all.
+ */
+export function reachableScaleRange(
+  ranges: VoiceTypeRanges,
+): [number, number] {
+  const loud = Math.min(
+    ranges.scale[1],
+    1 + ranges.scaleResponse * (SIZE_MAX_PCT / SIZE_BASELINE_PCT - 1),
+  );
+  const quiet = Math.max(
+    ranges.scale[0],
+    1 - ranges.scaleResponseQuiet * (1 - SIZE_MIN_PCT / SIZE_BASELINE_PCT),
+  );
+  return [quiet, loud];
+}
+
+/** How far up the reachable §2.3.6 range this word's size sits, 0..1. */
+export function emphasisOf(scale: number, ranges: VoiceTypeRanges): number {
+  const top = Math.max(reachableScaleRange(ranges)[1], 1 + 1e-6);
+  return clamp((scale - 1) / (top - 1), 0, 1);
+}
+
+/**
+ * How far this word's size departs from normal, 0..1, on whichever side it is.
+ *
+ * A whisper and a shout both read as 1, so the character wave can trade off
+ * against the word-level swell symmetrically.
+ */
+export function voiceDeviationOf(
+  scale: number,
+  ranges: VoiceTypeRanges,
+): number {
+  const [quiet, loud] = reachableScaleRange(ranges);
+  const span = scale >= 1
+    ? Math.max(1e-6, loud - 1)
+    : Math.max(1e-6, 1 - quiet);
+  return clamp(Math.abs(scale - 1) / span, 0, 1);
+}
+
 export function voiceTypeFor(
   {loudness, pitchHz, texture}: {
     loudness: number;
@@ -156,9 +282,10 @@ export function voiceTypeFor(
   ranges: VoiceTypeRanges,
 ): CaptionType {
   const tone = voiceTone(pitchHz);
+  const scale = voiceScale(loudness, ranges);
   return {
-    scale: voiceScale(loudness, ranges),
-    weight: voiceWeight(tone, ranges),
+    scale,
+    weight: voiceWeight(tone, ranges, emphasisOf(scale, ranges)),
     width: voiceWidth(tone, texture, ranges),
   };
 }

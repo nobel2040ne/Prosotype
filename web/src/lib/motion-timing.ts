@@ -70,3 +70,25 @@ export function naturalMotionDurationMs(
     settings.wordMotionMaxMs,
   );
 }
+
+/**
+ * How long the CWI 2.3 voice crest takes, given how long the colour wipe
+ * needs to cross the word.
+ *
+ * THE CREST MUST NOT LEAD THE WIPE. `@keyframes voice-phase` reaches full
+ * phase at its literal 24% stop (a keyframe selector cannot take a `var()`,
+ * so 0.24 here and the 24% there change TOGETHER). On the natural duration
+ * that rise takes ~150-200 ms, while the per-character colour turn crosses a
+ * long word in up to `wordMotionMaxMs` — so the word ballooned while most of
+ * its letters were still uncoloured. The PR film never moves a word ahead of
+ * its colour: in "weigh|ts" the size arrives WITH the sweep. Stretching the
+ * crest window so phase 1 lands as the wipe completes reproduces that; for
+ * the median word (sweep well under 28% of the natural window) this is a
+ * no-op, so only the words that exhibited the defect change.
+ */
+export const VOICE_PHASE_RISE_FRACTION = 0.24;
+
+export function crestDurationMs(sweepMs: number, naturalMs: number): number {
+  const sweep = Math.max(0, finite(sweepMs));
+  return Math.max(finite(naturalMs), sweep / VOICE_PHASE_RISE_FRACTION);
+}

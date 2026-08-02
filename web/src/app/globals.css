@@ -512,7 +512,18 @@ button {
   transform:
     translateX(-50%)
     scale(calc(1 + var(--sound-level, 0) * .22));
-  transition: transform 120ms cubic-bezier(.42,0,.22,1);
+  opacity: 1;
+  transition:
+    transform 120ms cubic-bezier(.42,0,.22,1),
+    opacity 240ms ease;
+}
+
+/* CWI 2.4.4/2.4.5: a sound label yields to speech. The reference film never
+   shows one beside an active dialogue caption; the component sets this while
+   the playhead is inside displayed speech (plus a short linger). The label
+   fades rather than unmounting, so the model keeps tracking the sound. */
+.sound-caption[data-suppressed="true"] {
+  opacity: 0;
 }
 
 /* The light stage has no captions box, and pure white on near-white would
@@ -523,10 +534,11 @@ button {
 }
 
 /* CWI 2.4.5: music descriptors "don't need to be animated and don't change
-   color". The ♫ symbol on either side is added by the component. */
+   color". The ♫ symbol on either side is added by the component. The
+   suppression fade is not animation of the descriptor, so it stays. */
 .sound-caption[data-category="music"] {
   transform: translateX(-50%);
-  transition: none;
+  transition: opacity 240ms ease;
 }
 
 .empty-stage {
@@ -804,12 +816,28 @@ button {
   font-weight: 400;
   font-stretch: 100%;
   opacity: 1;
-  /* CWI 2.2.1 + 2.2.2 (colour), and the 2.3 phase every character reads. */
-  animation:
-    word-color-turn var(--color-turn-ms, 90ms) linear
-      var(--turn-delay) backwards,
-    voice-phase var(--motion-duration) cubic-bezier(.42,0,.22,1)
-      var(--turn-delay);
+  /* THE TURN IS A WIPE ACROSS THE WORD; THE VOICE BELONGS TO THE WORD.
+     `Caption With Intention PR FILM.mp4` puts the colour boundary INSIDE a word
+     constantly, in ordinary captions, not as an effect: "I like i|t" (88.15s),
+     "dynamic te|xt" (42.0s), "brings in|" (49.3s), "weigh|ts" (51.35s),
+     "character|s," (60.4s), "instantly kn|ow" (62.1s). So the 2.2.2 COLOUR
+     turn lives on `.caption-character`, each letter on its own delay.
+     The 2.3 phase must NOT move down with it: its consumers -- the crest calc
+     on `.word-ink`, the push reservation on `.word-sizer-crest` -- are
+     ANCESTORS of the characters, and a custom property animated on a child
+     never reaches a parent. Moving `voice-phase` onto the characters silenced
+     every voice channel at once (measured before this note: font-weight sat at
+     exactly 400 for 100 words across 525 samples, and the crest/push never
+     fired -- "there is just flowing motion"). One phase per word is also what
+     2.3 specifies: every glyph of "louder" is one size. The film's "weigh"
+     turning big-and-bold while "ts" is still small is the accepted compromise
+     here -- size and weight rise word-uniform under the travelling colour. */
+  /* The crest gets its own window (`--crest-duration`, >= the natural one) so
+     its 28% rise finishes with the colour wipe instead of leading it — the
+     film's "weigh" is big and bold exactly as far as its sweep has reached.
+     The 2.2.3 pop and the wave stay on the natural `--motion-duration`. */
+  animation: voice-phase var(--crest-duration, var(--motion-duration))
+    cubic-bezier(.42, 0, .22, 1) var(--turn-delay);
 }
 
 /* CWI 2.1.5: an off-camera voice is italic, and keeps its speaker colour. */
@@ -825,16 +853,22 @@ button {
   color: var(--caption-unknown);
 }
 
+/* THE TURN LANDS AT FULL COLOUR. The colour-mix washes that used to live here
+   (62% on dark, 55% on light) muted the wipe for every provisional word — and
+   the `word-color-turn` keyframe has no `to`, so the wipe animates TOWARD this
+   computed colour: a washed computed colour means a washed turn, which is not
+   what the PR film shows anywhere. "Still revisable" is already signalled
+   before the turn by the read-ahead paint (the keyframe's `backwards` fill),
+   and after it by the dotted rule on the dark stage. */
 .caption-word[data-status="provisional"] {
-  color: color-mix(in srgb, var(--speaker-color) 62%, var(--caption-unknown));
+  color: var(--speaker-color);
   text-decoration: underline dotted rgb(var(--tint) / .42) .045em;
   text-underline-offset: .12em;
 }
 
-/* A dotted rule under 40px type is a lot of ink for "this may still change".
-   Recede the colour instead, the way the reference does. */
+/* A dotted rule under 40px type is a lot of ink for "this may still change";
+   the light stage drops it and lets the read-ahead paint carry the state. */
 :root[data-theme="light"] .caption-word[data-status="provisional"] {
-  color: color-mix(in srgb, var(--speaker-color) 55%, var(--muted));
   text-decoration: none;
 }
 
@@ -891,6 +925,9 @@ button {
   vertical-align: baseline;
   line-height: 0;
   white-space: pre;
+  /* No animation of its own: the reservation is `.word-sizer-crest`'s font
+     calc, driven by the word's inherited `--voice-phase` -- the same value the
+     visible `.word-ink` reads, so the footprint tracks the ink exactly. */
 }
 
 .word-glyph {
@@ -937,21 +974,50 @@ button {
    Driving size/weight/width per character (from the intra-word envelope) is
    what made ours read as "very character-level". The letters get the wave
    below instead, which is what the reference actually varies per glyph. */
-/* A WORD THAT WAITED RISES, AND LANDS AS IT TURNS.
-   synchronization.mov f236-292: the speaker holds before "is", and "is" sits
-   0.382em ABOVE the baseline in white for ~40 frames, then lands on the line in
-   the same moment it turns colour. `backwards` fill is what holds it aloft for
-   the whole read-ahead delay, however long that is -- the same trick the colour
-   turn uses. `--hold-lift` is 0 for ordinary speech, so nothing moves unless
-   the speaker actually paused. */
+/* A WORD THAT WAITED CROUCHES, SPRINGS, FLOATS, AND LANDS AS IT TURNS.
+   Re-measured 2026-08-02 off `Caption With Intention PR FILM.mp4` at 24 fps,
+   tracking "is" in "precisely as each word is spoken." against the static
+   yellow "word" beside it (t=6.45..8.05, font-size ~49.5px):
+
+     6.45-6.62  at rest on the line, size 1.000, lift 0
+     6.66-6.78  CROUCH -- size 0.714, and 0.14em BELOW the baseline
+     6.83-6.91  launch, overshooting to size 1.314 on the way up
+     6.95-7.03  apex, lift 0.40em
+     7.03-7.70  floats: size decays back to 1.000 while the lift creeps
+                on up to 0.525em
+     7.75-8.04  lands, eased out, over ~290ms, starting ON the colour turn
+
+   Two things were missing and the user asked for both: the lift was 0.382em
+   (measured off the lower-resolution synchronization.mov) and there was no
+   anticipation at all -- the word simply appeared aloft. The crouch and the
+   overshoot are what make it read as a spring rather than a lift.
+
+   ONE ANIMATION, ENDING ON THE TURN. `--hold-pre` is the whole pre-roll, so
+   the delay is `--turn-delay` MINUS it and `backwards` fill paints the resting
+   0% keyframe for as long as the read-ahead lasts. A word that arrives later
+   than its own pre-roll gets a negative delay and simply joins the spring
+   part-way through, which is the same mechanism every other caption animation
+   here uses for late arrivals.
+   `--hold-lift` is 0 for ordinary speech, so nothing moves unless the speaker
+   actually paused -- and at 0 the scale keyframes below still run, which is
+   why they are all written as `calc(1 + k * var(--hold-spring))`: the spring
+   amplitude is gated by the same wait. */
 .word-ink {
-  animation: word-hold-land var(--hold-land, 190ms)
-    cubic-bezier(.32,0,.24,1) var(--turn-delay) backwards;
+  animation: word-hold-spring
+    calc(var(--hold-pre, 420ms) + var(--hold-land, 290ms))
+    linear calc(var(--turn-delay) - var(--hold-pre, 420ms)) backwards;
+  /* THE SQUASH AND THE STRETCH PIVOT ON THE BASELINE, exactly like the 2.2.3
+     pop -- see `.word-glyph`. The box bottom is a descender plus half-leading
+     BELOW the baseline, so scaling about it would lift the word off the line
+     in proportion to the stretch. This element's own `em` equals the caption's
+     base em for the whole spring, because `--voice-phase` is still 0 until the
+     turn and the crest is what changes this font-size. */
+  transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
   display: inline-block;
   font-size: calc(1em * (1 + var(--voice-phase) * (var(--voice-scale, 1) - 1)));
   font-weight: calc(400 + var(--voice-phase) * (var(--voice-weight, 400) - 400));
   font-stretch: calc(100% + var(--voice-phase) * (var(--voice-width, 100%) - 100%));
-  will-change: font-size, font-weight, font-stretch;
+  will-change: font-size, font-weight, font-stretch, transform;
 }
 
 /* THE CHEWY BIT: A TRAVELLING STRETCH, PER CHARACTER, ON EVERY MOTION.
@@ -972,8 +1038,11 @@ button {
   white-space: pre;
   transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
   will-change: transform;
-  animation: character-wave var(--wave-span, 240ms) cubic-bezier(.34,0,.28,1)
-    calc(var(--turn-delay) + var(--char-index, 0) * var(--wave-step, 26ms));
+  animation:
+    word-color-turn var(--color-turn-ms, 90ms) linear
+      var(--char-turn-delay, 600000ms) backwards,
+    character-wave var(--wave-span, 240ms) cubic-bezier(.34,0,.28,1)
+      var(--char-turn-delay, 600000ms);
 }
 
 .caption-word[data-sustain="true"] .word-glyph::after {
@@ -1632,8 +1701,14 @@ button {
 @keyframes voice-phase {
   0%, 100% { --voice-phase: 0; }
   /* Literal on purpose: a keyframe SELECTOR cannot take a `var()`, and a
-     build that silently drops the rule leaves the swell doing nothing. */
-  28%, 62% { --voice-phase: 1; }
+     build that silently drops the rule leaves the swell doing nothing.
+     RE-FITTED 2026-08-02 to the PR film's own "louder" (t=16.43..17.48,
+     tracked at 24 fps): rise 0.25s, hold 0.55s, RETURN 0.25s, ~1.05s in all.
+     Against the previous 28%/62% on a 720ms window that is a hold more than
+     twice as long and a slower return, which is what the user asked for
+     ("increase the motion time of 'motion -> normal'"). 24% here and
+     `VOICE_PHASE_RISE_FRACTION` change together. */
+  24%, 76% { --voice-phase: 1; }
 }
 
 @keyframes word-color-turn {
@@ -1673,22 +1748,82 @@ button {
    word as one block, and `--char-wave` scales its amplitude with that letter's
    own loudness. Both endpoints are identity, so a settled row is plain type,
    and because it is a transform it cannot disturb the row's layout. */
-@keyframes word-hold-land {
-  from { transform: translateY(calc(-1 * var(--hold-lift, 0em))); }
-  to { transform: translateY(0); }
+/* Stops are the film's own frames as a fraction of `--hold-pre` + `--hold-land`
+   at the shipped 420ms + 290ms: crouch bottom 100ms (14%), back through the
+   line 165ms (23%), apex 245ms (35%), settled aloft 340ms (48%), floating
+   until the turn (59%), landed (100%).
+   THE PRE-ROLL IS BOUNDED BY HOW LONG A WORD ACTUALLY EXISTS BEFORE ITS TURN,
+   not by the film. The film crouches ~1.05s ahead; MEASURED on the sample by
+   CDP, the gap between a word entering the DOM and its colour turn is a median
+   of **0.30s** (p75 0.49, p90 0.67) -- the playhead runs 1.2s behind the
+   acoustic clock, but ASR delivers a word a median 0.62s after it was spoken,
+   and the endpoint holds the newest word back. At the film's 1050ms the spring
+   was invisible: ZERO of the words that earned a hold had the lead for it, one
+   joined during the float, and the rest joined during the LANDING. 420ms is
+   sized so a typical word joins at the LAUNCH -- entering stretched and
+   rising, which reads -- rather than already on its way down.
+   `--hold-spring` gates the squash/stretch on the same wait the lift uses, so
+   an ordinary word -- which is nearly all of them -- runs this animation as a
+   flat identity and costs nothing. */
+@keyframes word-hold-spring {
+  0% {
+    transform: translateY(0) scale(1, 1);
+    animation-timing-function: cubic-bezier(.4, 0, .7, .3);
+  }
+  14% {
+    transform:
+      translateY(calc(.12em * var(--hold-spring, 0)))
+      scale(calc(1 + .06 * var(--hold-spring, 0)),
+            calc(1 - .22 * var(--hold-spring, 0)));
+    animation-timing-function: cubic-bezier(.2, .8, .4, 1);
+  }
+  23% {
+    transform:
+      translateY(0)
+      scale(calc(1 - .02 * var(--hold-spring, 0)),
+            calc(1 + .08 * var(--hold-spring, 0)));
+    animation-timing-function: cubic-bezier(.15, .7, .35, 1);
+  }
+  35% {
+    transform:
+      translateY(calc(-.78 * var(--hold-lift, 0em)))
+      scale(calc(1 - .05 * var(--hold-spring, 0)),
+            calc(1 + .24 * var(--hold-spring, 0)));
+    animation-timing-function: cubic-bezier(.3, 0, .3, 1);
+  }
+  48% {
+    transform:
+      translateY(calc(-.90 * var(--hold-lift, 0em)))
+      scale(calc(1 - .012 * var(--hold-spring, 0)),
+            calc(1 + .06 * var(--hold-spring, 0)));
+    animation-timing-function: ease-out;
+  }
+  59% {
+    transform: translateY(calc(-1 * var(--hold-lift, 0em))) scale(1, 1);
+    animation-timing-function: cubic-bezier(.32, 0, .24, 1);
+  }
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
 }
 
 @keyframes character-wave {
   0%, 100% {
     transform: translateY(0) scale(1, 1);
   }
-  /* AMPLITUDES HALVED 2026-08-01 (user: "the motion waves seem a bit too
-     distracted"). Was .26/-.045 with a .10em rise, measured at +29% vertical
-     on screen. At that size every letter of every word was visibly moving and
-     the wave competed with the colour turn for attention instead of supporting
-     it -- the 2.2.3 cue is what should point the eye, and the wave is texture
-     under it. The rebound is gentler still: an overshoot the same size as the
-     rise is what makes a wave read as a wobble. */
+  /* HALVED ONCE, from .26 scaleY / .10em (+29% measured) to +11%, because at
+     the original size every letter of every word was visibly moving and the
+     wave COMPETED with the colour turn -- 2.2.3's cue is what should point the
+     eye and this is texture under it.
+     NOT halved again. It briefly was, on the false premise that the PR film has
+     no per-character motion -- that conclusion came from looking only at the
+     Forrest Gump clip (73-75s), where the captions are simple. The film's DEMO
+     section does have it: at 52.17s the letters of "animation" scatter
+     vertically ("a" and "ni" raised, "ma" dropped, "tio" between), exactly as
+     intonation.mov shows. Both references agree; only the movie-clip excerpt
+     does not, and a movie line is not evidence of absence.
+     The rebound stays gentler than the rise: an overshoot as large as the rise
+     is what makes a wave read as a wobble instead of a settle. */
   38% {
     transform:
       translateY(calc(-.05em * var(--char-wave, 1)))

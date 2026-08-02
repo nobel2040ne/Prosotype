@@ -513,3 +513,86 @@ def test_unverified_extra_sortformer_slot_never_becomes_visible_speaker():
         "S1",
         "provisional",
     )
+
+
+# Three dimensions, because the ambiguity guard needs two enrolled profiles AND
+# a third direction: in 2-D any new voice lies in the span of the first two.
+A3 = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+B3 = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+
+def _two_profiles():
+    tracker = manager()
+    assert tracker.observe(A3, 0.0, 1.0).status == "provisional"
+    assert tracker.observe(A3, 1.0, 2.0).status == "stable"
+    tracker.observe(B3, 2.0, 3.0)
+    tracker.observe(B3, 3.0, 4.0)
+    return tracker
+
+
+def test_a_voice_matching_nobody_enrolls_instead_of_reading_as_ambiguous():
+    """`min_confidence_margin` guards ASSIGNMENT, never ENROLLMENT.
+
+    It exists so a word is not handed to the wrong enrolled speaker when two
+    profiles score alike. When NOBODY is a plausible match the margin is small
+    for the opposite reason, and treating that as ambiguity is what produced
+    ONE speaker switch across a film with eleven speakers: on the PR film four
+    separate new voices arrived at best/second of 0.016/0.000, 0.084/0.065,
+    0.120/0.048 and 0.167/0.161 and every one of them was refused.
+    """
+    tracker = _two_profiles()
+    stranger = np.array([0.05, 0.04, 1.0], dtype=np.float32)
+    result = tracker.observe(stranger, 5.0, 7.0)
+    assert result.speaker_id == "S3", result
+    assert result.switch_decision in {
+        "new-profile-pending", "new-profile-active",
+        "accepted-persistent-new-speaker",
+    }, result
+
+    # ...and the guard still bites where it was designed to: a voice sitting
+    # squarely BETWEEN two enrolled profiles must not be resolved by picking
+    # whichever wins by a hair.
+    between = manager()
+    between.observe(A3, 0.0, 1.0)
+    between.observe(A3, 1.0, 2.0)
+    between.observe(B3, 2.0, 3.0)
+    between.observe(B3, 3.0, 4.0)
+    tie = between.observe(
+        np.array([0.7071, 0.7071, 0.0], dtype=np.float32), 5.0, 7.0
+    )
+    assert tie.switch_decision == "rejected-ambiguous", tie
+
+
+def test_one_long_turn_is_enough_for_a_third_speaker():
+    """A CHARACTER WHO SPEAKS ONCE IS STILL A CHARACTER.
+
+    Requiring a repeated endpoint made every identity past the second render
+    permanently neutral, which on a film of one-line characters is most of the
+    cast -- CWI 2.1's whole point, disabled.
+    """
+    tracker = _two_profiles()
+    stranger = np.array([0.05, 0.04, 1.0], dtype=np.float32)
+    once = tracker.observe(stranger, 5.0, 6.6)   # 1.6 s, one turn, never repeats
+    assert once.speaker_id == "S3", once
+    assert tracker.profile_stable[2] is True
+
+    # A SHORT third voice still has to repeat: the phantom this guards against
+    # is one noisy embedding, so the rule is about length, not about arrival.
+    brief = _two_profiles()
+    brief.observe(stranger, 5.0, 5.9)            # 0.9 s
+    assert brief.profile_stable[2] is False
+
+
+def test_longest_single_turn_gates_stability_not_the_running_total():
+    """Two fragments of ONE endpoint are not two observations.
+
+    `enrolled_durations` accumulates, so gating on it would let one long noisy
+    turn split by punctuation promote itself.
+    """
+    tracker = _two_profiles()
+    stranger = np.array([0.05, 0.04, 1.0], dtype=np.float32)
+    tracker.observe(stranger, 5.0, 5.9, observation_group=7)
+    tracker.observe(stranger, 6.0, 6.9, observation_group=7)
+    assert tracker.enrolled_durations[2] > 1.1
+    assert tracker.profile_longest_observation[2] < 1.1
+    assert tracker.profile_stable[2] is False

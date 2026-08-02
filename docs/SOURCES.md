@@ -92,3 +92,21 @@ the **shape** of the motion, but superseded by the PDF for amplitudes.
 - The bundled acceptance fixtures: `../assets/sample.mp4` (English) and
   `../assets/sample-ko.wav` (Korean). Caption changes should be tested against
   both — a single-language run is not sufficient acceptance.
+
+## `Caption With Intention PR FILM.mp4` (113 s, with audio)
+
+CWI applied to real footage (Forrest Gump, Toy Story) plus documentary
+interviews, and a demo section (0:40–1:04) covering the same sentences as the
+three `.mov` screen recordings. **The most authoritative reference for how the
+system is actually used**, and the only one with usable audio.
+
+Authoritative for: the colour turn as a per-character WIPE, transient swells
+that sustain then return to normal, read-ahead in white at normal size,
+off-camera italic, bracketed sound effects, and the line re-flowing around a
+swelling word.
+
+**NOT a calibration target for the loudness mapping.** Measured on its own
+audio, the word "louder" in the intonation demo is **−23.5 dB — quieter than
+the phrase before it**. Its huge caption is authored from meaning, not derived
+from the waveform. Fitting our dB→size mapping to this film would be fitting to
+an editor's judgement.

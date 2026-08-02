@@ -251,11 +251,21 @@ display:
   # cost is near zero -- the pitch analysis already runs over the span and was
   # simply discarding the contour.
   intonation_envelope_samples: 8
-  # The reference motion breathes rather than jabs. Normal words get a 520 ms
-  # zero-slope rise/return; a longer acoustic word may stretch toward 720 ms.
-  # The two-word active cap still prevents overlap from becoming visual noise.
-  word_motion_duration_s: 0.52
-  word_motion_max_duration_s: 0.72
+  # The reference motion breathes rather than jabs, and MEASURED it breathes
+  # slower than this used to allow. Tracking the PR film's "louder" at 24 fps
+  # (t=16.43 begins to swell, 16.68 at peak, holds to 17.23, back to normal by
+  # 17.48): rise 0.25 s, HOLD 0.55 s, return 0.25 s -- about 1.05 s in all,
+  # against a 0.72 s ceiling here. Raised at the user's direction ("increase
+  # the motion time of 'motion -> normal'"); the sustain and the return live in
+  # `@keyframes voice-phase` (24%..76%) and were re-fitted with it.
+  # 0.70/1.05 was still not it: the stops are FRACTIONS, so a short word's
+  # window shrank the return with everything else -- MEASURED, the return went
+  # 274ms (old 28/62 stops on a 720ms cap) to 184ms, i.e. the opposite of what
+  # was asked. Size the base so an ordinary word gets the FILM's absolute
+  # numbers: 0.95 + 0.42*span puts a typical 0.16 s word at ~1.02 s, which is
+  # rise 244ms / hold 529ms / return 244ms against the film's 250/550/250.
+  word_motion_duration_s: 0.95
+  word_motion_max_duration_s: 1.15
   word_motion_span_stretch: 0.42
   # Fixed 520–720 ms motion has a two-slot throughput ceiling. Above roughly
   # 3.8 words/s, that ceiling otherwise becomes a minute-long presentation
@@ -283,6 +293,12 @@ display:
   word_reveal_fade_s: 0.22
   line_break_gap_s: 2.0   # silence that forces a new line
   line_linger_s: 9.0      # linger retention only: how long a line stays
+  # CWI 2.4.4/2.4.5 sound labels yield to speech: the PR film shows
+  # "[Toy music]"/"[Beep]" only while no one is speaking, never alongside an
+  # active dialogue caption. The studio hides its sound label while the
+  # playhead sits inside displayed speech, plus this linger; below
+  # `live.endpoint_silence_s` so inter-sentence pauses don't flash the label.
+  sound_label_speech_linger_s: 0.8
   # sentence mode: gap between successive turns as they are revealed, so a
   # finalized utterance reads as a flowing exchange rather than a block dump.
   sentence_stagger_s: 0.7
@@ -559,13 +575,59 @@ motion:
       # is six glyphs at one size with no scatter at all, while "animation,"
       # (f194-216) is ordinary volume and its letters scatter hard.
       # 0 keeps the wave constant; 1 suppresses it completely at the extremes.
-      character_wave_falloff: 0.78
-      # Floor, so an extreme word still reads as type rather than a solid block.
-      character_wave_floor: 0.18
-      hold_lift_em: 0.382
+      # 1.0 SHIPPED 2026-08-02: a word carried by VOLUME gets no wave at all.
+      # At 0.78 with a 0.18 floor, "louder" kept 22% of the wave and "softer."
+      # kept 21%, and the user's report was exactly that — "'louder' and
+      # 'softer' -> no lifting effects". The word-level pop carries no
+      # translateY at all (MEASURED: 0.000px across 1995 swelling samples), so
+      # the ONLY vertical motion on those words was this wave, and the
+      # reference has none: `intonation.mov` f395 sets "louder" as six glyphs
+      # at one size with no scatter, and the PR film's "sole"/"Goddamnit" are
+      # uniform too.
+      character_wave_falloff: 1.0
+      # ...and no floor, for the same reason. The floor existed so an extreme
+      # word "still reads as type rather than a solid block", but the word-level
+      # swell already varies size, weight and width — it was never at risk of
+      # reading as a block, and the floor was measurable motion the reference
+      # does not have.
+      # NOTE the deviation this multiplies is measured against the REACHABLE
+      # size band, not this file's `voice_scale_range`: the quiet side stops at
+      # 0.78, not 0.72, so against the configured clamp the most hushed word in
+      # the film only scored 0.786 and kept a fifth of its wave even at floor 0.
+      character_wave_floor: 0.0
+      # RE-MEASURED 2026-08-02 off the PR film, which is a cleaner and larger
+      # recording than synchronization.mov and is what 0.382 came from. Same
+      # word, "is" in "precisely as each word is spoken.", tracked at 24 fps
+      # against the static yellow "word" beside it (font-size ~49.5px):
+      #   6.66-6.78  CROUCH: size 0.714, and 0.14em BELOW the baseline
+      #   6.83-6.91  launch, overshooting to size 1.314 on the way up
+      #   6.95-7.03  apex, lift 0.40em
+      #   7.03-7.70  floats: size decays to 1.000, lift creeps to 0.525em
+      #   7.75-8.04  lands, eased out, over ~290ms, starting ON the turn
+      # The user asked for both halves of this ("more higher, and have more
+      # stretched ... more like spring"). The anticipation crouch is what makes
+      # it a spring instead of a lift; the amplitudes live in `word-hold-spring`
+      # in globals.css, gated by `--hold-spring` so an ordinary word is flat.
+      hold_lift_em: 0.525
       hold_full_s: 0.70        # gap at which the lift reaches its maximum
       hold_min_s: 0.22         # below this a word is ordinary speech: no lift
-      hold_land_ms: 190        # how long the descent onto the baseline takes
+      # Crouch + launch + float, i.e. everything BEFORE the landing. The whole
+      # choreography is anchored on the colour turn, so this is subtracted from
+      # `--turn-delay`; a word delivered later than its own pre-roll joins the
+      # spring part-way through instead of replaying it.
+      # BOUNDED BY HOW LONG A WORD ACTUALLY EXISTS BEFORE ITS TURN, not by the
+      # film. The film crouches ~1.05 s ahead; at 1050 the spring MEASURED as
+      # invisible, because the playhead runs 1.2 s behind the acoustic clock
+      # while ASR delivers a word a median 0.62 s after it was spoken, so a
+      # gap between a word entering the DOM and its colour turn is a MEASURED
+      # median of 0.30 s (p75 0.49, p90 0.67), because ASR delivers a word a
+      # median 0.62 s after it was spoken and the endpoint holds the newest
+      # word back. At the film's 1050 the spring was invisible: zero held words
+      # had the lead, one joined during the float, the rest during the LANDING.
+      # 420 is sized so a typical word joins at the LAUNCH — entering stretched
+      # and rising, which reads — instead of already on its way down.
+      hold_pre_ms: 420
+      hold_land_ms: 290        # how long the descent onto the baseline takes
       # 2.3's swell HOLDS, it does not just peak. intonation.mov: "louder" is
       # up by f388 and still up at f430, back to normal by f442 -- roughly a
       # 0.35 s sustain inside a 0.73 s swell. A single symmetric crest read as
@@ -607,8 +669,32 @@ motion:
       # distribution into one indistinguishable size, while this stays monotone.
       # 1.0 is the literal PDF range before the live clamp.
       # 0.25 kept 2.3.5's anchor exact while flattening everything around it;
-      # 0.62 keeps the anchor and lets the distribution actually spread.
-      voice_scale_response: 0.62
+      # 0.62 kept the anchor and let the distribution spread.
+      # 1.0 SHIPPED 2026-08-02, i.e. the PDF's own response with `voice_scale_
+      # range` as the only narrowing. Once `_prominence` put the RIGHT words
+      # above the deadband, this was the cheapest way to give those words the
+      # rest of their excursion: it cannot move a word that is inside
+      # `voice_scale_deadband`, so it grows the emphatic tail without adding to
+      # the count of words that move at all. Chosen from an exact sweep
+      # (`gain` x `vocal_effort.deadband` x this, replayed over 165 measured
+      # words), scoring "louder" against the whole distribution:
+      #                       "louder"  >1.16x  >1.30x  >1.50x
+      #   level channel alone     1.150   10.3%    6.7%    3.0%
+      # words, and SCORING BOTH OF THE USER'S EXAMPLES -- "louder" and the
+      # "Goddamnit Gump!" line -- because a setting tuned on "louder" alone
+      # rendered that whole line at a flat 1.150, which is the other half of
+      # the complaint:
+      #                    "louder"  shout median  shout>1.16  >1.30x  >1.50x
+      #   level alone         1.150         1.150       10.5%    7.3%    4.8%
+      #   1.3 / 0.70 / 1.0    1.611         1.150       26.3%   10.9%    7.3%
+      #   1.3 / 0.62 / 1.0    1.863         1.292       63.2%   18.8%    9.7%
+      #   1.6 / 0.70 / 1.0    1.831         1.258       63.2%   17.0%    9.1%  <-
+      #   1.3 / 0.34 / 1.0    1.863         1.863       84.2%   35.2%   32.7%
+      #   film (biased low)       —             —           —    7.3%    2.8%
+      # Gain rather than a narrower band, for the reason this file has already
+      # learned twice: the band is what decides WHICH words move, and gain is
+      # what makes the ones that do read.
+      voice_scale_response: 1.0
       # ...and the QUIET half, deliberately gentler. The two directions do not
       # cost the same: growing a word makes it easier to read and reads as
       # emphasis, while shrinking it makes it harder to read. MEASURED on the
@@ -616,7 +702,20 @@ motion:
       # (down to 0.75x) -- ordinary unstressed speech drawn as if whispered,
       # which reads as instability rather than intonation. At 0.26 only a
       # genuinely hushed word visibly shrinks.
-      voice_scale_response_quiet: 0.26
+      # RESTORED to a real value once the deadband below existed. At 0.26 the
+      # quiet channel simply did not read on screen -- the deepest shrink was
+      # 10% and an ordinary quiet word got 3-5%, which the user could not see in
+      # a live test. Weakening the response was the wrong lever: it made every
+      # quiet word invisible instead of stopping ordinary words from moving.
+      voice_scale_response_quiet: 0.55
+      # THE BAND AROUND THE MEDIAN WHERE SIZE DOES NOT MOVE AT ALL, as a
+      # fraction of each side's own range (the 2.3.5 pivot is not centred: the
+      # quiet half spans 0..0.22 of normalised loudness, the loud half
+      # 0.22..1). Ordinary speech sits near the median, so without this band
+      # every unstressed word drifts smaller -- measured, 48% of ALL words.
+      # With it, ordinary words render at exactly 1.0 and only genuinely loud
+      # or hushed ones move, which is what "occasional emphasis" means.
+      voice_scale_deadband: 0.34
       # 2.3.8: 160-200 Hz is Regular 400 -- a BAND, not a pivot, so ordinary F0
       # jitter must not move the weight at all. 2.3.9: 80 Hz -> heavy,
       # 250 Hz -> light. The design system reaches 100..1000; live narrows it
@@ -624,6 +723,25 @@ motion:
       # edge of the domain rendering hairline or black beside ordinary text is
       # legible in a poster and not in a live caption.
       weight_range: [200, 760]
+      # ...and how much of that range an EMPHASISED word takes on top of the
+      # pitch map, 0 restoring the literal 2.3.9 behaviour.
+      # ALL THREE CWI CHANNELS USED TO AGREE TO DRAW A SHOUT AS WEAK. A shout
+      # raises F0 (the PR film's drill sergeant: 140 Hz -> 278 Hz), 2.3.9 maps
+      # high pitch to LIGHT and 2.3.10's diagonal ties light to condensed, so
+      # MEASURED on screen the angriest voice in the film rendered at weight
+      # 200 — the configured Light floor, the thinnest text on the stage —
+      # where the narration bottomed out at 363.
+      # The film itself does the opposite, and it is not subtle: crop "louder"
+      # at its peak (t=16.7 s) beside the same word settled (t=18.0 s) and it
+      # goes Regular -> Black while it doubles in size.
+      # 2.3.7 is what reconciles them. Its domain is "the frequency range of a
+      # typical human voice ... between 80 and 250 Hz", and it describes a
+      # VOICE — "lower voices are represented with a heavier weight" is a
+      # property of who is speaking. A 278 Hz shout is vocal effort, not an
+      # airy voice, and it has left that domain. So emphasis withdraws the
+      # Light half in proportion and adds weight of its own; ordinary speech,
+      # which is all 2.3.9 is about, is untouched at emphasis 0.
+      weight_emphasis: 0.55
       # 2.3.9/2.3.10: rich low harmonics read wider, thin high harmonics
       # condensed. Centred on 100% so the CONDENSED half is reachable -- the
       # previous mapping summed two always-positive terms and measured width
@@ -847,7 +965,97 @@ live:
   # real connected speech spans ~26 dB below its median. Widen the low
   # percentile if unstressed words still look too small.
   db_percentiles: [10, 95]  # [5,95] over-widened: loud words hit 9% and overflowed
-  db_min_span: 18.0      # never stretch a monotone passage across the range
+  # A FLOOR on the normalization window, so a monotone passage is not amplified
+  # into whisper..shout. It only ever binds when the speaker's observed
+  # p10..p95 is NARROWER than this.
+  # LOWERING THIS WAS TRIED AND MEASURED WORSE (2026-08-02). The PR film's
+  # durable-word span is p10..p95 = 10.6 dB, so 18 does bind here and does
+  # divide every loud-side deviation by ~1.77x — which looks like a defect
+  # until you measure the RESULT against the film instead of against the
+  # theory. Per-word peak rendered size, film vs studio at 1440x900:
+  #        film   18.0   14.0   12.0
+  #   p90  1.220  1.236  1.409  1.475
+  #   p95  1.340  1.361  1.623  1.733
+  #   >1.30 7.3%   7.9%  12.4%  15.3%
+  #   >1.50 2.8%   2.4%   7.4%   9.7%
+  # 18.0 tracks the reference; 12.0 renders 3.5x too many very large words.
+  # The film measurement that first argued for lowering it was contaminated —
+  # index-matched cluster tracking breaks when a swelling word re-flows the
+  # line, and the resulting one-frame 7.78x "peaks" inflated the film's tail.
+  # See the measurement recipe in CLAUDE.md before re-litigating this.
+  db_min_span: 18.0
+  # VOCAL EFFORT, because CWI 2.3.5 asks for VOLUME and `loudness_db` only
+  # measures LEVEL. On mastered, AGC'd or auto-levelled audio those come apart
+  # completely: on the PR film the drill sergeant ("GUMP!", t=30-37.5 s) shouts
+  # at full effort and lands 1.6 dB QUIETER than the calm narration, so ranking
+  # his words against it by level scores AUC 0.367 — worse than chance. Pressed
+  # phonation flattens the spectrum whatever the gain, so spectral tilt still
+  # separates them (AUC 0.801 per word, 0.892 causally smoothed).
+  # It is ONE-SIDED (a soft voice already reads quiet through level, and
+  # subtracting would penalise it twice) and carries its OWN percentile window,
+  # which is what keeps it from costing the level channel its range.
+  # MEASURED end to end on `--sample` at the shipped settings, by comparing
+  # matched word_ids against a level-only run:
+  #   narration        0% of words lifted   rendered peak p50 1.149 max 1.150
+  #   drill sergeant  67% of words lifted   rendered peak p50 1.181 max 1.861
+  # i.e. the shout gains the whole top of the range and ordinary narration is
+  # left bit-identical. Before this the shout's rendered peak maxed at 1.333,
+  # BELOW the narration's own, which is what "the motion doesn't catch the
+  # loud voice" meant.
+  # EXTENDED 2026-08-02 FROM EFFORT TO PROMINENCE, because the user's first
+  # example was not the shout at all: "the motion doesn't catch ... 'louder'".
+  # Tilt-only could not, for two independent reasons, and both are fixed here.
+  #  1. `effort_history` takes FINAL words only and the film opens with ONE
+  #     24 s utterance, so on every word the film itself captions — "louder"
+  #     included — the lift's `>= 6 words` gate was false and the channel was
+  #     simply OFF. `effort_bootstrap` is the same cold-start fix `db_bootstrap`
+  #     already carries, keyed by time slot so re-emissions overwrite.
+  #  2. `smoothing_words` deleted it even so. Sustained shouting is a speaking
+  #     STYLE and a causal mean reads it better than any single word; ONE
+  #     stressed word is an EVENT, and the six words before "louder" are calm
+  #     narration, so the mean lands below the median and the lift is exactly
+  #     0.000 at every setting of everything else.
+  # See `_prominence` for the full measurement table.
+  vocal_effort:
+    enabled: true
+    gain: 0.55
+    smoothing_words: 6      # causal, past only; AUC 1/2/4/6 words = .80/.86/.89/.91
+    # How much of a word's score is its OWN tilt rather than that running mean.
+    # 0 is the pre-2026-08-02 behaviour. Measured on the film ("louder" lift /
+    # shout words lifted / narration words lifted / shout-vs-narration AUC):
+    #   0.00  0.000  42%  2%  0.925      1.00  0.396  58%  5%  0.906
+    #   0.40  0.149  63%  5%  0.936      0.75  ~0.31  60%  5%  ~0.93
+    #   0.60  0.246  63%  5%  0.936
+    emphasis_blend: 0.75
+    # Pitch excursion above the speaker's running median, in dB of ratio. This
+    # is what buys back the separation the blend costs: at blend 0 it moves the
+    # shout-vs-narration AUC from 0.882 to 0.958.
+    pitch_gain: 1.0
+    # Lengthening, measured per CHARACTER for the same reason tilt is
+    # energy-weighted: raw word duration mostly measures syllable count, and
+    # "identification." would then outrank every shout in the film.
+    length_gain: 0.5
+    percentiles: [10, 95]
+    # Tilt's own units, and NOT db_min_span. Measured tilt spread on the film
+    # is ~21 dB p10..p90, so the first value tried here (6.0) let ordinary
+    # narration variation saturate the window and lift 34% of narration words.
+    min_span: 12.0
+    # Only clearly-elevated effort should lift, for the same reason
+    # `voice_scale_deadband` exists: energy weighting does not fully remove
+    # phoneme content from tilt, so without a band a sibilant word ("so",
+    # "synchronized") reads as effort and spelling starts driving type size.
+    # WIDENED 0.34 -> 0.72 with the composite score: prominence has a wider
+    # spread than tilt alone, so at 0.34 it lifted 37.6% of all words and
+    # rendered 30.9% of them above 1.30x, against 6.7% for the level channel by
+    # itself. The band decides WHO moves; `gain` decides how far.
+    # THOSE TWO ONLY SEPARATED once the lift RE-SPANNED the band instead of
+    # subtracting it (see `_effort_lift`). While it subtracted, widening the
+    # band to hold ordinary words still also capped the loudest word, so the
+    # drill sergeant's line could not be strengthened without the narration
+    # following it up. After the re-span, `gain` 1.6 -> 0.55 buys a stronger
+    # shout at a SMALLER overall tail: shout words above 1.30x went 26% -> 63%
+    # and their median peak 1.258 -> 1.429.
+    deadband: 0.72
   # Local learned segmentation + speaker embeddings for live attribution.
   # pyannote segmentation 3.0 finds speech turns/overlap inside each endpoint;
   # one 3D-Speaker embedding per resulting turn maps it to stable S1/S2/... IDs.
@@ -873,7 +1081,12 @@ live:
     segmentation_num_threads: 2
     # Used only if the learned segmentation model is missing.
     change_below: 0.25     # adjacent-window cosine below this = turn boundary
-    max_speakers: 6        # CI main palette size (2.1.1)
+    # RAISED 6 -> 12 (2026-08-02). Six is the CI MAIN palette (2.1.1), but
+    # 2.1.2 defines twelve supporting colours for speakers 7+ and the studio
+    # already assigns them by hue separation and generates 2.1.4 pastels beyond
+    # that — so six was capping identity below what the design system and the
+    # renderer both already support. The PR film has eleven speakers.
+    max_speakers: 12
     window_s: 1.0
     hop_s: 1.0             # non-overlap: do not smear both sides of a turn
     sortformer:
@@ -894,6 +1107,14 @@ live:
     min_enrollment_duration_s: 0.8  # clean speech required to create/update a profile
     min_assignment_duration_s: 0.25 # shorter spans stay unknown or continuity-only
     stable_after_observations: 2    # repeated clean observations make a profile stable
+    # ...OR one observation at least this long. A CHARACTER WHO SPEAKS ONCE IS
+    # STILL A CHARACTER, and 2.1 is about telling them apart. Requiring repeats
+    # meant every identity after the second rendered permanently neutral: on the
+    # PR film — eleven speakers, most with a single line — that was 79 words of
+    # "Attribution pending" and the drill sergeant wearing the narrator's
+    # colour. The phantom the repeat rule guards against is a SHORT noisy
+    # embedding, so this gates on length instead of on repetition.
+    stable_after_duration_s: 1.1
     # S1/S2 stay low latency. A third-or-later identity remains neutral until
     # repeated clean endpoint observations confirm it, preventing transient
     # native tracks or one noisy embedding from turning two people into five.

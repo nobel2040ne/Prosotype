@@ -149,3 +149,43 @@ export function assignSpeakerColors(
 
   return assigned;
 }
+
+/** The themed assignment map the studio passes around. */
+export type SpeakerColorMap = Map<string, {color: string; index: number}>;
+
+/**
+ * DISPLAY status, not tracker status. The pipeline's `speaker_status` says
+ * what the attribution tracker KNOWS; the stage must still colour with the
+ * best-known speaker ("never gate the onset colour turn on speaker
+ * identity"). A word carrying a speaker while the tracker still reports
+ * `unknown` is, for display purposes, provisional: it wears that speaker's
+ * colour and may be revised. Before this mapping, such words — whose durable
+ * records end with `speaker: S1` but `speaker_status: "unknown"` — stayed
+ * neutral grey forever, while every word in the reference film wears its
+ * block's colour.
+ */
+export function speakerStatus(
+  word: {speaker?: string | null; speaker_status?: string | null},
+): string {
+  const reported = word.speaker_status
+    ?? (word.speaker ? "stable" : "unknown");
+  if (reported === "unknown" && word.speaker) return "provisional";
+  return reported;
+}
+
+/**
+ * CWI 2.1, via `assignSpeakerColors` — see the module comment for why the
+ * assignment is wheel geometry and not a lookup.
+ *
+ * Neutral grey is reserved for words with NO speaker at all. Both fallbacks
+ * stay CSS variables rather than literals: they have to follow the stage
+ * theme, and every consumer writes the result straight into a custom
+ * property, so the indirection resolves for free.
+ */
+export function speakerColor(
+  speaker: string | null | undefined,
+  colors: SpeakerColorMap,
+): string {
+  if (!speaker) return "var(--caption-unknown)";
+  return colors.get(speaker)?.color ?? "var(--accent)";
+}

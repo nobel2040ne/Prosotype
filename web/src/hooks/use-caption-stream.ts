@@ -102,7 +102,11 @@ export interface RuntimeConfig {
   holdLiftEm: number;
   holdFullS: number;
   holdMinS: number;
+  /** Pre-roll: crouch + launch + float, before the landing. See globals.css. */
+  holdPreMs: number;
   holdLandMs: number;
+  /** CWI 2.4.4/2.4.5: sound labels yield to speech; how long after it. */
+  soundLingerMs: number;
   deliveryMotionEnabled: boolean;
   /** A drawn-out word holds its 2.2.3 cue slightly longer. */
   deliveryFlowDurationMs: number;
@@ -120,6 +124,10 @@ export interface RuntimeConfig {
   voiceScaleResponse: number;
   /** The same, below the baseline -- smaller, because shrinking costs legibility. */
   voiceScaleResponseQuiet: number;
+  /** Band around the median where size does not move. See caption-motion.ts. */
+  voiceScaleDeadband: number;
+  /** Weight an emphasised word gains on top of 2.3.9. See caption-motion.ts. */
+  weightEmphasis: number;
   deliveryMinConfidence: number;
   languages: LiveLanguageOption[];
   selectedLanguage: string | null;
@@ -142,24 +150,28 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   readAheadColorLight: "#6e6e73",
   readAheadOpacity: 0.9,
   colorTurnMs: 90,
-  wordMotionBaseMs: 520,
-  wordMotionMaxMs: 720,
+  wordMotionBaseMs: 950,
+  wordMotionMaxMs: 1150,
   wordMotionSpanStretch: 0.42,
   wordMotionMinMs: 320,
   syncPop: 0.15,
-  characterWaveFalloff: 0.78,
-  characterWaveFloor: 0.18,
-  holdLiftEm: 0.382,
+  characterWaveFalloff: 1.0,
+  characterWaveFloor: 0.0,
+  holdLiftEm: 0.525,
   holdFullS: 0.70,
   holdMinS: 0.22,
-  holdLandMs: 190,
+  holdPreMs: 420,
+  holdLandMs: 290,
+  soundLingerMs: 800,
   deliveryMotionEnabled: true,
   deliveryFlowDurationMs: 90,
   weightRange: [200, 760],
   widthRange: [82, 124],
   voiceScaleRange: [0.90, 1.20],
   voiceScaleResponse: 0.25,
-  voiceScaleResponseQuiet: 0.30,
+  voiceScaleResponseQuiet: 0.55,
+  voiceScaleDeadband: 0.34,
+  weightEmphasis: 0.55,
   deliveryMinConfidence: 0.38,
   languages: [
     {

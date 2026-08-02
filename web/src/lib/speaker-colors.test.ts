@@ -5,6 +5,8 @@ import {
   hueDistance,
   hueOf,
   pastelForHue,
+  speakerColor,
+  speakerStatus,
 } from "./speaker-colors.ts";
 
 // The CI main palette (config.yaml `palette`), in the wheel order 2.1.1 shows.
@@ -110,4 +112,34 @@ test("a pastel is a real colour at every hue", () => {
   for (let hue = 0; hue < 360; hue += 37) {
     assert.match(pastelForHue(hue), /^#[0-9a-f]{6}$/);
   }
+});
+
+test("a word with a speaker wears that colour even while the tracker is unsure", () => {
+  // The neutral-forever defect: durable records ending with `speaker: S1` but
+  // `speaker_status: "unknown"` stayed grey for the rest of the session, while
+  // every word in the reference film wears its block's colour.
+  const colors = assignSpeakerColors(["S1"], {main: MAIN, support: SUPPORT});
+  assert.equal(speakerStatus({speaker: "S1", speaker_status: "unknown"}), "provisional");
+  assert.equal(speakerColor("S1", colors), colors.get("S1")!.color);
+});
+
+test("neutral grey is reserved for words with no speaker at all", () => {
+  const colors = assignSpeakerColors(["S1"], {main: MAIN, support: SUPPORT});
+  assert.equal(speakerStatus({speaker: null, speaker_status: "unknown"}), "unknown");
+  assert.equal(speakerStatus({speaker: null}), "unknown");
+  assert.equal(speakerColor(null, colors), "var(--caption-unknown)");
+  assert.equal(speakerColor(undefined, colors), "var(--caption-unknown)");
+});
+
+test("reported stable/provisional/corrected statuses pass through unchanged", () => {
+  for (const status of ["stable", "provisional", "corrected"]) {
+    assert.equal(speakerStatus({speaker: "S2", speaker_status: status}), status);
+  }
+  // No reported status: presence of a speaker implies stable, absence unknown.
+  assert.equal(speakerStatus({speaker: "S2"}), "stable");
+});
+
+test("an unrostered speaker falls back to the accent, not to grey", () => {
+  const colors = assignSpeakerColors(["S1"], {main: MAIN, support: SUPPORT});
+  assert.equal(speakerColor("S9", colors), "var(--accent)");
 });

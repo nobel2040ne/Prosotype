@@ -1594,6 +1594,7 @@ class SpeakerTracker:
         min_enrollment_duration_s: float = 0.8,
         min_assignment_duration_s: float = 0.25,
         stable_after_observations: int = 2,
+        stable_after_duration_s: float = 1.1,
         immediate_speaker_limit: int = 2,
         assignment_threshold: float | None = None,
         provisional_threshold: float | None = None,
@@ -1622,6 +1623,9 @@ class SpeakerTracker:
         )
         self.min_enrollment_duration_s = float(min_enrollment_duration_s)
         self.stable_after_observations = max(1, int(stable_after_observations))
+        # ...or one observation this long, which is what lets a character with
+        # a single line still get a colour. See `_profile_is_stable`.
+        self.stable_after_duration_s = float(stable_after_duration_s)
         # S1/S2 stay genuinely live. A third-or-later identity is still
         # supported, but one isolated native slot or embedding must not create
         # a durable new speaker colour in an ordinary two-person conversation.
@@ -1678,6 +1682,11 @@ class SpeakerTracker:
         self.counts: list[int] = []
         self.enrolled_durations: list[float] = []
         self.profile_observation_groups: list[set[int]] = []
+        # Longest SINGLE observation behind each profile. Total enrolled
+        # duration cannot be used for the one-turn rule below: two clean
+        # fragments of one endpoint sum to the same number as one real
+        # turn, and they are not independent evidence.
+        self.profile_longest_observation: list[float] = []
         self.profile_stable: list[bool] = []
         self.profile_directions: list[float | None] = []
         self.alias: dict[int, int] = {}
@@ -1751,10 +1760,23 @@ class SpeakerTracker:
         if index >= self.immediate_speaker_limit:
             # Several punctuation/acoustic segments from one long noisy turn
             # are not independent evidence. Higher identities need distinct
-            # endpoint passes, not merely several fragments in one pass.
-            return (
+            # endpoint passes, not merely several fragments in one pass...
+            if (
                 len(self.profile_observation_groups[index])
                 >= self.stable_after_observations
+            ):
+                return True
+            # ...OR one observation long enough to stand on its own. A
+            # CHARACTER WHO SPEAKS ONCE IS STILL A CHARACTER, and CWI 2.1 is
+            # about telling them apart. Requiring repeats meant everyone after
+            # the second speaker rendered permanently neutral: on the PR film,
+            # which has eleven speakers and where most of them have a single
+            # line, that was 79 words of "Attribution pending" and the drill
+            # sergeant sharing the narrator's colour. The phantom this gate
+            # guards against is a SHORT noisy embedding, so gate on length.
+            return (
+                self.profile_longest_observation[index]
+                >= self.stable_after_duration_s
             )
         return repeated or self.enrolled_durations[index] >= required_duration
 
@@ -1818,6 +1840,7 @@ class SpeakerTracker:
         self.counts.append(1)
         self.enrolled_durations.append(duration)
         self.profile_observation_groups.append({observation_group})
+        self.profile_longest_observation.append(float(duration))
         self.profile_stable.append(False)
         self.profile_directions.append(direction_estimate)
         self.profile_stable[index] = self._profile_is_stable(index)
@@ -1840,6 +1863,9 @@ class SpeakerTracker:
         self.counts[index] += 1
         self.enrolled_durations[index] += duration
         self.profile_observation_groups[index].add(observation_group)
+        self.profile_longest_observation[index] = max(
+            self.profile_longest_observation[index], float(duration)
+        )
         if direction_estimate is not None:
             previous = self.profile_directions[index]
             self.profile_directions[index] = (
@@ -2015,7 +2041,22 @@ class SpeakerTracker:
         best = scored[0][1] if scored else None
         second = scored[1][1] if len(scored) > 1 else None
         margin = None if best is None else best - (second if second is not None else 0.0)
-        ambiguous = second is not None and margin < self.min_confidence_margin
+        # AMBIGUOUS BETWEEN WHOM? The margin guard exists so a word is not
+        # handed to the wrong enrolled speaker when two profiles score alike.
+        # It is meaningless when NOBODY is a plausible match: measured on the
+        # PR film, four separate new voices arrived with best/second of
+        # 0.016/0.000, 0.084/0.065, 0.120/0.048 and 0.167/0.161 -- the
+        # strongest possible evidence for someone new -- and every one of them
+        # was called ambiguous, which cleared `can_update` and blocked
+        # enrollment, so a film with eleven speakers produced ONE speaker
+        # switch. Below the provisional threshold there is nothing to be
+        # ambiguous between.
+        ambiguous = (
+            second is not None
+            and margin < self.min_confidence_margin
+            and best is not None
+            and best >= self.provisional_threshold
+        )
         current_index = None
         if self.last_confidently_active_speaker is not None:
             try:
@@ -2611,6 +2652,17 @@ class SortformerHybridSpeakerTracker:
                 # that this really is an additional person.
                 return None
             speaker_id = self._speaker_id(decision.speaker_index)
+            # ...AND AN UNVERIFIED SLOT MAY NOT BORROW A NAME SOMEONE ELSE
+            # ALREADY HOLDS. `S{slot+1}` is only a sensible guess while the
+            # arrival order of the native slots still matches the arrival
+            # order of the durable identities. Once an endpoint has attached
+            # that name to a DIFFERENT slot, handing it out here paints a new
+            # voice in an established speaker's colour, which is worse than
+            # saying nothing: CWI renders an unattributed word neutral, and a
+            # wrong colour actively misinforms. The endpoint still names them
+            # a moment later, and that correction lands as a direct write.
+            if speaker_id in self._slot_speakers.values():
+                return None
         result = self.fallback._base_result(
             speaker_id,
             "stable" if endpoint else "provisional",
@@ -2714,9 +2766,18 @@ class SortformerHybridSpeakerTracker:
                     self._speaker_id(decision.speaker_index),
                 )
                 if fallback_result.status in {"stable", "corrected"}:
-                    self._slot_speakers.setdefault(
-                        decision.speaker_index,
-                        fallback_result.speaker_id,
+                    # REWRITE, DO NOT `setdefault`. A native slot is
+                    # arrival-ordered WITHIN THE NATIVE SESSION and the model
+                    # has four of them, so on any real programme it reuses a
+                    # slot for a different person. Pinning a slot to whoever
+                    # was verified in it FIRST meant every later voice on that
+                    # slot inherited the first one's colour for the whole
+                    # session: on the PR film the drill sergeant arrived on a
+                    # slot the narrator already owned and rendered in her
+                    # colour until the endpoint corrected him, a second late,
+                    # every time he spoke.
+                    self._slot_speakers[decision.speaker_index] = (
+                        fallback_result.speaker_id
                     )
                     labels.append(fallback_result)
                     continue
@@ -2773,6 +2834,20 @@ class StreamingCaptioner:
         self.last_partial_key: tuple = ()
         self.utterance = 0
         self.db_history: deque[float] = deque(maxlen=120)
+        # Vocal effort runs on its own history and its own percentile window so
+        # the level channel keeps its full range: folding effort into `db`
+        # before normalization widens that window and MEASURED flattens the
+        # narration's own intonation (p90 1.25 -> 1.00) to buy the shout.
+        # `(tilt_db, pitch_hz, span_s)` per settled word -- the three cues
+        # `_prominence` combines, kept raw so the composite can be re-derived
+        # against the speaker's CURRENT baseline rather than a stale one.
+        self.effort_history: deque[tuple[float, float, float]] = deque(maxlen=120)
+        # ...and the cold-start bootstrap, on exactly the terms `db_bootstrap`
+        # uses: `effort_history` takes FINAL words only, and the PR film's
+        # opening monologue is one 24 s utterance, so without this the lift
+        # cannot fire until the 33rd second. That is why "louder" never moved.
+        self.effort_bootstrap: dict[tuple[str, int, int], tuple[float, float, float]] = {}
+        self.effort_cache: dict[tuple[str, int, int], float] = {}
         self.prosody_cache: dict[tuple[str, int], tuple[float, float, float]] = {}
         self.delivery_cache: dict[tuple[str, int, int], dict] = {}
         self._last_final_speaker: str | None = None
@@ -2815,6 +2890,131 @@ class StreamingCaptioner:
             except parselmouth.PraatError:
                 pass
         return db, pitch_hz, voiced_frac
+
+    @staticmethod
+    def _percentile_window(values, percentiles, min_span: float) -> tuple[float, float]:
+        """Percentiles of a speaker's own history, widened to `min_span`.
+
+        A monotone passage must not amplify millimetre differences into full
+        whisper..shout swings, so the window never closes below `min_span`.
+        """
+        lo_pct, hi_pct = percentiles
+        lo = float(np.percentile(values, lo_pct))
+        hi = float(np.percentile(values, hi_pct))
+        if hi - lo < min_span:
+            mid = (hi + lo) / 2
+            lo, hi = mid - min_span / 2, mid + min_span / 2
+        return lo, hi
+
+    def _vocal_effort(self, word: HypothesisWord, audio: np.ndarray) -> float | None:
+        """Spectral tilt of the word's strongest frames, in dB. Gain-invariant.
+
+        LEVEL CANNOT SEE A SHOUT ON MASTERED OR AUTO-LEVELLED AUDIO, AND CWI
+        2.3.5 ASKS FOR VOLUME, NOT LEVEL. Measured on the PR film's drill
+        sergeant (`--sample`, t=30-37.5 s): shouting at full effort, and
+        **1.6 dB QUIETER** than the calm narration around it, because the clip
+        is broadcast-mastered. Ranking those words against the narration by
+        level scores **AUC 0.367** -- worse than chance, actively backwards.
+        What survives mastering is vocal effort: pressed phonation flattens
+        the spectrum, so the drill sergeant's tilt runs -5.7 dB against the
+        narration's -13.7 dB (AUC 0.801 raw, 0.892 causally smoothed).
+
+        Energy-weighted on purpose. A word's fricatives carry enormous HF
+        energy and its silences carry none, so tilt over the whole span
+        measures PHONEMES, not effort -- that version scored a useless AUC and
+        a 21 dB per-word spread. Taking the loudest half of the frames
+        measures the tilt where the voice actually is.
+        """
+        i0 = max(0, int(word.start * SR))
+        i1 = min(len(audio), max(i0 + 1, int(word.end * SR)))
+        span = audio[i0:i1]
+        n = int(0.03 * SR)
+        if len(span) < n:
+            return None
+        window = np.hanning(n)
+        freqs = np.fft.rfftfreq(n, 1 / SR)
+        low_band = (freqs >= 100) & (freqs < 1000)
+        high_band = (freqs >= 1000) & (freqs < 5000)
+        frames: list[tuple[float, float]] = []
+        for i in range(0, len(span) - n + 1, max(1, n // 2)):
+            spectrum = np.abs(np.fft.rfft(span[i:i + n] * window)) ** 2
+            low = float(spectrum[low_band].sum())
+            if low <= 0:
+                continue
+            high = float(spectrum[high_band].sum())
+            frames.append((low + high, 10 * np.log10(high / low + 1e-12)))
+        if not frames:
+            return None
+        frames.sort(key=lambda frame: -frame[0])
+        keep = frames[:max(1, len(frames) // 2)]
+        return float(np.mean([tilt for _, tilt in keep]))
+
+    @staticmethod
+    def _prominence(
+        cues: list[tuple[float, float, float]],
+        baseline: tuple[float, float],
+        cfg: dict,
+    ) -> list[float]:
+        """Effort + pitch excursion + lengthening, in the tilt's own dB units.
+
+        TILT ALONE CANNOT SEE THE EMPHASIS THE PR FILM DRAWS BIGGEST. Its
+        narrator says "so you can feel when my voice gets **louder** or
+        softer", and the film sets `louder` at 2.08x its own settled height in
+        Black. Measured on that audio the word is only ~1 dB above the words
+        either side of it, so LEVEL cannot see it; what can: its own tilt runs
+        +1.64 dB against a -9.51 dB median (the strongest word in its
+        neighbourhood), its F0 is 259.7 Hz, and it is held 0.12 s per character
+        against a 0.08 s median. Pitch excursion and lengthening are the other
+        two acoustic correlates of prosodic prominence, they survive mastering
+        exactly as tilt does, and both are already measured here.
+
+        THE SMOOTHING IS WHAT ERASED IT, AND THE TWO SCOPES ARE DIFFERENT
+        THINGS. `smoothing_words` exists because sustained pressed phonation is
+        a speaking STYLE and a causal mean reads it far better than one word
+        does (measured AUC 0.801 -> 0.905 on the drill sergeant). A single
+        stressed word is an EVENT, and that same mean is exactly what deletes
+        it: the six words before "louder" are calm narration (-7.5, -13.6,
+        -20.8, -14.7, -18.5), so the mean lands at -12.2 -- BELOW the median --
+        and the lift computes to 0.000 no matter how the rest is tuned.
+        `emphasis_blend` is how much of the word's OWN tilt survives the mean.
+        Measured over the film (own-tilt blend / pitch gain / length gain):
+
+            blend  pitch  len | "louder"  shout lifted  narration  AUC
+             0.00   0.8   0.5 |    0.000       42%          2%    0.925
+             0.40   0.8   0.5 |    0.149       63%          5%    0.936
+             0.60   0.8   0.5 |    0.246       63%          5%    0.936
+             0.75   1.0   0.5 |    0.31        60%          5%    0.93
+             1.00   0.8   0.5 |    0.396       58%          5%    0.906
+
+        Pitch is what buys the AUC back: at blend 0 it lifts 0.882 -> 0.958.
+
+        Lengthening is measured per CHARACTER, not per word, for the same
+        reason tilt is energy-weighted: raw duration mostly measures how many
+        syllables a word has, so "identification." would outrank every shout in
+        the film. Both extra terms are RATIOS against the speaker's own running
+        median, in dB, so they are dimensionally the same quantity as the tilt
+        and the three simply add. A word with no voiced pitch, or a speaker
+        with no baseline yet, contributes nothing rather than a guess.
+
+        Takes the whole sequence because the blend needs each word's causal
+        neighbours: scoring one word against a differently-scored history is
+        how a percentile window ends up measuring two different quantities.
+        """
+        med_pitch, med_span = baseline
+        blend = float(np.clip(cfg.get("emphasis_blend", 1.0), 0.0, 1.0))
+        window = max(1, int(cfg.get("smoothing_words", 4)))
+        pitch_gain = float(cfg.get("pitch_gain", 0.0))
+        length_gain = float(cfg.get("length_gain", 0.0))
+        scores: list[float] = []
+        for index, (tilt, pitch_hz, span_s) in enumerate(cues):
+            recent = [c[0] for c in cues[max(0, index - window + 1):index + 1]]
+            score = blend * float(tilt) + (1 - blend) * float(np.mean(recent))
+            if pitch_gain and pitch_hz > 0 and med_pitch > 0:
+                score += pitch_gain * 20.0 * float(np.log10(pitch_hz / med_pitch))
+            if length_gain and span_s > 0 and med_span > 0:
+                score += length_gain * 20.0 * float(np.log10(span_s / med_span))
+            scores.append(score)
+        return scores
 
     def _intonation_envelope(
         self, word: HypothesisWord, audio: np.ndarray, samples: int,
@@ -3118,11 +3318,82 @@ class StreamingCaptioner:
             features = self._prosody(word, audio)
             self.prosody_cache[prosody_key] = features
         db, pitch_hz, voiced_frac = features
+        # Vocal effort is frozen per SLOT for the same reason `delivery` is: a
+        # word that has been shown must stop changing, and the verifier
+        # respells words so a text-keyed cache misses exactly when it matters.
+        effort_cfg = dict(self.cfg.get("live", {}).get("vocal_effort", {}) or {})
+        effort_cache = getattr(self, "effort_cache", None)
+        if effort_cache is None:
+            effort_cache = self.effort_cache = {}
+        effort_history = getattr(self, "effort_history", None)
+        if effort_history is None:
+            effort_history = self.effort_history = deque(maxlen=120)
+        effort_bootstrap = getattr(self, "effort_bootstrap", None)
+        if effort_bootstrap is None:
+            effort_bootstrap = self.effort_bootstrap = {}
+        effort = effort_cache.get(slot_key)
+        if effort is None:
+            for delta in (-1, 1, -2, 2):
+                effort = effort_cache.get(("§slot", self.utterance, slot + delta))
+                if effort is not None:
+                    break
+        if effort is None and effort_cfg.get("enabled", True):
+            effort = self._vocal_effort(word, audio)
+            if effort is not None:
+                effort_cache[slot_key] = effort
+        # The three raw cues this word contributes to the speaker's baseline.
+        # Length is seconds per CHARACTER: raw duration ranks by syllable count.
+        cue = (
+            (
+                float(effort),
+                float(pitch_hz),
+                max(0.0, float(word.end - word.start))
+                / max(1, len(word.text.strip(" .,!?"))),
+            )
+            if effort is not None else None
+        )
         syllables = self._syllable_stops(word)
         if final:
             self.db_history.append(db)
+            if cue is not None:
+                effort_history.append(cue)
+        # SAME COLD START AS `db_bootstrap`, AND IT IS WHY "louder" NEVER MOVED.
+        # `effort_history` takes FINAL words only; the PR film opens with a
+        # single 24 s utterance, so on the whole demo section -- every word the
+        # film itself captions, "louder" included -- the lift's own
+        # `len(effort_history) >= 6` gate was false and the channel was simply
+        # off. Non-final emissions carry the same measured cues, keyed by time
+        # slot so a re-emitted hypothesis overwrites itself.
+        if len(effort_history) < 6:
+            if cue is not None:
+                effort_bootstrap[slot_key] = cue
+        elif effort_bootstrap:
+            effort_bootstrap.clear()
         cfg_lo, cfg_hi = self.cfg["live"]["db_range"]
         med = float(np.median(self.db_history)) if self.db_history else 0.0
+        # COLD-START BOOTSTRAP. `db_history` holds FINAL words only, and a
+        # long first utterance finalizes all at once at its endpoint — on the
+        # PR film's 24 s opening monologue that left ~60 words cueing against
+        # the static `db_range` fallback, where the narration saturated at
+        # loudness ≈ 1.0 and every ordinary word rendered at the crest clamp.
+        # Non-final emissions carry the same measured dB, so they can
+        # calibrate the window; keyed by the word's time SLOT so a pending
+        # word re-emitted on every hypothesis overwrites its own entry
+        # instead of stuffing the window with copies of itself.
+        db_bootstrap = getattr(self, "db_bootstrap", None)
+        if db_bootstrap is None:
+            db_bootstrap = self.db_bootstrap = {}
+        if len(self.db_history) < 6:
+            db_bootstrap[slot_key] = db
+        elif db_bootstrap:
+            # Durable calibration has taken over; the hand-off is explicit.
+            db_bootstrap.clear()
+        percentiles = self.cfg["live"].get("db_percentiles", [15, 95])
+        min_span = float(self.cfg["live"].get("db_min_span", 18.0))
+
+        def _percentile_window(values) -> tuple[float, float]:
+            return self._percentile_window(values, percentiles, min_span)
+
         if len(self.db_history) >= 6:
             # Percentiles of this speaker's own words, not a fixed offset from
             # the median. A `median - 5 dB` floor was catastrophically tight:
@@ -3131,17 +3402,20 @@ class StreamingCaptioner:
             # rendered at CWI whisper size (3%) beside normal ones. Clipping
             # happens BEFORE the display smoothing, so no amount of hysteresis
             # could repair it.
-            lo_pct, hi_pct = self.cfg["live"].get("db_percentiles", [15, 95])
-            lo_db = float(np.percentile(self.db_history, lo_pct))
-            hi_db = float(np.percentile(self.db_history, hi_pct))
-            # A monotone passage must not amplify millimetre differences into
-            # full whisper..shout swings.
-            min_span = float(self.cfg["live"].get("db_min_span", 18.0))
-            if hi_db - lo_db < min_span:
-                mid = (hi_db + lo_db) / 2
-                lo_db, hi_db = mid - min_span / 2, mid + min_span / 2
+            lo_db, hi_db = _percentile_window(self.db_history)
+            norm_med = med
+        elif len(db_bootstrap) >= 6:
+            # Same maths over the bootstrap slots. The hypothesis grows at
+            # speech rate, so this branch takes over by roughly the seventh
+            # word; the first six cue against the config range but are
+            # re-emitted by later hypotheses inside the playhead delay, so
+            # their axes correct before their colour turn.
+            bootstrap_values = list(db_bootstrap.values())
+            lo_db, hi_db = _percentile_window(bootstrap_values)
+            norm_med = float(np.median(bootstrap_values))
         else:
             lo_db, hi_db = cfg_lo, cfg_hi
+            norm_med = med
 
         # Haptic salience flags. DHH haptics research (Haptic-Captioning
         # CHI'23; Tactile Emotions CHI'25) found continuous vibration
@@ -3171,24 +3445,156 @@ class StreamingCaptioner:
         mapping = self.cfg["mapping"]["loudness_to"]
         pivot = ((mapping.get("baseline", 5) - mapping["min"]) /
                  max(1e-6, mapping["max"] - mapping["min"]))
-        calibrated = len(self.db_history) >= 6 and lo_db < med < hi_db
+        calibrated = (
+            (len(self.db_history) >= 6 or len(db_bootstrap) >= 6)
+            and lo_db < norm_med < hi_db
+        )
 
         def _normalize_db(value: float) -> float:
             """dB -> 0..1 on the 2.3.5-pivoted scale the client's axes expect."""
             if calibrated:
-                if value <= med:
+                if value <= norm_med:
                     return float(np.clip(
-                        pivot * (value - lo_db) / max(1e-6, med - lo_db), 0.0, 1.0
+                        pivot * (value - lo_db) / max(1e-6, norm_med - lo_db),
+                        0.0, 1.0,
                     ))
                 return float(np.clip(
-                    pivot + (1 - pivot) * (value - med) / max(1e-6, hi_db - med),
+                    pivot
+                    + (1 - pivot) * (value - norm_med)
+                    / max(1e-6, hi_db - norm_med),
                     0.0, 1.0,
                 ))
-            return float(np.clip(
-                (value - lo_db) / max(1e-6, hi_db - lo_db), 0.0, 1.0
-            ))
+            # UNMEASURED IS NEUTRAL, NOT LOUD. Before the bootstrap has six
+            # words there is no speaker scale to place this word on, and the
+            # raw config-range normalization rendered the session's first
+            # words at the crest clamp (the PR film's narration measured
+            # loudness ≈ 1.0 against it). The CWI answer for an unmeasured
+            # channel is the 2.3.5 baseline — the same reasoning that renders
+            # an unattributed word neutral — and the endpoint's one allowed
+            # correction restores any genuine emphasis.
+            return pivot
 
         loudness = _normalize_db(db)
+
+        # NOTE: the CWI 2.3.5 vocal-effort lift is applied AFTER the frozen
+        # restore below, not here. It has its own per-slot freeze, because the
+        # level freeze happens on the first CALL -- when the word is still at
+        # the edge of the audio buffer and effort cannot be measured -- and
+        # `frozen` is also inherited from a neighbouring slot by the retiming
+        # lookup. Applying the lift before that restore meant every
+        # drill-sergeant word computed a positive excess (0.06..0.46) and then
+        # had it thrown away; MEASURED lift on the shout was 0.000 across the
+        # whole section, twice, before the order was fixed.
+
+        # CWI 2.3.5 ASKS FOR VOLUME AND `db` ONLY MEASURES LEVEL. On mastered,
+        # AGC'd or auto-levelled audio those are different quantities: the PR
+        # film's drill sergeant shouts 1.6 dB QUIETER than the calm narration,
+        # and ranking his words by level scores AUC 0.367 -- worse than chance.
+        # Effort (see `_vocal_effort`) survives that normalization, so it is
+        # added to the level channel as a one-sided lift.
+        #
+        # ONE-SIDED, AND ON ITS OWN PERCENTILE WINDOW. Low effort already
+        # renders quiet through `db`, so subtracting would penalize a soft
+        # voice twice; and normalizing effort separately is what keeps this
+        # from costing the level channel its range -- MEASURED, folding effort
+        # into `db` before the percentile window flattened the narration's own
+        # intonation from p90 1.25 to 1.00, while this leaves it at 1.25
+        # untouched and still lifts the shout from p90 1.06 to 1.41.
+        def _effort_lift() -> float:
+            """The one-sided 0..1 addition this word earns for vocal effort."""
+            gain = float(effort_cfg.get("gain", 0.5))
+            settled = list(effort_history)
+            baseline_cues = settled or list(effort_bootstrap.values())
+            if not (effort_cfg.get("enabled", True) and cue is not None
+                    and gain > 0 and len(baseline_cues) >= 6):
+                return 0.0
+            # The speaker's own pitch and word length, which `_prominence`
+            # measures this word's excursion against. Derived from whichever
+            # baseline is available, so the composite is the same quantity
+            # during the bootstrap and after it.
+            baseline = (
+                float(np.median([c[1] for c in baseline_cues if c[1] > 0] or [0.0])),
+                float(np.median([c[2] for c in baseline_cues if c[2] > 0] or [0.0])),
+            )
+            # THE SMOOTHING WINDOW CANNOT READ `effort_history`: that holds
+            # FINAL words only, and a word is first seen -- and its lift first
+            # frozen -- while its own utterance is still open. During the
+            # shout the newest finals are therefore still the CALM narration
+            # before it, so the mean was dragged back to baseline and the lift
+            # computed to exactly 0.0 for every shouted word, then cached.
+            # `effort_recent` is keyed by time slot so a re-emitted hypothesis
+            # overwrites itself instead of stuffing the window with copies --
+            # the same trick `db_bootstrap` uses. It holds RAW cues, because
+            # the blend in `_prominence` is what has to see the sequence.
+            recent_map = getattr(self, "effort_recent", None)
+            if recent_map is None:
+                recent_map = self.effort_recent = {}
+            here = (self.utterance, slot)
+            recent_map[here] = cue
+            if len(recent_map) > 512:
+                for key in sorted(recent_map)[:256]:
+                    recent_map.pop(key, None)
+            recent = [recent_map[k] for k in sorted(k for k in recent_map if k <= here)]
+            span = max(1, int(effort_cfg.get("smoothing_words", 4)))
+            score = self._prominence(recent[-span:], baseline, effort_cfg)[-1]
+            # The BASELINE stays on settled history on purpose: a shout should
+            # be measured against the calm speech around it, not against
+            # itself.
+            history = self._prominence(baseline_cues, baseline, effort_cfg)
+            lo_e, hi_e = self._percentile_window(
+                history,
+                effort_cfg.get("percentiles", [10, 95]),
+                float(effort_cfg.get("min_span", 12.0)),
+            )
+            med_e = float(np.median(history))
+            if not (lo_e < med_e < hi_e and score > med_e):
+                return 0.0
+            # CLIPPED AT 1, exactly as `_normalize_db` clips the level channel.
+            # Unclipped, a word far above the speaker's p95 produced a `level`
+            # of 2 or 3 and a lift big enough to slam `loudness` into its own
+            # ceiling: MEASURED, 10% of the film's words pinned at the crest
+            # clamp and 19.4% rendered above 1.50x against the film's 2.8%.
+            # With the clip the largest possible lift is a config decision
+            # (`gain` x 0.514) instead of an artefact of the window.
+            level = float(np.clip(
+                pivot + (1 - pivot) * (score - med_e) / max(1e-6, hi_e - med_e),
+                0.0, 1.0,
+            ))
+            # A DEADBAND, for the same reason `voice_scale_deadband` has one.
+            # Without it every word above the running median lifts a little,
+            # and energy weighting does not fully remove phoneme content from
+            # tilt -- MEASURED, 34% of ordinary narration words lifted and
+            # sibilant-heavy ones ("synchronized", "so") gained +0.30, which is
+            # spelling driving type size.
+            #
+            # RE-SPANNED, NOT SUBTRACTED (2026-08-02). Subtracting the band
+            # from the lift makes the band steal from the TOP: widening it to
+            # hold ordinary words still also caps the loudest word, so the
+            # drill sergeant could not be made stronger without letting the
+            # narration move too. That is the same anti-pattern
+            # `voice_scale_response_quiet` already hit -- "weakening the
+            # response made the whole channel disappear instead of stopping
+            # ordinary words from moving". `voiceScale` re-spans for exactly
+            # this reason, so do the same here: the band decides WHO moves and
+            # `gain` decides how far, independently.
+            dead = float(np.clip(effort_cfg.get("deadband", 0.34), 0.0, 0.95))
+            excess = (level - pivot) / max(1e-6, 1 - pivot)
+            if excess <= dead:
+                return 0.0
+            return gain * (1 - pivot) * (excess - dead) / (1 - dead)
+
+        # Frozen per slot on the same terms as everything else here: a word
+        # that has been shown must stop changing.
+        lift_cache = getattr(self, "effort_lift_cache", None)
+        if lift_cache is None:
+            lift_cache = self.effort_lift_cache = {}
+        lift = lift_cache.get(slot_key)
+        if lift is None:
+            for delta in (-1, 1, -2, 2):
+                lift = lift_cache.get(("§slot", self.utterance, slot + delta))
+                if lift is not None:
+                    break
+
         bright_lo, bright_hi = self.cfg.get("display", {}).get(
             "intent_circle_brightness_hz", [500, 3500]
         )
@@ -3199,6 +3605,26 @@ class StreamingCaptioner:
             # a session normalize against the cold-start `db_range` and are
             # genuinely wrong, so they are allowed exactly one correction.
             self.prosody_cache[slot_key] = (db, pitch_hz, voiced_frac, loudness)
+
+        # THE EFFORT LIFT GOES ON TOP OF THE RESTORED LEVEL, NOT BEFORE IT.
+        # `frozen` above is written on the first CALL for a slot -- when the
+        # word still sits at the edge of the audio buffer and `_vocal_effort`
+        # has under 30 ms to work with -- and it is also inherited from a
+        # NEIGHBOURING slot by the retiming lookup. Both mean an effort lift
+        # computed before that restore is silently discarded: MEASURED, every
+        # drill-sergeant word produced a positive excess (0.06..0.46) and
+        # shipped 0.000 of it, twice, until the order was fixed. Freezing the
+        # lift separately keeps the "a shown word stops changing" invariant.
+        if lift is None:
+            lift = _effort_lift()
+            # ...but freeze only once the baseline is SETTLED, exactly as the
+            # level channel freezes only once `db_history` has six words. A
+            # bootstrap baseline is still moving, and a word cued against three
+            # slots must be allowed to correct before its colour turn.
+            if cue is not None and len(effort_history) >= 6:
+                lift_cache[slot_key] = lift
+        if lift:
+            loudness = float(np.clip(loudness + lift, 0.0, 1.0))
         word_id = word_id or self._word_id(word)
         event_t = round(self.stream_base + word.start, 3)
         event_start = round(word.start, 3)
@@ -3977,6 +4403,7 @@ def load_speaker_tracker(cfg: dict) -> SpeakerTracker | None:
         min_enrollment_duration_s=policy.get("min_enrollment_duration_s", 0.8),
         min_assignment_duration_s=policy.get("min_assignment_duration_s", 0.25),
         stable_after_observations=policy.get("stable_after_observations", 2),
+        stable_after_duration_s=policy.get("stable_after_duration_s", 1.1),
         immediate_speaker_limit=policy.get("immediate_speaker_limit", 2),
         assignment_threshold=policy.get("assignment_threshold", 0.72),
         provisional_threshold=policy.get("provisional_threshold", 0.58),
@@ -4808,10 +5235,10 @@ def _studio_runtime_config(
             float(cfg.get("motion", {}).get("color_turn_ms", 90))
         ),
         "wordMotionBaseMs": round(
-            float(display.get("word_motion_duration_s", 0.52)) * 1000
+            float(display.get("word_motion_duration_s", 0.95)) * 1000
         ),
         "wordMotionMaxMs": round(
-            float(display.get("word_motion_max_duration_s", 0.72)) * 1000
+            float(display.get("word_motion_max_duration_s", 1.15)) * 1000
         ),
         "wordMotionSpanStretch": display.get(
             "word_motion_span_stretch", 0.42
@@ -4820,12 +5247,18 @@ def _studio_runtime_config(
             float(display.get("word_motion_min_duration_s", 0.32)) * 1000
         ),
         "syncPop": live_sync.get("sync_pop", 0.15),
-        "characterWaveFalloff": live_sync.get("character_wave_falloff", 0.78),
-        "characterWaveFloor": live_sync.get("character_wave_floor", 0.18),
-        "holdLiftEm": live_sync.get("hold_lift_em", 0.382),
+        "characterWaveFalloff": live_sync.get("character_wave_falloff", 1.0),
+        "characterWaveFloor": live_sync.get("character_wave_floor", 0.0),
+        "holdLiftEm": live_sync.get("hold_lift_em", 0.525),
         "holdFullS": live_sync.get("hold_full_s", 0.70),
         "holdMinS": live_sync.get("hold_min_s", 0.22),
-        "holdLandMs": live_sync.get("hold_land_ms", 190),
+        "holdPreMs": live_sync.get("hold_pre_ms", 420),
+        "holdLandMs": live_sync.get("hold_land_ms", 290),
+        # CWI 2.4.4/2.4.5: sound labels yield to speech (the PR film never
+        # shows one beside an active dialogue caption).
+        "soundLingerMs": round(
+            float(display.get("sound_label_speech_linger_s", 0.8)) * 1000
+        ),
         "voiceScaleRange": [
             float(v) for v in live_sync.get(
                 "voice_scale_range", [0.90, 1.20]
@@ -4835,7 +5268,10 @@ def _studio_runtime_config(
             live_sync.get("voice_scale_response", 0.25)
         ),
         "voiceScaleResponseQuiet": float(
-            live_sync.get("voice_scale_response_quiet", 0.26)
+            live_sync.get("voice_scale_response_quiet", 0.55)
+        ),
+        "voiceScaleDeadband": float(
+            live_sync.get("voice_scale_deadband", 0.34)
         ),
         "widthRange": [
             float(v) for v in live_sync.get("width_range", [82, 124])
@@ -4847,6 +5283,7 @@ def _studio_runtime_config(
         "weightRange": [
             float(v) for v in live_sync.get("weight_range", [200, 760])
         ],
+        "weightEmphasis": float(live_sync.get("weight_emphasis", 0.55)),
         "deliveryMinConfidence": live_sync.get(
             "delivery_min_confidence", 0.38
         ),

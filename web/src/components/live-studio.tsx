@@ -45,12 +45,22 @@ import type {CaptionWord, LevelEvent} from "@/lib/caption-store";
 import {
   captionMotionFor,
   characterVoiceTypes,
+  voiceDeviationOf,
   type CaptionType,
   type VoiceTypeRanges,
 } from "@/lib/caption-motion";
-import {acousticTimeMs, naturalMotionDurationMs} from "@/lib/motion-timing";
+import {
+  acousticTimeMs,
+  crestDurationMs,
+  naturalMotionDurationMs,
+} from "@/lib/motion-timing";
 import {baselineOffsetEm, formatBaselineEm} from "@/lib/glyph-metrics";
-import {assignSpeakerColors} from "@/lib/speaker-colors";
+import {
+  assignSpeakerColors,
+  speakerColor,
+  speakerStatus,
+  type SpeakerColorMap,
+} from "@/lib/speaker-colors";
 import {planStageLayout, rowBudgetEm} from "@/lib/stage-layout";
 
 type CSSVars = CSSProperties & Record<`--${string}`, string | number>;
@@ -81,14 +91,11 @@ function voiceRanges(runtime: RuntimeConfig): VoiceTypeRanges {
     scale: runtime.voiceScaleRange,
     scaleResponse: runtime.voiceScaleResponse,
     scaleResponseQuiet: runtime.voiceScaleResponseQuiet,
+    scaleDeadband: runtime.voiceScaleDeadband,
     weight: runtime.weightRange,
+    weightEmphasis: runtime.weightEmphasis,
     width: runtime.widthRange,
   };
-}
-
-function speakerStatus(word: CaptionWord): string {
-  if (word.speaker_status) return word.speaker_status;
-  return word.speaker ? "stable" : "unknown";
 }
 
 function speakerNumber(speaker: string | null): string {
@@ -96,29 +103,6 @@ function speakerNumber(speaker: string | null): string {
   const match = speaker.match(/\d+/);
   return String(match ? Number(match[0]) : 1).padStart(2, "0");
 }
-
-/**
- * CWI 2.1, via `assignSpeakerColors` -- see that module for why this is wheel
- * geometry and not a lookup.
- *
- * This used to be `palette[hash(speakerId) % palette.length]`, which could hand
- * speakers 1 and 2 adjacent hues -- exactly the confusion 2.1.3 devotes a page
- * of do/don't wheels to preventing.
- *
- * Both fallbacks stay CSS variables rather than literals: they have to follow
- * the stage theme, and every consumer writes the result straight into a custom
- * property, so the indirection resolves for free.
- */
-function speakerColor(
-  speaker: string | null,
-  status: string,
-  colors: SpeakerColorMap,
-): string {
-  if (!speaker || status === "unknown") return "var(--caption-unknown)";
-  return colors.get(speaker)?.color ?? "var(--accent)";
-}
-
-type SpeakerColorMap = ReturnType<typeof assignSpeakerColors>;
 
 /**
  * Resolve the assignment once per roster, then swap in the themed palette by
@@ -242,14 +226,16 @@ const MotionWord = memo(function MotionWord({
    * whichever side of `voice_scale_range` it is on, so a whisper and a shout
    * both read as 1.
    */
-  const voiceRange = voiceRanges(runtime).scale;
-  const voiceDeviation = clamp(
-    Math.abs(motion.voice.scale - 1) /
-      Math.max(1e-6, motion.voice.scale >= 1
-        ? voiceRange[1] - 1
-        : 1 - voiceRange[0]),
-    0,
-    1,
+  /*
+   * Measured against the REACHABLE size band, not the configured clamp. The
+   * quiet side never reaches `voice_scale_range[0]` -- `scaleResponseQuiet`
+   * caps it at 0.78 against a configured 0.72 -- so dividing by the clamp put
+   * the most hushed word in the film at 0.786 instead of 1, and left a fifth
+   * of the wave running on "softer.". See `reachableScaleRange`.
+   */
+  const voiceDeviation = voiceDeviationOf(
+    motion.voice.scale,
+    voiceRanges(runtime),
   );
   const waveSuppression = Math.max(
     runtime.characterWaveFloor,
@@ -277,7 +263,8 @@ const MotionWord = memo(function MotionWord({
       <span
         className={crest ? "character-sizer" : "caption-character"}
         key={index}
-        style={crest ? undefined : {
+        data-char-index={index}
+        style={crest ? {"--char-index": index} as CSSVars : {
           // Where this letter sits in the wave, and how hard it stretches.
           "--char-index": index,
           /*
@@ -301,15 +288,43 @@ const MotionWord = memo(function MotionWord({
     ));
 
   /* Frozen at mount: a verifier respelling can revise `end`, and a caption
-     already in flight must not have its clock reshaped underneath it. */
-  const [duration] = useState(
-    () => naturalMotionDurationMs(motionWord, runtime),
+     already in flight must not have its clock reshaped underneath it. The
+     wipe's sweep and the crest window freeze on the same terms — the arm
+     effect and the crest animation must agree on ONE number, and a running
+     crest must not be re-timed by a retiming revision. As state, the style
+     prop rewrites them with identical strings on every render, so no running
+     animation is ever reshaped. */
+  /* How much of the hold choreography this word earns, 0..1: the gap of
+     silence in front of it, ramped between `holdMinS` and `holdFullS`. Drives
+     both the lift and the spring's amplitude, so a word nobody waited for runs
+     the animation as a flat identity. */
+  const holdAmount = clamp(
+    (holdGapS - runtime.holdMinS) /
+      Math.max(1e-6, runtime.holdFullS - runtime.holdMinS),
+    0,
+    1,
   );
+  const [{duration, sweepMs, crestMs}] = useState(() => {
+    const naturalMs = naturalMotionDurationMs(motionWord, runtime);
+    const spokenMs = Math.max(0, number(word.end) - number(word.start)) * 1000;
+    // Finish the wipe before the word is done being said, and never let a
+    // very long word crawl: the sweep is speech-paced, not decorative.
+    const sweep = clamp(spokenMs * 0.72, 0, runtime.wordMotionMaxMs);
+    return {
+      duration: naturalMs,
+      sweepMs: sweep,
+      crestMs: crestDurationMs(sweep, naturalMs),
+    };
+  });
   const style: CSSVars = {
     "--speaker-color": color,
     // 2.2.3 is constant; the Expression control changes §2.3, not this cue.
     "--sync-pop": motion.sync.scale.toFixed(3),
     "--motion-duration": `${duration.toFixed(0)}ms`,
+    // The 2.3 crest takes its own window so its rise tracks the colour wipe
+    // instead of leading it (`crestDurationMs`); the pop and wave keep the
+    // natural window.
+    "--crest-duration": `${crestMs.toFixed(0)}ms`,
     // CWI 2.3 is a WORD-level property: in intonation.mov every glyph of
     // "louder" is the same size and weight, and every glyph of "softer" is
     // uniformly small. Only the wave below is per character.
@@ -321,16 +336,13 @@ const MotionWord = memo(function MotionWord({
     "--wave-step": `${(duration * 0.40 / Math.max(1, characters.length))
       .toFixed(1)}ms`,
     "--wave-span": `${(duration * 0.72).toFixed(0)}ms`,
-    /* A word that waited rises and lands as it turns. Zero for ordinary
-       speech, so nothing moves unless the speaker actually held. */
-    "--hold-lift": `${(
-      clamp(
-        (holdGapS - runtime.holdMinS) /
-          Math.max(1e-6, runtime.holdFullS - runtime.holdMinS),
-        0,
-        1,
-      ) * runtime.holdLiftEm
-    ).toFixed(3)}em`,
+    /* A word that waited crouches, springs, floats and lands as it turns.
+       Zero for ordinary speech, so nothing moves unless the speaker actually
+       held -- and `--hold-spring` gates the squash/stretch on the same wait,
+       so the keyframes collapse to an identity for every ordinary word. */
+    "--hold-lift": `${(holdAmount * runtime.holdLiftEm).toFixed(3)}em`,
+    "--hold-spring": holdAmount.toFixed(3),
+    "--hold-pre": `${runtime.holdPreMs}ms`,
     "--hold-land": `${runtime.holdLandMs}ms`,
   };
   const status = speakerStatus(word);
@@ -366,7 +378,9 @@ const MotionWord = memo(function MotionWord({
     if (!element) return;
     if (armedRef.current === null) {
       // No acoustic clock yet. `clockEpoch` brings us back when there is one.
-      const armed = scheduleWord(id, word, duration);
+      // The crest window is the word's longest-running animation, so it is
+      // what `activeMotions` should count.
+      const armed = scheduleWord(id, word, crestMs);
       if (armed === null) return;
       armedRef.current = armed;
     }
@@ -384,11 +398,42 @@ const MotionWord = memo(function MotionWord({
     }
     if (element.dataset.armed === "true") return;
     element.dataset.armed = "true";
-    element.style.setProperty(
-      "--turn-delay",
-      `${Math.round(armedRef.current.turnAtMs - performance.now())}ms`,
+    const turnDelay = armedRef.current.turnAtMs - performance.now();
+    element.style.setProperty("--turn-delay", `${Math.round(turnDelay)}ms`);
+
+    /*
+     * THE COLOUR TURN IS A WIPE THROUGH THE WORD, NOT A SWITCH.
+     *
+     * `Caption With Intention PR FILM.mp4` shows the boundary INSIDE a word
+     * over and over -- "dynamic te|xt" (42.0s), "brings in|" (49.3s),
+     * "weigh|ts" (51.35s), "character|s," (60.4s), "instantly kn|ow" (62.1s) --
+     * and in "weigh|ts" the SIZE AND WEIGHT sweep in with it: "weigh" is
+     * already big and bold while "ts" is still small and grey. So a word does
+     * not flip; a boundary crosses it at speech rate. (2.2.4 calls this the
+     * exception; in the film it is the norm.)
+     *
+     * Each character therefore gets its own delay, spread across the word's own
+     * spoken span. Written IMPERATIVELY, per character, for the same reason the
+     * word's delay is: `animation-delay` counts from when the animation was
+     * applied to that element, and live words GROW as a hypothesis extends, so
+     * a span appended later would otherwise turn late. Re-deriving each span's
+     * delay against the frozen absolute moment keeps the sweep correct through
+     * appends and remounts alike.
+     */
+    const spans = element.querySelectorAll<HTMLElement>(
+      ".caption-character, .character-sizer",
     );
-  }, [clockEpoch, duration, id, scheduleWord, word]);
+    const perWord = Math.max(1, characters.length);
+    // `sweepMs` is frozen at mount alongside the crest window, so the rise
+    // and the wipe are computed from the same number.
+    for (const span of spans) {
+      const index = Number(span.dataset.charIndex ?? 0);
+      span.style.setProperty(
+        "--char-turn-delay",
+        `${Math.round(turnDelay + (index / perWord) * sweepMs)}ms`,
+      );
+    }
+  }, [clockEpoch, crestMs, id, scheduleWord, sweepMs, word, characters.length]);
 
   return (
     <span
@@ -689,7 +734,7 @@ function CaptionFeed({
   return (
     <div className={transcript ? "transcript-feed" : "caption-feed"}>
       {paragraphs.map((paragraph, paragraphIndex) => {
-        const color = speakerColor(paragraph.speaker, paragraph.status, speakerColors);
+        const color = speakerColor(paragraph.speaker, speakerColors);
         const isLatest = paragraphIndex === spokenRow;
         const firstWord = paragraph.words[0]?.word;
         return (
@@ -729,11 +774,7 @@ function CaptionFeed({
                     holdGapS={holdGaps.get(id) ?? 0}
                     clockEpoch={clockEpoch}
                     scheduleWord={scheduleWord}
-                    color={speakerColor(
-                      word.speaker ?? null,
-                      speakerStatus(word),
-                      speakerColors,
-                    )}
+                    color={speakerColor(word.speaker, speakerColors)}
                     intensity={intensity}
                     runtime={runtime}
                     key={id}
@@ -1197,6 +1238,29 @@ export function LiveStudio() {
       stageMemory,
     )
     : paragraphs;
+  /* CWI 2.4.4/2.4.5: sound labels yield to speech. The PR film shows
+     "[Toy music]"/"[Beep]" only while no one is speaking, never beside an
+     active dialogue caption. Speech is active while the playhead sits inside
+     the DISPLAYED timeline's speech — up to the newest word's end plus a
+     short linger — which also covers read-ahead: white upcoming words push
+     the edge past the playhead. Old retained rows cannot suppress (their
+     ends are far behind), and `level.speech` would be wrong here: it lives
+     on the acoustic clock, `read_ahead_delay_s` AHEAD of what the viewer
+     sees. */
+  const speechEndMs = useMemo(() => {
+    let newest = Number.NEGATIVE_INFINITY;
+    for (const paragraph of stageParagraphs) {
+      for (const {word} of paragraph.words) {
+        const onset = acousticTimeMs(word);
+        if (!Number.isFinite(onset)) continue;
+        const end = onset
+          + Math.max(0, number(word.end) - number(word.start)) * 1000;
+        if (end > newest) newest = end;
+      }
+    }
+    return newest;
+  }, [stageParagraphs]);
+  const speechActive = playheadMs <= speechEndMs + runtime.soundLingerMs;
   const speakers = useMemo(() => {
     const bySpeaker = new Map<string, CaptionWord>();
     for (const paragraph of paragraphs) {
@@ -1223,7 +1287,7 @@ export function LiveStudio() {
     ? runtime.paletteLight
     : runtime.palette)[0];
   const activeColor = currentParagraph
-    ? speakerColor(currentParagraph.speaker, currentParagraph.status, speakerColors)
+    ? speakerColor(currentParagraph.speaker, speakerColors)
     : fallbackColor;
   const direction = number(level.direction_deg ?? level.azimuth_deg, Number.NaN);
   const directionKnown = Number.isFinite(direction);
@@ -1346,6 +1410,7 @@ export function LiveStudio() {
             <div
               className="sound-caption"
               data-category={model.sound.category ?? "environmental"}
+              data-suppressed={speechActive ? "true" : "false"}
               style={{
                 "--sound-level": clamp(
                   (number(level.rms_db, -72) + 52) / 34,
@@ -1443,7 +1508,7 @@ export function LiveStudio() {
           <div className="speaker-list">
             {speakers.length ? speakers.map(([speaker, word]) => {
               const status = speakerStatus(word);
-              const color = speakerColor(speaker, status, speakerColors);
+              const color = speakerColor(speaker, speakerColors);
               return (
                 <div className="speaker-card" key={speaker}>
                   <span className="speaker-avatar" style={{"--speaker-color": color} as CSSVars}>

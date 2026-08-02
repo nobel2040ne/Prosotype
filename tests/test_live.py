@@ -1,3 +1,4 @@
+import copy
 import json
 import http.server
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from collections import deque
 
@@ -984,8 +986,12 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     assert runtime["readAheadOpacity"] == 0.9
     # 2.2.2's turn eases with the lift; it is never a hard cut.
     assert runtime["colorTurnMs"] > 0
-    assert runtime["wordMotionBaseMs"] == 520
-    assert runtime["wordMotionMaxMs"] == 720
+    # RE-FITTED 2026-08-02 to the PR film's own "louder" (rise 0.25s, hold
+    # 0.55s, return 0.25s -- ~1.05s in all, tracked at 24 fps). The window is
+    # what sets the RETURN, because `@keyframes voice-phase`'s stops are
+    # fractions of it: at the old 520/720 the return measured 0.14s on screen.
+    assert runtime["wordMotionBaseMs"] == 950
+    assert runtime["wordMotionMaxMs"] == 1150
     assert runtime["wordMotionMinMs"] == 320
     # The reveal queue and its concurrency slots, catch-up gap, backlog target,
     # rate headroom and staleness ceiling are gone: the playhead schedules every
@@ -1584,3 +1590,212 @@ def test_cc_bounds_the_rendered_type_axes():
     got = [forward(0.5, hz, 0.5, 165.0, cfg)["emphWght"] for hz in range(80, 251, 2)]
     assert min(got) >= lo and max(got) <= hi
     assert max(got) > min(got)        # ...but still actually varies
+
+
+def _bare_captioner():
+    """The established bare-instance pattern for exercising `_word_event`."""
+    captioner = StreamingCaptioner.__new__(StreamingCaptioner)
+    captioner.cfg = load_config()
+    captioner.prosody_cache = {}
+    captioner.speaker = "S1"
+    captioner.utterance = 0
+    captioner.stream_base = 0.0
+    captioner._last_final_speaker = None
+    captioner.db_history = deque(maxlen=120)
+    return captioner
+
+
+def _emit_db_word(captioner, index, db, final=False, text=None):
+    """One synthetic word at its own slot, with a controlled span dB."""
+    start = index * 0.6
+    end = start + 0.5
+    word = HypothesisWord(text or f"w{index}", start, end, 0.9)
+    audio = np.full(int((end + 0.1) * SR), 10 ** (db / 20), dtype=np.float32)
+    return captioner._word_event(word, audio, final=final)
+
+
+def test_first_utterance_cues_calibrate_from_the_bootstrap():
+    """A long first utterance must not saturate against the config range.
+
+    `db_history` holds FINAL words only, and a first utterance finalizes all
+    at once at its endpoint — on the PR film's 24 s opening monologue that
+    left ~60 words normalizing against the static `db_range` fallback, where
+    the narration read as loudness ≈ 1.0 and every ordinary word rendered at
+    the crest clamp. Non-final emissions now bootstrap the window.
+    """
+    dbs = [-60, -52, -46, -40, -37, -36, -34, -32, -30, -28]
+
+    def run():
+        captioner = _bare_captioner()
+        return [
+            _emit_db_word(captioner, i, db)["loudness"]
+            for i, db in enumerate(dbs)
+        ]
+
+    first, second = run(), run()
+    # Deterministic: the same event sequence yields the same styling.
+    assert first == second
+
+    mapping = load_config()["mapping"]["loudness_to"]
+    pivot = ((mapping["baseline"] - mapping["min"])
+             / (mapping["max"] - mapping["min"]))
+    # Before the bootstrap has six words there is no speaker scale to place a
+    # word on: unmeasured is NEUTRAL (the 2.3.5 baseline), never the raw
+    # config-range guess that rendered a session's first words at the clamp.
+    for early in first[:5]:
+        assert abs(early - pivot) < 1e-3  # events round loudness to 4 places
+    captioner = _bare_captioner()
+    for i, db in enumerate(dbs):
+        _emit_db_word(captioner, i, db)
+    assert not captioner.db_history          # nothing finalized yet
+    # A median-loud word cues onto the CWI baseline, not the saturated top.
+    probe = _emit_db_word(captioner, len(dbs), -36)["loudness"]
+    assert abs(probe - pivot) < 0.12
+    # Expression survives in both directions without saturating.
+    quiet = _emit_db_word(captioner, len(dbs) + 1, -55)["loudness"]
+    loud = _emit_db_word(captioner, len(dbs) + 2, -30)["loudness"]
+    assert quiet < probe < loud
+    assert loud < 0.98
+
+
+def test_bootstrap_ignores_re_emissions_of_one_slot():
+    """A pending word re-emitted on every hypothesis is ONE observation."""
+    captioner = _bare_captioner()
+    # One word re-emitted 20 times, then five distinct words: six slots.
+    for _ in range(20):
+        _emit_db_word(captioner, 0, -30)
+    for i, db in enumerate((-60, -52, -46, -40, -36), start=1):
+        _emit_db_word(captioner, i, db)
+    assert len(captioner.db_bootstrap) == 6
+
+    control = _bare_captioner()
+    _emit_db_word(control, 0, -30)
+    for i, db in enumerate((-60, -52, -46, -40, -36), start=1):
+        _emit_db_word(control, i, db)
+
+    probe = _emit_db_word(captioner, 7, -38)["loudness"]
+    assert probe == _emit_db_word(control, 7, -38)["loudness"]
+
+
+def test_calibrated_history_ignores_bootstrap():
+    """Once durable calibration exists, the bootstrap must not perturb it."""
+    history = [-46, -40, -37, -36, -34, -32, -30]
+
+    control = _bare_captioner()
+    control.db_history = deque(history, maxlen=120)
+    expected = _emit_db_word(control, 0, -38)["loudness"]
+
+    poisoned = _bare_captioner()
+    poisoned.db_history = deque(history, maxlen=120)
+    poisoned.db_bootstrap = {("§slot", 0, 999): -999.0,
+                             ("§slot", 0, 998): 0.0}
+    got = _emit_db_word(poisoned, 0, -38)["loudness"]
+    assert got == expected
+    # The hand-off is explicit: durable calibration clears the bootstrap.
+    assert not poisoned.db_bootstrap
+
+
+def _voiced_word(captioner, index, db, tilt_hz_energy, final=True):
+    """A synthetic voiced word: controlled LEVEL and controlled spectral tilt.
+
+    `tilt_hz_energy` scales the 1-5 kHz band only, so level and vocal effort
+    move independently -- which is the whole point of the channel under test.
+    """
+    start = index * 0.6
+    end = start + 0.5
+    t = np.arange(int((end + 0.1) * SR)) / SR
+    low = sum(np.sin(2 * np.pi * f * t) for f in (150, 300, 600))
+    high = sum(np.sin(2 * np.pi * f * t) for f in (1500, 2500, 3500))
+    signal = low + tilt_hz_energy * high
+    signal *= (10 ** (db / 20)) / max(1e-9, float(np.sqrt(np.mean(signal ** 2))))
+    word = HypothesisWord(f"w{index}", start, end, 0.9)
+    return captioner._word_event(word, signal.astype(np.float32), final=final)
+
+
+def test_pressed_voice_reads_louder_than_level_alone():
+    """CWI 2.3.5 asks for VOLUME, and mastered audio destroys LEVEL.
+
+    Measured on the PR film: the drill sergeant shouts at full effort and
+    lands 1.6 dB QUIETER than the calm narration, so ranking his words by
+    level scores AUC 0.367 -- worse than chance. Pressed phonation still
+    flattens the spectrum, so equal level plus more effort must render larger.
+    """
+    captioner = _bare_captioner()
+    for i in range(10):                       # calm baseline, same level
+        _voiced_word(captioner, i, -20, 0.05)
+
+    calm = _voiced_word(captioner, 10, -20, 0.05)
+    pressed = _voiced_word(captioner, 11, -20, 1.6)
+
+    # The LEVEL measurement itself must not move: prosody still reports what
+    # the microphone heard, and haptics threshold on it.
+    assert calm["loudness_db"] == pytest.approx(pressed["loudness_db"], abs=0.6)
+    assert pressed["loudness"] > calm["loudness"]
+
+
+def test_vocal_effort_is_one_sided_and_gated():
+    """A breathy word must not SHRINK, and the channel must be switchable."""
+    captioner = _bare_captioner()
+    for i in range(10):
+        _voiced_word(captioner, i, -20, 0.6)
+    calm = _voiced_word(captioner, 10, -20, 0.6)
+    breathy = _voiced_word(captioner, 11, -20, 0.02)
+    # Low effort already reads quiet through `db`; subtracting would penalize
+    # a soft voice twice, so the lift is strictly one-sided.
+    assert breathy["loudness"] == pytest.approx(calm["loudness"], abs=1e-9)
+
+    off = _bare_captioner()
+    off.cfg = copy.deepcopy(off.cfg)
+    off.cfg["live"]["vocal_effort"]["enabled"] = False
+    for i in range(10):
+        _voiced_word(off, i, -20, 0.05)
+    flat_calm = _voiced_word(off, 10, -20, 0.05)
+    flat_pressed = _voiced_word(off, 11, -20, 1.6)
+    assert flat_pressed["loudness"] == pytest.approx(flat_calm["loudness"], abs=1e-9)
+
+
+def test_one_stressed_word_survives_the_effort_mean():
+    """A single stressed word is an EVENT; the smoothing mean deletes it.
+
+    This is why "louder" never moved. `smoothing_words` exists because
+    sustained pressed phonation is a speaking STYLE and a causal mean reads it
+    far better than one word does -- but the six words before "louder" are calm
+    narration, so the mean lands below the median and the lift is exactly 0.000
+    however the rest is tuned. `emphasis_blend` is how much of the word's own
+    tilt survives that mean.
+    """
+    stressed = StreamingCaptioner.__new__(StreamingCaptioner)
+    cfg = {"emphasis_blend": 0.75, "smoothing_words": 6,
+           "pitch_gain": 0.0, "length_gain": 0.0}
+    calm = [(-14.0, 150.0, 0.06)] * 5
+    # One word with a much stronger tilt, at the end of calm speech.
+    scores = stressed._prominence(calm + [(2.0, 150.0, 0.06)], (150.0, 0.06), cfg)
+    assert scores[-1] > scores[0] + 8, scores
+
+    # At blend 0 -- the pre-2026-08-02 behaviour -- the same word is erased:
+    # a sixth of the excursion survives, which is inside the deadband.
+    flat = stressed._prominence(
+        calm + [(2.0, 150.0, 0.06)], (150.0, 0.06), {**cfg, "emphasis_blend": 0.0},
+    )
+    assert flat[-1] - flat[0] < 3, flat
+
+
+def test_prominence_reads_pitch_and_lengthening_not_syllable_count():
+    """The two cues that separate "louder", and the trap in the second one."""
+    captioner = StreamingCaptioner.__new__(StreamingCaptioner)
+    cfg = {"emphasis_blend": 1.0, "smoothing_words": 1,
+           "pitch_gain": 1.0, "length_gain": 0.5}
+    baseline = (150.0, 0.06)
+    plain = captioner._prominence([(-10.0, 150.0, 0.06)], baseline, cfg)[0]
+    high = captioner._prominence([(-10.0, 260.0, 0.06)], baseline, cfg)[0]
+    held = captioner._prominence([(-10.0, 150.0, 0.12)], baseline, cfg)[0]
+    assert high > plain and held > plain
+
+    # Unvoiced (0 Hz) contributes NOTHING rather than reading as an impossibly
+    # low voice -- the same rule `voiceTone` follows on the client.
+    assert captioner._prominence([(-10.0, 0.0, 0.06)], baseline, cfg)[0] == plain
+
+    # Length is per CHARACTER, so a long word said at ordinary pace scores the
+    # same as a short one. Raw duration would rank "identification." above
+    # every shout in the film.
+    assert captioner._prominence([(-10.0, 150.0, 0.06)], baseline, cfg)[0] == plain

@@ -10,6 +10,8 @@ import {
   voiceScale,
   voiceTone,
   voiceTypeFor,
+  voiceDeviationOf,
+  reachableScaleRange,
   voiceWeight,
   voiceWidth,
   type VoiceTypeRanges,
@@ -19,7 +21,9 @@ const RANGES: VoiceTypeRanges = {
   scale: [0.90, 1.20],
   scaleResponse: 0.25,
   scaleResponseQuiet: 0.25,
+  scaleDeadband: 0,
   weight: [200, 760],
+  weightEmphasis: 0.55,
   width: [82, 124],
 };
 
@@ -27,7 +31,9 @@ const LITERAL: VoiceTypeRanges = {
   scale: [0.6, 2.4],
   scaleResponse: 1,
   scaleResponseQuiet: 1,
+  scaleDeadband: 0,
   weight: [100, 1000],
+  weightEmphasis: 0.55,
   width: [25, 150],
 };
 
@@ -197,4 +203,121 @@ test("the layout reservation follows the widest character, never below 1", () =>
     peakCharacterScale([{scale: 0.7, weight: 400, width: 100}]),
     1,
   );
+});
+
+test("ordinary speech does not move at all (2.3.5 deadband)", () => {
+  const ranges: VoiceTypeRanges = {
+    scale: [0.72, 1.62], scaleResponse: 0.62, scaleResponseQuiet: 0.55,
+    scaleDeadband: 0.34, weight: [200, 760], weightEmphasis: 0.55,
+    width: [82, 124],
+  };
+  // The server pivots each speaker's MEDIAN onto 0.2222, so that is "ordinary".
+  assert.equal(voiceScale(0.2222, ranges), 1);
+  // ...and so is everything inside the band, on both sides.
+  assert.equal(voiceScale(0.18, ranges), 1);
+  assert.equal(voiceScale(0.42, ranges), 1);
+});
+
+test("a genuinely hushed word shrinks VISIBLY, not by 3%", () => {
+  const ranges: VoiceTypeRanges = {
+    scale: [0.72, 1.62], scaleResponse: 0.62, scaleResponseQuiet: 0.55,
+    scaleDeadband: 0.34, weight: [200, 760], weightEmphasis: 0.55,
+    width: [82, 124],
+  };
+  const hushed = voiceScale(0, ranges);
+  assert.ok(hushed < 0.85, `whisper only reached ${hushed.toFixed(3)}`);
+  // Weakening the response instead of using a deadband produced a 0.90 floor
+  // that the user could not see in a live test. Guard against regressing to it.
+  assert.ok(hushed >= 0.72, "must stay inside the configured band");
+});
+
+test("size is monotone in loudness and continuous at the band edge", () => {
+  const ranges: VoiceTypeRanges = {
+    scale: [0.72, 1.62], scaleResponse: 0.62, scaleResponseQuiet: 0.55,
+    scaleDeadband: 0.34, weight: [200, 760], weightEmphasis: 0.55,
+    width: [82, 124],
+  };
+  let previous = -Infinity;
+  let biggestStep = 0;
+  for (let level = 0; level <= 1.0001; level += 0.01) {
+    const value = voiceScale(level, ranges);
+    assert.ok(value >= previous - 1e-9, `not monotone at ${level.toFixed(2)}`);
+    if (previous > -Infinity) biggestStep = Math.max(biggestStep, value - previous);
+    previous = value;
+  }
+  // No jump at the edge of the deadband -- a discontinuity there would make
+  // two words of near-identical volume render at obviously different sizes.
+  assert.ok(biggestStep < 0.03, `discontinuity of ${biggestStep.toFixed(3)}`);
+});
+
+test("a shout is not drawn as the thinnest text on the stage", () => {
+  const ranges: VoiceTypeRanges = {
+    scale: [0.72, 1.62], scaleResponse: 0.62, scaleResponseQuiet: 0.55,
+    scaleDeadband: 0.34, weight: [200, 760], weightEmphasis: 0.55,
+    width: [82, 124],
+  };
+  // The PR film's drill sergeant: 278 Hz against ~140 Hz of calm narration,
+  // and loud. 2.3.9 alone sends that to the Light floor, so the angriest voice
+  // in the film rendered as its thinnest type while the film draws it Black.
+  const shout = voiceTypeFor({loudness: 0.95, pitchHz: 278, texture: 0.6}, ranges);
+  assert.ok(shout.scale > 1.4, `shout only reached ${shout.scale.toFixed(3)}`);
+  assert.ok(
+    shout.weight > 400,
+    `a loud 278 Hz word rendered at weight ${shout.weight}`,
+  );
+
+  // ORDINARY SPEECH IS UNTOUCHED: 2.3.9 is a statement about a VOICE, and at
+  // ordinary volume it still owns the weight axis outright.
+  const airy = voiceTypeFor({loudness: 0.22, pitchHz: 278, texture: 0.6}, ranges);
+  assert.equal(airy.scale, 1);
+  assert.equal(airy.weight, voiceWeight(voiceTone(278), ranges));
+  assert.ok(airy.weight < 400, `quiet high voice rendered at ${airy.weight}`);
+});
+
+test("emphasis adds weight without breaking the 2.3.8 neutral band", () => {
+  const ranges: VoiceTypeRanges = {
+    scale: [0.72, 1.62], scaleResponse: 0.62, scaleResponseQuiet: 0.55,
+    scaleDeadband: 0.34, weight: [200, 760], weightEmphasis: 0.55,
+    width: [82, 124],
+  };
+  // 160-200 Hz is the PDF's neutral BAND, and an unemphasised word in it must
+  // still be exactly Regular.
+  for (const hz of [160, 180, 200]) {
+    assert.equal(voiceWeight(voiceTone(hz), ranges, 0), 400);
+  }
+  // Weight rises monotonically with emphasis and never leaves the range.
+  let previous = -Infinity;
+  for (let e = 0; e <= 1.0001; e += 0.05) {
+    const weight = voiceWeight(voiceTone(320), ranges, e);
+    assert.ok(weight >= previous, `not monotone in emphasis at ${e.toFixed(2)}`);
+    assert.ok(weight >= 200 && weight <= 760, `out of range: ${weight}`);
+    previous = weight;
+  }
+  // A LOW voice keeps its 2.3.9 weight and gains on top of it, rather than
+  // being re-derived from emphasis alone.
+  assert.ok(
+    voiceWeight(voiceTone(90), ranges, 0.8) >
+      voiceWeight(voiceTone(90), ranges, 0),
+  );
+});
+
+test("the wave measures against the REACHABLE size band, not the clamp", () => {
+  const ranges: VoiceTypeRanges = {
+    scale: [0.72, 1.62], scaleResponse: 1.0, scaleResponseQuiet: 0.55,
+    scaleDeadband: 0.34, weight: [200, 760], weightEmphasis: 0.55,
+    width: [82, 124],
+  };
+  const [quiet, loud] = reachableScaleRange(ranges);
+  // The quiet response caps the shrink well inside the configured clamp, so a
+  // deviation keyed on the clamp can never reach 1 -- which left a fifth of the
+  // character wave running on the most hushed word in the film.
+  assert.ok(quiet > ranges.scale[0], `${quiet} should not reach the clamp`);
+  assert.equal(loud, ranges.scale[1]);
+
+  const hushed = voiceScale(0, ranges);
+  assert.equal(voiceDeviationOf(hushed, ranges), 1);
+  assert.equal(voiceDeviationOf(voiceScale(1, ranges), ranges), 1);
+  // ...and an ordinary word inside the deadband deviates not at all, so it
+  // keeps the whole wave.
+  assert.equal(voiceDeviationOf(voiceScale(0.2222, ranges), ranges), 0);
 });
