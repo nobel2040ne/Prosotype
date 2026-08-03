@@ -45,6 +45,7 @@ import type {CaptionWord, LevelEvent} from "@/lib/caption-store";
 import {
   captionMotionFor,
   characterVoiceTypes,
+  emphasisOf,
   voiceDeviationOf,
   type CaptionType,
   type VoiceTypeRanges,
@@ -52,6 +53,8 @@ import {
 import {
   acousticTimeMs,
   crestDurationMs,
+  crestWindowMs,
+  HOLD_ENVELOPE_EMPHASIS,
   naturalMotionDurationMs,
 } from "@/lib/motion-timing";
 import {baselineOffsetEm, formatBaselineEm} from "@/lib/glyph-metrics";
@@ -162,6 +165,7 @@ const MotionWord = memo(function MotionWord({
   intensity,
   runtime,
   holdGapS,
+  paceGapS,
   clockEpoch,
   scheduleWord,
 }: {
@@ -172,6 +176,8 @@ const MotionWord = memo(function MotionWord({
   runtime: RuntimeConfig;
   /** Silence before this word, in seconds -- how long it had to wait. */
   holdGapS: number;
+  /** Onset-to-onset interval to the NEXT word: one word at this speech rate. */
+  paceGapS: number;
   clockEpoch: number | null;
   scheduleWord: (
     id: string,
@@ -298,14 +304,49 @@ const MotionWord = memo(function MotionWord({
      silence in front of it, ramped between `holdMinS` and `holdFullS`. Drives
      both the lift and the spring's amplitude, so a word nobody waited for runs
      the animation as a flat identity. */
+  /* AND A WORD THAT SWELLS DOES NOT LIFT. THE TWO CHANNELS ARE INDEPENDENT.
+     This is the reference's own rule, visible in one shot: the film's
+     "louder" more than doubles in size and never leaves the baseline, while
+     "is" -- the single word it does lift in the first 18s -- is at its
+     RESTING size the whole time it is aloft (measured frame by frame: it
+     overshoots to 1.31 on the launch, then decays to exactly 1.0 and floats
+     there for 0.67s). Size answers "how was this said"; the lift answers "how
+     long was it held". Letting a loud word do both coupled them -- measured,
+     corr(peak size, lift) was +0.337 with "louder" lifting a full 0.525em --
+     and the reference regresses that at +0.043 with its largest word at
+     exactly 0.000.
+     THE GATE IS BINARY, NOT PROPORTIONAL. A graded withdrawal taxes a word
+     for the 2.2.3 pop every word carries: "is" renders 1.23x, of which 1.15
+     is that constant cue, so its real crest is 1.07 -- and a proportional
+     rule still took 38% of its lift for what is essentially resting size.
+     The reference makes one distinction, not a spectrum: a word that is
+     genuinely swelling does not leave the line, and everything else may. */
+  /* ONE-SIDED: only SWELLING withdraws the lift, not shrinking. `emphasisOf`
+     scores distance from normal in EITHER direction, which is right for the
+     motion window but wrong here -- a hushed word is not competing with the
+     lift for the viewer's attention, it is the opposite. Measured, "is" comes
+     in at loudness 0.183 against a 0.211 median, i.e. very slightly QUIET, and
+     the two-sided score taxed its lift to 62% of full. The film holds "is" at
+     its resting size for the whole float; what it never does is lift a word
+     that has grown. */
+  const holdEmphasis = motion.voice.scale > 1
+    ? emphasisOf(motion.voice.scale, voiceRanges(runtime))
+    : 0;
   const holdAmount = clamp(
     (holdGapS - runtime.holdMinS) /
       Math.max(1e-6, runtime.holdFullS - runtime.holdMinS),
     0,
     1,
-  );
+  ) * (holdEmphasis >= HOLD_ENVELOPE_EMPHASIS ? 0 : 1);
+  const holdEnvelope = holdEmphasis >= HOLD_ENVELOPE_EMPHASIS;
   const [{duration, sweepMs, crestMs}] = useState(() => {
-    const naturalMs = naturalMotionDurationMs(motionWord, runtime);
+    /* ONE WORD AT THE CURRENT SPEECH RATE -- the AE template's one-word-wide
+       range selector, and nothing about this word's own size. Frozen here with
+       everything else, so a verifier respelling can never re-time a running
+       crest. `emphasisOf` still feeds the WIPE guard below, which is about how
+       far the colour has to travel, not about how long the swell lasts. */
+    const push = emphasisOf(motion.voice.scale, voiceRanges(runtime));
+    const naturalMs = naturalMotionDurationMs(motionWord, runtime, paceGapS);
     const spokenMs = Math.max(0, number(word.end) - number(word.start)) * 1000;
     // Finish the wipe before the word is done being said, and never let a
     // very long word crawl: the sweep is speech-paced, not decorative.
@@ -313,7 +354,10 @@ const MotionWord = memo(function MotionWord({
     return {
       duration: naturalMs,
       sweepMs: sweep,
-      crestMs: crestDurationMs(sweep, naturalMs),
+      // The crest is the SLOW clock -- emphasis, not speech rate.
+      crestMs: crestDurationMs(
+        sweep, crestWindowMs(push, runtime), push, runtime.wordMotionMaxMs,
+      ),
     };
   });
   const style: CSSVars = {
@@ -325,6 +369,13 @@ const MotionWord = memo(function MotionWord({
     // instead of leading it (`crestDurationMs`); the pop and wave keep the
     // natural window.
     "--crest-duration": `${crestMs.toFixed(0)}ms`,
+    /* Ordinary words pulse; emphatic ones rise, HOLD and fall. The film's
+       "louder" sits at full size for ~0.75s of a ~1.25s motion (share ~0.6)
+       while the corpus median is 0.40 -- the median is carried by the 37 of 43
+       words that barely move, and reading it as one universal shape is what
+       flattened the emphatic words. A keyframe's stops cannot take a `var()`,
+       but `animation-name` can. */
+    "--voice-envelope": holdEnvelope ? "voice-phase-hold" : "voice-phase",
     // CWI 2.3 is a WORD-level property: in intonation.mov every glyph of
     // "louder" is the same size and weight, and every glyph of "softer" is
     // uniformly small. Only the wave below is per character.
@@ -343,6 +394,7 @@ const MotionWord = memo(function MotionWord({
     "--hold-lift": `${(holdAmount * runtime.holdLiftEm).toFixed(3)}em`,
     "--hold-spring": holdAmount.toFixed(3),
     "--hold-pre": `${runtime.holdPreMs}ms`,
+    "--hold-hold": `${runtime.holdHoldMs}ms`,
     "--hold-land": `${runtime.holdLandMs}ms`,
   };
   const status = speakerStatus(word);
@@ -380,7 +432,7 @@ const MotionWord = memo(function MotionWord({
       // No acoustic clock yet. `clockEpoch` brings us back when there is one.
       // The crest window is the word's longest-running animation, so it is
       // what `activeMotions` should count.
-      const armed = scheduleWord(id, word, crestMs);
+      const armed = scheduleWord(id, word, Math.max(duration, crestMs));
       if (armed === null) return;
       armedRef.current = armed;
     }
@@ -433,6 +485,11 @@ const MotionWord = memo(function MotionWord({
         `${Math.round(turnDelay + (index / perWord) * sweepMs)}ms`,
       );
     }
+    // `duration` is deliberately absent: like `crestMs` and `sweepMs` it is
+    // frozen at mount, and re-running this effect would rewrite
+    // `animation-delay` on a RUNNING animation, which shifts it -- the exact
+    // hazard `data-armed` exists to prevent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clockEpoch, crestMs, id, scheduleWord, sweepMs, word, characters.length]);
 
   return (
@@ -705,19 +762,83 @@ function CaptionFeed({
    * the stream clock is `t + (end - start)`.
    */
   const holdGaps = new Map<string, number>();
+  /*
+   * ...AND HOW LONG THE MOTION LASTS, WHICH IS ONE WORD AT THE CURRENT SPEECH
+   * RATE. Straight out of the After Effects template this system was authored
+   * in (`AE PROJECT/Academy_CI_Template.aep`, recoverable from the first
+   * commit): every animator is driven by ONE range selector, exactly one word
+   * wide (`Index End = start + 1`), whose start sweeps
+   *   ease(time, inTime, outTime, 0, textLenWords)
+   * across the LINE. A one-word-wide window crossing `textLenWords` words in
+   * `outTime - inTime` therefore sits on each word for
+   * `lineDuration / wordCount` -- the local speech rate, and nothing else.
+   * It does NOT depend on the word's size, its loudness, or its own spoken
+   * length, which is what every previous attempt here assumed.
+   * Live, the interval to the NEXT word's onset is that same quantity, and it
+   * is exactly what the one-word lookahead buys.
+   */
+  const paceGaps = new Map<string, number>();
   {
-    let previousEnd: number | null = null;
-    for (const paragraph of paragraphs) {
-      for (const {id, word} of paragraph.words) {
-        const onset = number(word.t ?? word.start, Number.NaN);
-        if (previousEnd !== null && Number.isFinite(onset)) {
-          holdGaps.set(id, Math.max(0, onset - previousEnd));
-        }
-        const span = number(word.end) - number(word.start);
-        if (Number.isFinite(onset) && Number.isFinite(span)) {
-          previousEnd = onset + Math.max(0, span);
-        }
+    let previousOnset: number | null = null;
+    let previousUtterance: number | null = null;
+    const flat = paragraphs.flatMap((paragraph) => paragraph.words);
+    for (let index = 0; index < flat.length; index += 1) {
+      const {id, word} = flat[index];
+      /* A SENTENCE BREAK IS NOT A HELD WORD. Measured on the film's first 18s
+         -- per frame, every caption cluster's ink bottom against the median of
+         its own frame -- EXACTLY ONE word leaves the line: "is" in "precisely
+         as each word is spoken", up 0.84em from 6.88s to 7.83s. Nothing else
+         lifts at all. But the pause before "is" (0.96s) is not distinctive on
+         its own: `Caption`, `Intonation.` and `The` all follow gaps of 0.90s+
+         in the same stretch. What separates them is that those are the FIRST
+         word of an utterance -- the ordinary silence between sentences --
+         while "is" is a rhetorical hold in the MIDDLE of a phrase. The film
+         lifts the second kind and not the first. */
+      const utterance = number(word.utterance, Number.NaN);
+      const startsUtterance = Number.isFinite(utterance) &&
+        previousUtterance !== null && utterance !== previousUtterance;
+      if (Number.isFinite(utterance)) previousUtterance = utterance;
+      const onset = number(word.t ?? word.start, Number.NaN);
+      /* ONSET TO ONSET, NOT END TO ONSET. The recognizer's `end` runs to the
+         next word's onset -- it attributes no silence to anything -- so
+         `onset - previousEnd` is **0.00s for every word in the capture**,
+         measured, and the hold could never fire on a real pause. "is" in
+         "precisely as each word is spoken" follows a 0.96s gap and scored
+         zero. The inter-onset interval is the honest signal: ordinary speech
+         runs ~0.08-0.32s here and a pause stands well clear of it. */
+      /* ...AND A LONGER PAUSE IS A SENTENCE BREAK, WHICH DOES NOT LIFT.
+         Utterance metadata cannot make this distinction here: the film opens
+         with ONE 24s utterance, so `Intonation.`, `The` and `weights,` sit
+         INSIDE it and no boundary exists to test. The gaps do separate them,
+         just not with a floor -- measured, those words follow gaps of 1.10s+
+         while "is", the one word the film actually lifts, follows 0.96s. The
+         long gaps are sentence breaks and the medium one is a rhetorical
+         hold, so the lift lives in a BAND. */
+      const next = flat[index + 1];
+      const nextOnset = next
+        ? number(next.word.t ?? next.word.start, Number.NaN)
+        : Number.NaN;
+      /* SILENCE ON BOTH SIDES, AND THIS IS WHAT THE ONE-WORD LOOKAHEAD BUYS.
+         A gap BEFORE alone cannot pick "is" out: `the` and `and` follow
+         pauses in the same band and the film leaves both on the line. What is
+         distinctive about a held word is that it stands ALONE -- the speaker
+         stopped, said it, and stopped again. Measured: "is" has 0.96s before
+         it and 0.80s after; the function words that shared its leading gap are
+         followed immediately by more speech. Scoring the SMALLER of the two
+         gaps is the whole rule, and it needs the next word's onset, which is
+         exactly the one word of delay this project agreed to spend. */
+      if (previousOnset !== null && Number.isFinite(onset) && !startsUtterance) {
+        const before = Math.max(0, onset - previousOnset);
+        const after = Number.isFinite(nextOnset)
+          ? Math.max(0, nextOnset - onset)
+          : before;
+        const gap = Math.min(before, after);
+        if (before <= runtime.holdMaxS) holdGaps.set(id, gap);
       }
+      if (Number.isFinite(onset) && Number.isFinite(nextOnset)) {
+        paceGaps.set(id, Math.max(0, nextOnset - onset));
+      }
+      if (Number.isFinite(onset)) previousOnset = onset;
     }
   }
 
@@ -772,6 +893,7 @@ function CaptionFeed({
                     id={id}
                     word={word}
                     holdGapS={holdGaps.get(id) ?? 0}
+                    paceGapS={paceGaps.get(id) ?? 0}
                     clockEpoch={clockEpoch}
                     scheduleWord={scheduleWord}
                     color={speakerColor(word.speaker, speakerColors)}

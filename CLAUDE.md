@@ -42,6 +42,8 @@ AUTOCWI_FAST=1 .venv/bin/python -m autocwi live --file x.wav --once  # headless 
 .venv/bin/python scripts/benchmark.py --lang ko \
   --backends local,speechmatics,soniox   # provider A/B (UPLOADS audio; needs keys)
 .venv/bin/python scripts/studio_probe.py --samples 40  # read-ahead + motion (CDP)
+.venv/bin/python scripts/baseline_probe.py            # does a swelling word stay on its line?
+.venv/bin/python scripts/baseline_probe.py --broken   # ...and prove that check can fail
 .venv/bin/python -m autocwi live --list-devices   # pick a mic if the default is wrong
 ```
 
@@ -326,11 +328,107 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   MEASURED on `--sample`: profiles 5 → **11**, speaker switches 1 → **10**,
   words rendered with no speaker 19 → **5**, and the drill sergeant (S6) and
   Gump (S7) are separate colours, which is what the film draws.
+  **THE LIVE PATH CANNOT COLOUR A SPEAKER CHANGE ON TIME ON THIS MATERIAL, AND
+  THE REASON IS THE NATIVE MODEL, NOT THE MAPPING (measured 2026-08-02).** Put
+  the native slot in the Sortformer decision's `reason` and read it back: the
+  model has FOUR slots and reuses them across eleven speakers — slot 1
+  published S1, S2, S7, S8 and S10 at different moments, slot 0 published S1
+  for 54 observations, and **the entire drill-sergeant exchange came back as
+  slot 0/2, i.e. the narrator**. It does not separate them inside its 1.04 s
+  context, so there is no live signal to act on. Consequently **47% of words
+  first paint in one speaker's colour and finish in another** — the endpoint
+  is doing all the work. Collapsing only `type: "word"` events hides this
+  completely (it reports 0%): the studio paints from `cue`/`commit` too, so
+  score the FIRST speaker a `word_id` was ever published with.
+  Two fixes for it were implemented and MEASURED AS NO-OPS, then reverted
+  rather than shipped: refusing to let an unverified slot borrow a name
+  another slot already holds (never fired — the slot legitimately held S1),
+  and distrusting a slot after an endpoint disagreed with it (0 change, because
+  `classify_span` then falls through to the embedding tracker, which returns
+  the same wrong speaker by continuity). What DID ship is the plain bug: the
+  slot→speaker mapping used `setdefault`, so a reused slot kept its first
+  occupant's identity for the whole session. Its measured effect on this clip
+  is within run-to-run noise (50% → 47%); it is correct regardless.
+  Fixing the first paint needs a better provisional pass — a wider Sortformer
+  context, or running the endpoint embedding at segmentation boundaries
+  instead of only at ASR endpoints, since one ASR utterance here contains four
+  speakers.
 - **Pinned versions** in `requirements.txt`. Seed anything stochastic.
 - **The CaptionSpec (`autocwi/schema.py`) is a versioned contract.** Renderers
   and the future haptic module consume ONLY `spec.json` / the SSE word events
   — never model objects. Extend the schema with optional fields; breaking
   changes require a version bump.
+- **THERE ARE TWO MOTION CLOCKS AND THEY MUST NOT BE COLLAPSED (2026-08-03).**
+  The AE template animates POSITION and COLOUR only — no scale animator at all
+  — so its one-word-wide selector, and the speech-rate window that falls out of
+  it, govern the BOUNCE. The SIZE crest is the PDF's (2.2.3's +15%, 2.3.6's
+  range); the template says nothing about how long it takes, and the recordings
+  run it far longer. MEASURED, span above half-peak:
+  | word's peak | reference | one clock, speech rate | one clock, crest | TWO CLOCKS |
+  |---|---|---|---|---|
+  | 1.05–1.20 (37 of 43 words) | 0.160s | 0.259s | 0.244s | **0.110s** |
+  | 1.20–1.45 | 0.240s | 0.332s | 0.756s | **0.334s** |
+  | 1.45+ (the ones you SEE) | 1.560s | 0.354s | 0.704s | **1.068s** |
+  Driving both from the speech rate made the words that matter **4.7x too
+  fast** (reported as "too fast at a glance"); driving both from the crest made
+  ordinary words **4.8x too slow**. `--motion-duration` (pop + wave) rides the
+  speech rate; `--crest-duration` (`voice-phase`) rides emphasis. The two CSS
+  variables were always there for this.
+  **AND THE CREST WINDOW MUST BE CLAMPED TO `wordMotionMaxMs` (2026-08-03).**
+  `crestDurationMs` stretches the window so the crest cannot lead the colour
+  wipe, by dividing the sweep by `VOICE_PHASE_RISE_FRACTION` (0.24) — a 4.2x
+  multiplier that OVERRODE the configured ceiling outright, because nothing
+  bounded it. MEASURED on screen, the film's "louder" ran **2.9 s with a
+  1.56 s return where the film takes 0.25 s**, and that is what reads as the
+  motion refusing to let go. `word_motion_max_duration_s` is **1.05** (the
+  film's whole motion) and the stretch may not exceed it.
+  **The crest ramp is CUBED, not linear.** The reference's bands are flat then
+  steep — almost nothing until a word is genuinely emphatic, then it more than
+  sextuples. Linear put the middle band at 0.712s against 0.240s.
+  **Do not judge this by the median over all words.** 37 of 43 reference words
+  barely move, so the median is dominated by motions nobody notices; score the
+  bands separately, and weight the top one, because that is what a viewer sees.
+- **THE MOTION WAS AUTHORED IN AFTER EFFECTS, AND THE PROJECT IS IN GIT.**
+  `AE PROJECT/AE PROJECT/Academy_CI_Template.aep` was deleted in `73798fd` but
+  is intact in the first commit — `git cat-file blob 1518434:'AE PROJECT/AE
+  PROJECT/Academy_CI_Template.aep'`. It is RIFX; walk the chunks (`LIST`/`RIFX`
+  are containers, `Utf8` holds the expressions) and the whole motion system
+  comes out as plain text. **Read it before inferring anything from pixels.**
+  Three separate attempts here tried to recover the motion by measuring video
+  and each produced confidently wrong numbers.
+  What it says: all four animators (`Words`, `Up`, `Yellow`, `Antecipate`)
+  share ONE range selector, exactly **one word wide** (`Index End = start + 1`),
+  whose start is swept by `ease(time, inTime, outTime, 0, textLenWords)`
+  between the layer's `[START]`/`[END]` markers. So a word's motion lasts
+  `lineDuration / wordCount` — **one word at the current speech rate, and
+  nothing to do with how big the word gets.** `Antecipate` is the same sweep
+  shifted `framesToTime(1)` = **33 ms** earlier with `easeOut`. The lift
+  amplitude is a `Control_Null` "amp" slider. There is no scale animator at all
+  (`ADBE Text Scale`, `Tracking`, `Size`, `Rotation`, `Skew`, `Opacity` occur
+  zero times) — 2.2.3's +15% pop is the PDF's, and the PDF wins on amplitude.
+  **The `.mov` recordings are the WEBSITE, a different implementation.** Fitting
+  the clock to them is what produced the duration-vs-size ramp (their peak size
+  and motion FWHM correlate at +0.69); the template has no such relationship.
+- **THE REFERENCE RECORDINGS ARE SILENT — THEIR AUDIO COLUMNS ARE BACK-FITTED
+  (2026-08-03).** `ffprobe` returns only `0,h264,video` for all three
+  `docs/reference/*.mov`. So `loudness`, `loudness_db`, `pitch_hz` and
+  `voiced_frac` in `assets/reference_specs/*.json` are not measurements of
+  anything — they are solved BACKWARDS out of the measured motion by
+  `ccprosody.fit_spec_prosody`. `character_identification.json` gives it away:
+  `pitch_hz` is **165 for all 14 words**, which is exactly the "silently
+  CONSTANT prosody column" failure this file already warns about.
+  **Never regress motion against them.** Doing so returns confident nonsense —
+  measured: peak size vs loudness −0.02, weight vs pitch −0.54, duration vs
+  loudness −0.58, all circular. What those specs CAN answer is what the motion
+  DOES: `motion.scale/lift/dwght` are real pixel measurements, and the word
+  timings are read off the frames. The only source where motion AND audio are
+  both real is `assets/sample.mp4` (h264 **plus aac**), which is the PR film
+  and is what `--sample` streams.
+- **THE PDF SPECIFIES NO MOTION TIMING AT ALL.** Searched: no seconds,
+  milliseconds, frames, duration, speed or easing anywhere in it. 2.2.3 says
+  only "a 15% increase in type size before returning to its original size".
+  The recordings are therefore the sole authority for the clock — and there,
+  unlike their audio, the motion columns are trustworthy.
 - **All mapping values live in `config.yaml`**, never hardcoded. They follow
   the official CWI Design System V1.0 — cite section numbers in comments.
   **READ THE NUMBERS OUT OF `docs/cwi-design-system-v1.0.pdf` ITSELF, NOT OUT OF
@@ -355,7 +453,9 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
      pitch -> WEIGHT (2.3.8: 160-200 Hz is Regular 400, a BAND not a pivot;
      2.3.9: 80 Hz heavy, 250 Hz light), harmonics -> WIDTH (2.3.10's diagonal:
      heavy goes with wide, light with condensed).
-  * **THE WORD GROWS FROM ITS BASELINE. IT DOES NOT MOVE.** Wrong three times.
+  * **THE WORD GROWS FROM ITS BASELINE. IT DOES NOT MOVE.** Wrong FOUR times —
+    the fourth is below, and it shipped for months behind a correct-looking
+    fix for the third.
     Method that works: crop a popping word WITH a static neighbour and draw the
     baseline guide from that neighbour **per frame** — the reference re-fits its
     line while a word swells, so one guide from the first frame drifts and
@@ -369,6 +469,42 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     `.caption-words` wrapper (so it read `line-height: normal`), the other
     parented to `document.body` (so it never inherited the Korean face).
     The diagram's "25% elevation" is just where the TOP ends up.
+    **AND THE PIVOT IS NOT ENOUGH: THE ANCHOR HAS TO MOVE TOO (2026-08-03).**
+    The crest is a FONT-SIZE on `.word-ink`, so it is the one voice channel
+    that changes a BOX and not just its paint. `.word-glyph` is
+    `position: absolute; bottom: 0` with an auto height, so its height IS its
+    line box — and the ink's depth below the baseline grows with the crest
+    while the strut's does not. With the box BOTTOM pinned, the word's baseline
+    rides up by `--glyph-baseline-em × (crest − 1)`, and the louder the word
+    the higher it floats. MEASURED before the fix, guide taken per frame from a
+    settled neighbour in the same row: correlation **0.867**, "louder" at
+    **+0.201em**, the largest words **+0.236em**. The reference's own baked
+    curves regress lift on size at **+0.043** and put its biggest word,
+    "louder" at 2.21x, at a lift of **exactly 0.000**.
+    Fixed by a pair on `.word-glyph`: a `translate` that pushes the box down by
+    `--glyph-baseline-em × max(0, crest − 1)`, and a `transform-origin` that
+    tracks the CURRENT baseline via `max(1, crest)` instead of the resting one
+    (the pop's 1.15 about the old pivot added ~0.035em more). Both are STATIC
+    properties, because `word-sync-pop` has `fill-mode: none` and a shorter
+    duration than `--crest-duration` — a correction in its keyframes switches
+    off mid-crest. Both clamp at 1, because below it the STRUT is the deeper
+    half and nothing moves; that is why "softer" measured clean and hid this.
+    `--crest-scale` on `.caption-word` is the single definition all four
+    consumers read.
+    MEASURED after — DOM sweep, all words: slope **14.91 → 0.23 px per 1.0x**,
+    correlation **0.908 → 0.028**; Korean **+0.002 / +0.02 px**. Pixel probe,
+    median rise at crest 1.62: **+0.196em → −0.025em**.
+    **THE MEASUREMENT IS THE HARD PART, AND IT DEFEATED THREE ATTEMPTS.**
+    `.word-ink`'s rect does not contain the pop (a transform on a CHILD).
+    `.word-glyph`'s rect BOTTOM is pinned by `bottom: 0` and cannot move by
+    construction — measuring it returns a constant +2.22px of descender space
+    and looks like proof of no lift. `scripts/studio_probe.py` keys on
+    `|matrix.f| > 0.5` and the lift is LAYOUT, so `matrix.f` stays 0 throughout.
+    What works is `scripts/baseline_probe.py`: pin `--voice-phase`/
+    `--voice-scale` over CDP on a SETTLED stage and compare each word's ink
+    bottom with its own at rest. Run it with `--broken` first — it re-imposes
+    the old anchoring, and a check that has never been seen to go red is not
+    evidence.
   * **THE COLOUR TURN IS A WIPE ACROSS THE WORD, NOT A SWITCH ON IT
     (2026-08-01, from the PR film).** `docs/Caption With Intention PR FILM.mp4`
     puts the colour boundary INSIDE a word constantly, in ordinary captions:
@@ -408,14 +544,35 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     looking only at the Forrest Gump clip, where the captions are simple. The
     demo section has it throughout. Do not generalise from one excerpt — watch
     the whole thing after 0:40.
-  * **THE FILM'S INTONATION CANNOT BE REPRODUCED FROM ITS OWN AUDIO, AND THAT IS
-    NOT OUR BUG.** Live-tested by streaming the film's audio through the
-    pipeline (`--file`). Our render of "so you can feel when my voice gets
-    louder or softer" is completely FLAT. MEASURED on that audio: "louder" is
-    **−23.5 dB median — QUIETER than "my voice gets" at −22.3 dB**; "softer" is
-    −28.5 dB, only 6 dB below the speaker median. The narrator never said
-    "louder" louder. The film's giant "louder" is authored from MEANING.
-    Any acoustic loudness→size mapping renders that line flat, correctly.
+  * **(WRONG — CORRECTED 2026-08-03) "THE FILM'S INTONATION CANNOT BE
+    REPRODUCED FROM ITS OWN AUDIO."** This entry claimed the narrator never
+    said "louder" louder, that its size is authored from MEANING, and that any
+    acoustic loudness→size mapping renders the line flat "correctly". All of
+    it was an artefact of ONE statistic: it scored each word by the RMS or
+    MEDIAN over the word's whole span. A span contains the word's stops, its
+    unvoiced consonants and the gaps between phones, and those are near-silent
+    however the speaker is talking — so averaging over them buries exactly the
+    difference being looked for.
+    Score each word on its LOUD frames instead (p90 of 30 ms frames,
+    `_span_db`) and the same audio says the opposite:
+    | | whole-span median (old) | p90 of frames (`_span_db`) |
+    |---|---|---|
+    | "my voice gets" | −22.3 | −18.1 |
+    | **"louder"** | −23.5 (looks QUIETER) | **−11.4** |
+    | "softer" | −28.5 | **−23.6** |
+    **12.2 dB between "louder" and "softer", in the right direction, from
+    plain level and nothing else.** End to end the pipeline now emits
+    "louder" loudness **0.963** and "softer" **0.000** against a 0.211 median,
+    and on screen "louder" grows to 1.62x while "softer" SHRINKS to 0.79x —
+    which is what the film draws.
+    The cost of the error was large: `_prominence`'s spectral tilt, F0
+    excursion and lengthening terms were all built to recover a signal that
+    was never missing. `length_gain` is **0.0** now (see below).
+    This is the same correction `_vocal_effort` had already made for tilt
+    ("the loudest half of the 30 ms frames measures the tilt where the voice
+    actually is") — level needed it for identical reasons and did not get it.
+    **The lesson generalises: when a channel looks dead, check the STATISTIC
+    before concluding the signal is absent.**
     **THE "GUMP!" COUNTER-EXAMPLE WAS WRONG — DELETED 2026-08-02.** This entry
     used to claim "emphasis does fire when the audio really is loud (GUMP!
     −13.3 dB against −22.4 dB calm narration)". That compared a PEAK against a
@@ -537,7 +694,11 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     | 0.60 | 0.246 | 63% | 5% | 0.936 |
     | 1.00 | 0.396 | 58% | 5% | 0.906 |
     Pitch is what buys back the separation the blend costs (0.882 → 0.958 at
-    blend 0). Shipped at blend 0.75 / pitch 1.0 / length 0.5.
+    blend 0). Shipped at blend 0.75 / pitch 1.0, and **`length_gain` 0.0 since
+    2026-08-03**: lengthening was a proxy for the level signal `_span_db` now
+    supplies directly, and as a live term it did active harm — the two words
+    the film draws SMALL, "or softer", are both drawn out, so it enlarged
+    precisely what should shrink.
     `gain`, `vocal_effort.deadband` and `voice_scale_response` were then chosen
     together from an EXACT sweep, not from more captures: one run with
     `vocal_effort.enabled: false` gives every word's pre-lift loudness and one
@@ -743,9 +904,49 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     not 0.382, and there is an **anticipation crouch** — the word ducks BELOW
     the baseline and squashes before it goes up. The crouch is what makes it
     read as a spring rather than a lift.
+    **EXACTLY ONE WORD IN THE FILM'S FIRST 18 s LEAVES THE LINE, AND THE RULE
+    THAT PICKS IT IS NOT A PAUSE THRESHOLD (2026-08-03, at the user's
+    instruction: "Only the 'is' lifts").** Measured with the tracking-free
+    method below — per frame, every caption cluster's ink BOTTOM against the
+    median bottom of that same frame — only "is" rises, 0.84 em from 6.88 s to
+    7.83 s. Nothing else moves at all. Three separate things were wrong:
+    * **`onset - previousEnd` IS 0.00 s FOR EVERY WORD.** The recognizer's
+      `end` runs to the next word's onset and attributes no silence to
+      anything, so the subtraction is structurally always zero and the hold
+      had NEVER fired on a real pause — including the 0.96 s before "is".
+      Use inter-onset intervals.
+    * **A FLOOR CANNOT SEPARATE THEM, BECAUSE THE WRONG WORDS HAVE THE LONGER
+      PAUSES.** `Caption`, `Intonation.`, `weights,`, `Now,` and `So` follow
+      gaps of **1.10 s+** and stay on the line; "is" follows 0.96 s. Long
+      silence is a sentence break, medium silence is a rhetorical hold, so the
+      lift lives in a BAND (`hold_max_s`). Utterance metadata cannot do this
+      job either — the film opens with ONE 24 s utterance, so those words are
+      all inside it with no boundary to test.
+    * **A HELD WORD IS ISOLATED ON BOTH SIDES, AND THAT IS WHAT THE ONE-WORD
+      LOOKAHEAD BUYS.** A leading gap alone still admits `the` and `and`. "is"
+      has 0.96 s before AND 0.80 s after; the function words sharing its
+      leading gap are followed immediately by more speech. Score
+      `min(before, after)` — it needs the NEXT onset, which is exactly the one
+      word of delay this project agreed to spend. On that statistic "is"
+      scores 0.92, "spoken." 0.82 and "or" 0.72, so `hold_min_s` 0.86 /
+      `hold_full_s` 0.92 gives the film's word a full lift and the other two
+      none. MEASURED: lifting words 36 → 10 → 4 → **1**.
+    **SIZE AND LIFT ARE INDEPENDENT CHANNELS, AND THE GATE IS BINARY.** The
+    film's "louder" more than doubles and never leaves the baseline; "is" is at
+    its RESTING size the whole time it floats. Letting a loud word do both
+    measured `corr(peak size, lift)` **+0.337** with "louder" lifting a full
+    0.525 em, against the reference's +0.043 and its biggest word at exactly
+    0.000. So a swelling word does not lift — but **do not make that
+    proportional**: every word carries the constant 2.2.3 pop, so "is" renders
+    1.23x of which 1.15 IS that cue, and a graded rule taxed 38% of its lift
+    for what is essentially resting size. One threshold
+    (`HOLD_ENVELOPE_EMPHASIS`), and score only the LOUD side — `emphasisOf`
+    measures deviation in EITHER direction and "is" sits slightly BELOW the
+    median (loudness 0.183 vs 0.211), so a two-sided score penalised it for
+    being quiet. After: "is" full 0.525 em, "louder" 0.000.
     Wait-dependent, not universal — "or softer." follows immediately in
     `intonation.mov` and never leaves the line — so the whole choreography
-    ramps from `hold_min_s` (0.22 s of silence) to `hold_full_s` (0.70 s), and
+    ramps from `hold_min_s` to `hold_full_s`, and
     `--hold-spring` gates the squash/stretch on that same amount so an ordinary
     word runs `word-hold-spring` as a flat identity.
     **THE WHOLE THING IS ANCHORED ON THE TURN, NOT ON ARRIVAL.** One animation
@@ -776,7 +977,64 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     The gap is computed in the component, and note `t` is on the STREAM
     timeline while `start`/`end` are utterance-relative — a word's end on the
     stream clock is `t + (end - start)`.
-  * **THE SWELL HOLDS; IT DOES NOT JUST PEAK.** `intonation.mov`: "louder" is
+  * **THE HOLD SCALES WITH EMPHASIS — TWO ENVELOPES, NOT ONE SHAPE
+    (2026-08-03, after stepping the film frame by frame).** I corrected this
+    twice in one day and both corrections were half right. The aggregate shape
+    statistic (time-above-90% / time-above-50%) is **0.40** across the 43
+    reference words and a raised cosine is 0.41 — but that median is carried by
+    the **37 of 43 words that barely move**. Step the film's "louder" at 8 fps
+    across 1.8 s and it rises over ~2 frames, sits at FULL size for ~6, and
+    falls over ~2: a hold of ~0.75 s inside a ~1.25 s motion, share ~0.6. Both
+    are true; the shape is a function of emphasis.
+    So there are two keyframe sets. `voice-phase` is the pulse (raised cosine);
+    `--voice-envelope` picks between them at `HOLD_ENVELOPE_EMPHASIS`, because
+    a keyframe's stops cannot take a `var()` but `animation-name` can.
+    **AND THE EMPHATIC ONE OVERSHOOTS, SETTLES, SUSTAINS, THEN RELEASES
+    (2026-08-03).** It used to rise to full and hold there, which is wrong: the
+    word goes PAST where it ends up and then holds LOWER. Off the continuous
+    curve, "louder":
+    | t | ratio | |
+    |---|---|---|
+    | 16.46 | 1.15 | at rest |
+    | 16.71 | **3.12** | PEAK, reached in 0.25 s |
+    | 16.92 | 2.52 | settled back over 0.21 s |
+    | 17.25 | 2.52 | sustained flat 0.33 s |
+    | 17.46 | 1.15 | released over 0.21 s |
+    The sustain is `(2.52-1.15)/(3.12-1.15)` = **0.70 of the peak**, and the
+    four legs are 25% / 21% / 33% / 21% of a 1.0 s window — which is why the
+    ceiling is 1.05 s. Verified on screen, phase traced
+    `0.36 0.74 0.92 0.94 0.83 0.76 0.70 0.70 0.70 0.70 0.70 0.70 0.55 0.35 0.10`.
+    **A rise time and a fall time cannot express this** — that is the whole
+    reason "start and end points" kept failing to reproduce the reference.
+    **The envelope decides how much of the window sits above half-peak**, so
+    `word_motion_*_duration_s` must be RE-DERIVED whenever the keyframes
+    change: the pulse spends 0.50 of its window there, the hold 0.78. Those
+    numbers have moved the config three times (210/2050 → 320/3120 → 320/1300
+    → 320/1050).
+    **And the 2.2.3 pop belongs on the CREST clock.** Splitting the pop onto
+    the speech-rate clock decoupled two SIZE channels that must compound: the
+    pop finished long before the crest peaked and the visible peak fell to
+    ~1.3x where the film reaches ~2.0x. Only the character wave rides the
+    speech rate.
+  * **(superseded) THE SWELL DOES NOT HOLD — IT IS A SMOOTH HUMP.**
+    The entry below was derived from watching ONE word ("louder" in
+    intonation.mov) and was wrong for the other 42. The shape statistic is
+    time-above-90% / time-above-50%, which cares only about shape and not about
+    how long the motion runs: a raised cosine scores **0.41**, the reference
+    scores **0.40**, and our trapezoid (0 -> 1 at 24%, held flat to 76%, -> 0)
+    scored **0.88**. Sitting rigidly at the peak for 88% of the motion is what
+    was reported as "stiff" — and it is also why it read as TOO FAST, because
+    every bit of actual movement was crammed into the remaining 12%.
+    `@keyframes voice-phase` is now `(1 - cos(2*pi*t))/2` sampled every 10%,
+    `linear` between the stops. Measured after: **0.49**.
+    Two consequences to keep together:
+    - **A hump spends HALF its window above half-peak; a trapezoid spends
+      ~0.64.** Replacing the plateau therefore halved every measured span, so
+      the windows doubled with it (210/2050 -> 320/3120 ms).
+    - `VOICE_PHASE_RISE_FRACTION` is the PEAK stop and moved 0.24 -> **0.50**.
+    Only the two most emphatic words in the reference hold at all (2 of 41
+    above 0.15 s), which is exactly the pair the old entry was written from.
+  * **(superseded) THE SWELL HOLDS; IT DOES NOT JUST PEAK.** `intonation.mov`: "louder" is
     up by f388 and still up at f430, back to normal by f442 — a ~0.35 s sustain
     inside a ~0.73 s swell. A single symmetric crest read as a twitch, which is
     not how a loud word sounds. `@keyframes voice-phase` holds 28%..62% of the
@@ -943,6 +1201,29 @@ sequential reveals, maximum 2 simultaneous motions, zero restarts/overlaps,
 and no queued, moving, or non-normal-font words at the end. See
 `docs/TESTS.md` for the observed expressive ranges.
 
+**MEASURE THE FILM AS A CONTINUOUS CURVE. DO NOT TRACK CLUSTERS (2026-08-03).**
+Per-glyph/per-cluster tracking on the film has now failed FOUR times, always
+the same way: a swelling word re-flows the line, so the track breaks at exactly
+the moment worth measuring. The fourth attempt failed its own validation —
+"louder", visibly ~2x and holding, came back as **1.05x** in 6- and 7-frame
+fragments, because tracking begins after the word has already grown and "rest"
+then equals "peak". Numbers from a tracker that has not been shown to reproduce
+a word you can see with your own eyes are worthless.
+What works needs no frame-to-frame correspondence at all: **per frame, the ink
+height of the TALLEST caption cluster over the MEDIAN cluster's**. Only one
+word is emphasised at a time, so that ratio IS the current word's swell,
+sampled every frame. It validates on both words that can be checked by eye
+("louder" and "sizes,"). The same trick answers the lift question with ink
+BOTTOMS instead of heights — each cluster's bottom against the median bottom of
+its own frame. Guides are stripped BY HUE (cyan rules, yellow playhead), never
+by density.
+**AND `max/min` OVER A WORD'S SAMPLES CANNOT TELL GROWTH FROM SHRINKAGE.** This
+cost a whole round: "softer" was reported as rendering 1.27x and chased as a
+bug, when 1.27 was `rest / crest` — the word was correctly SHRINKING to 0.79x,
+which is what the film draws. Always divide a word's peak by ITS OWN RESTING
+size (the modal font-size across its samples), and report the floor separately
+from the peak.
+
 **COMPARING OUR MOTION TO THE FILM: MEASURE EACH WORD AGAINST ITSELF.**
 (2026-08-02.) `--sample` IS the PR film, so the two can be scored on one
 statistic — but only one. Two ways to get a confidently wrong answer, both hit
@@ -1024,6 +1305,20 @@ words-per-row constant—chooses its visual lines.
 - macOS mic permission is granted per terminal app on first live run.
 - When running the CLI in background with redirected output, set
   `PYTHONUNBUFFERED=1` or output is lost on kill.
+- **Never edit a `@keyframes` stop with a first-occurrence string replace.**
+  `globals.css` has several animations sharing the same percentages, and a
+  replace of `"\n  30% {"` intended for `word-hold-spring` landed in
+  `voice-phase` instead — flattening the raised-cosine pulse AND leaving the
+  spring's stops out of order. The build stays green and the page still looks
+  animated. After any keyframe edit, print every animation's stop list and
+  assert it is sorted; the `baseline_probe.py` FAIL that caught this reported
+  a rise of exactly `hold_lift_em`, which looked like a physics bug and was a
+  text-editing bug.
+- `scripts/baseline_probe.py --settle` defaults to **76.0** (the sample
+  length) on purpose. Passing a small value cuts the probe off before the
+  stage fills, and it then reports "only N word-measurements — nothing to
+  conclude". That message means the run is INVALID, not that the check passed
+  or failed — do not quote a PASS from a short-settle run.
 - Tests are fully offline by design — keep them that way (synthetic audio,
   no model loads).
 

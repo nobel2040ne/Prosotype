@@ -179,25 +179,48 @@ export function voiceScale(
 /**
  * Pitch -> type weight, with §2.3.8's complete neutral band held at 400.
  *
- * `emphasis` is how far up the §2.3.6 size range this word already is, 0..1.
- * At 0 this is exactly the PDF's mapping. Above it, the LIGHT half is
- * withdrawn in proportion (a pushed voice is not an airy one -- see
- * `weightEmphasis`) and the word gains weight with its size, which is what the
- * PR film draws.
+ * `prominence` is how loud this word is for its speaker, 0..1, BEFORE the size
+ * deadband. At 0 this is exactly the PDF's mapping.
+ *
+ * THE TWO HALVES USED TO BE SCALED AGAINST DIFFERENT WIDTHS, AND THAT ALONE
+ * MADE SHOUTS THIN. The pitch term was scaled by the LIGHT half
+ * (`400 - floor`) while the emphasis bonus was scaled by the BOLD half
+ * (`ceiling - 400`). At the shipped [200, 760] those are 200 and 360, so for
+ * any voice at or above 250 Hz -- where `voiceTone` saturates at -1 -- the
+ * whole function collapsed to `200 + 398p`, crossing Regular only at p = 0.50.
+ * `weightEmphasis` had to exceed `(400-floor)/(ceiling-400)` = 0.556 for a
+ * fully-emphasised shout merely to RETURN to Regular, and the shipped value
+ * was 0.55 -- under the threshold by 0.006. MEASURED consequence: 72 of the
+ * film's 165 words (44%) rendered lighter than Regular, the drill sergeant
+ * among them, where the reference lightens 5 of 48 and never past -53.
+ * Both terms now scale against the same half, so `weightEmphasis` means what
+ * its name says and no arithmetic accident can put an emphasised word below
+ * Regular.
+ *
+ * IT ALSO TAKES PROMINENCE, NOT THE POST-DEADBAND SIZE. It used to read
+ * `emphasisOf(voiceScale(loudness))`, and `voice_scale_deadband` pins that at
+ * exactly 0 up to normalised loudness ~0.485 -- so every word inside the band,
+ * which is most of them, got pure 2.3.9 and went to the floor if high-pitched.
+ * The deadband exists so an ordinary word does not RESIZE; it was never meant
+ * to silence the weight channel too.
  */
 export function voiceWeight(
   tone: number,
   ranges: VoiceTypeRanges,
-  emphasis = 0,
+  prominence = 0,
 ): number {
   const [floor, ceiling] = ranges.weight;
-  const pushed = clamp(Number.isFinite(emphasis) ? emphasis : 0, 0, 1);
+  const pushed = clamp(Number.isFinite(prominence) ? prominence : 0, 0, 1);
+  const bold = ceiling - 400;
+  const light = 400 - floor;
+  // The register half, withdrawn as the voice is pushed: a pressed voice is
+  // not an airy one, whatever its pitch.
   const register = tone < 0 ? tone * (1 - pushed) : tone;
-  const shaped = register > 0
-    ? register * (ceiling - 400)
-    : register * (400 - floor);
-  const pressed = pushed * clamp(ranges.weightEmphasis ?? 0, 0, 1) *
-    (ceiling - 400);
+  const shaped = register > 0 ? register * bold : register * light;
+  // ...and the prominence half. The light half is now shallow enough
+  // (`weight_range`'s floor is set from the reference's own worst lightening,
+  // -53 from Regular) that this can never be out-run by it.
+  const pressed = pushed * clamp(ranges.weightEmphasis ?? 0, 0, 1) * bold;
   return Math.round(clamp(400 + shaped + pressed, floor, ceiling));
 }
 
@@ -250,6 +273,20 @@ export function reachableScaleRange(
   return [quiet, loud];
 }
 
+/**
+ * How loud this word is for its speaker, 0..1, BEFORE the size deadband.
+ *
+ * `emphasisOf` reads the size the word ended up at, so it inherits
+ * `voice_scale_deadband` and is exactly 0 for every word inside the band --
+ * which is most of them. That is right for anything asking "how much did this
+ * word GROW", and wrong for anything asking "how prominent is this word",
+ * because the band exists only to stop ordinary words resizing.
+ */
+export function prominenceOf(loudness: number): number {
+  const level = clamp(Number.isFinite(loudness) ? loudness : LOUDNESS_PIVOT, 0, 1);
+  return clamp((level - LOUDNESS_PIVOT) / (1 - LOUDNESS_PIVOT), 0, 1);
+}
+
 /** How far up the reachable §2.3.6 range this word's size sits, 0..1. */
 export function emphasisOf(scale: number, ranges: VoiceTypeRanges): number {
   const top = Math.max(reachableScaleRange(ranges)[1], 1 + 1e-6);
@@ -285,7 +322,7 @@ export function voiceTypeFor(
   const scale = voiceScale(loudness, ranges);
   return {
     scale,
-    weight: voiceWeight(tone, ranges, emphasisOf(scale, ranges)),
+    weight: voiceWeight(tone, ranges, prominenceOf(loudness)),
     width: voiceWidth(tone, texture, ranges),
   };
 }

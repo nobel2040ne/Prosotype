@@ -155,10 +155,14 @@ display:
   # while 862x998 gave 23.6px on a stage that was 40% EMPTY, because six words
   # still had to cross a 538px stage. The narrow window now picks three words and
   # 44px.
-  # Six is still the ceiling: at the shipped type size eight words landed exactly
-  # on the wrap boundary, so a verifier respelling that changed a word's width
-  # flipped the row between one and two visual lines and the stack below jumped.
-  studio_stack_words_per_block: 6
+  # RAISED TO 8 at the user's request ("put more words in a single row"). The
+  # old note said eight "landed exactly on the wrap boundary" -- but that was
+  # measured at a FIXED type size, before `planStageLayout` derived the type
+  # from `rowBudgetEm(words)`. It now shrinks the type so the row fits, so the
+  # wrap risk is bounded by that budget rather than by this number. Verify no
+  # row CLIPS after changing it: `.caption-words` is `nowrap`, so an over-long
+  # row is silently cut rather than wrapped.
+  studio_stack_words_per_block: 8
   # The floor. Below three, a row stops reading as a phrase.
   studio_stack_words_min: 3
   # Rows the stack must be able to show before a shorter row (and therefore
@@ -166,7 +170,16 @@ display:
   # words: at 10 rows, 1440x900 keeps six and 862x998 drops to three. Lower it
   # and wide stages start using three-word rows at the height ceiling, which
   # wastes their width; raise it and narrow stages go back to small type.
-  studio_stack_min_rows: 10
+  # THIS, NOT `studio_stack_words_per_block`, IS THE WORDS-PER-ROW LEVER.
+  # `planStageLayout` picks the LARGEST type that still shows this many rows,
+  # and `typePx` is non-increasing in words-per-row -- so raising the ceiling
+  # alone only adds candidates with smaller type, which can never win.
+  # MEASURED: ceiling 6 -> 8 left words-per-row at a median of 5. More words in
+  # a row means smaller type, and this is the term that asks for it:
+  #   10 rows -> 5 words/row, 40.9px      13 -> 7 words/row, 33.3px
+  # They are the same knob. If the type ends up too small, the way back is
+  # fewer rows, not fewer words.
+  studio_stack_min_rows: 16
   # Streaming recognizers often release several words in one decoder batch.
   # Paint them in spoken order instead of popping the whole batch at once. The
   # gap follows the words' acoustic spacing inside a batch, bounded so fast
@@ -264,14 +277,44 @@ display:
   # was asked. Size the base so an ordinary word gets the FILM's absolute
   # numbers: 0.95 + 0.42*span puts a typical 0.16 s word at ~1.02 s, which is
   # rise 244ms / hold 529ms / return 244ms against the film's 250/550/250.
-  word_motion_duration_s: 0.95
-  word_motion_max_duration_s: 1.15
+  # SIZE AND DURATION ARE ONE CHANNEL, so these are now the two ENDS of a ramp
+  # rather than a near-constant. MEASURED over the 48 reference words with
+  # baked curves (pixel motion, no synthetic column): peak size vs motion FWHM
+  # r = **+0.69**, the strongest relationship in the data. By crest band the
+  # reference's own FWHM is 0.160s (37 of 43 words), 0.240s, then **1.560s** --
+  # while ours measured a FLAT 0.69-1.02s at every crest. The reference SNAPS
+  # an ordinary word and LINGERS on an emphatic one; everything of ours moved
+  # alike, which is why the emphasis did not read.
+  # The PDF cannot settle this -- it specifies NO timing at all (searched: no
+  # seconds, ms, frames, duration or easing anywhere; 2.2.3 says only "a 15%
+  # increase in type size before returning to its original size"). The
+  # recordings are the only authority for the clock, and unlike their audio
+  # columns their motion columns are real pixel measurements.
+  # HOW MUCH OF THE WINDOW SITS ABOVE HALF-PEAK DEPENDS ON THE ENVELOPE, and
+  # there are now two. The pulse (a raised cosine, for ordinary words) spends
+  # 0.50 of its window there; the hold envelope, for emphatic ones, spends
+  # 0.78. So the floor is sized from the pulse -- 0.160s / 0.50 = 320ms -- and
+  # the ceiling from the hold. Stepping the film's "louder" frame by frame
+  # gives ~1.0s above half (1.0 / 0.78 = ~1300ms) -- but 1300 was judged TOO
+  # SLOW on the live stage, and the reason is context: the film gives that word
+  # a line to itself, while here it sits among ~40 static words, so the same
+  # 0.6s at full size reads as stuck rather than as emphasis. 850ms.
+  # Both numbers have moved twice as the envelope changed; re-derive them
+  # whenever `@keyframes voice-phase*` changes, or the spans drift silently.
+  # `word_motion_min_duration_s` is the ordinary-word end of the ramp.
+  word_motion_duration_s: 0.42
+  word_motion_max_duration_s: 1.05
   word_motion_span_stretch: 0.42
   # Fixed 520–720 ms motion has a two-slot throughput ceiling. Above roughly
   # 3.8 words/s, that ceiling otherwise becomes a minute-long presentation
   # buffer. The studio measures acoustic word cadence and reduces only the
   # clocks required to sustain it. 320 ms is the smoothness floor; backlog
   # pressure adds bounded headroom until the caption frontier is within 600 ms.
+  # The 2.2.3 POP's ceiling. It rides the SPEECH RATE (the AE template's
+  # one-word-wide selector) and must stay crisp however slowly someone talks;
+  # `word_motion_max_duration_s` above is the CREST's ceiling, which is a
+  # different clock -- see `crestWindowMs`.
+  word_motion_pop_max_duration_s: 0.70
   word_motion_min_duration_s: 0.32
   word_motion_backlog_target_s: 0.60
   # Above this much acoustic backlog a word is HISTORY, not live speech: it is
@@ -609,8 +652,33 @@ motion:
       # it a spring instead of a lift; the amplitudes live in `word-hold-spring`
       # in globals.css, gated by `--hold-spring` so an ordinary word is flat.
       hold_lift_em: 0.525
-      hold_full_s: 0.70        # gap at which the lift reaches its maximum
-      hold_min_s: 0.22         # below this a word is ordinary speech: no lift
+      # RE-BASED ONTO THE INTER-ONSET INTERVAL (2026-08-03). These used to be
+      # read against `onset - previousEnd`, which is **0.00s for every word**
+      # because the recognizer's `end` runs to the next onset and attributes no
+      # silence to anything -- so the hold never fired on a genuine pause. On
+      # onset-to-onset, ordinary speech here measures 0.08-0.32s and the pause
+      # before "is" in "precisely as each word is spoken" measures 0.96s.
+      # 0.45 SELECTED 35% OF ALL WORDS -- measured over the film's 164, whose
+      # inter-onset median is 0.24s and p75 only 0.56s. A lift on a third of
+      # the caption is not a held word, it is a tic. p90 is 0.88s and the
+      # pause before "is" in "precisely as each word is spoken" is 0.96s, so
+      # 0.85 keeps the word the reference holds and drops the rest: 10%.
+      # RE-BASED AGAIN once the gap became min(before, after): "is" is
+      # isolated by 0.96s before and 0.80s after, so it scores 0.80 and the
+      # old 0.85 floor gave the one word the film DOES hold only 46% of a
+      # lift. The band moves down with the statistic it now reads.
+      # Measured on min(before, after): "is" scores 0.92, "spoken." 0.82 and
+      # "or" 0.72, so the band is narrow but the three ARE separable -- the
+      # word the film holds clears it and the two it leaves on the line do
+      # not. A wider band admits them; a higher floor only part-lifts "is".
+      hold_full_s: 0.92        # interval at which the lift reaches its maximum
+      hold_min_s: 0.86         # below this a word is ordinary speech: no lift
+      # ...and ABOVE this it is a sentence break, which the film does not
+      # lift either. Measured over the film's first 18s, exactly one word
+      # leaves the line -- "is", after a 0.96s gap -- while `Caption`,
+      # `Intonation.`, `weights,`, `Now,` and `So` follow gaps of 1.10s+
+      # and stay on it. The hold is a band, not a floor.
+      hold_max_s: 1.06         # above this the silence is a sentence break
       # Crouch + launch + float, i.e. everything BEFORE the landing. The whole
       # choreography is anchored on the colour turn, so this is subtracted from
       # `--turn-delay`; a word delivered later than its own pre-roll joins the
@@ -626,7 +694,16 @@ motion:
       # had the lead, one joined during the float, the rest during the LANDING.
       # 420 is sized so a typical word joins at the LAUNCH — entering stretched
       # and rising, which reads — instead of already on its way down.
-      hold_pre_ms: 420
+      # 420 put the crouch and the launch before the word existed: measured, a
+      # held word showed 0% stretch because the first 30% of the animation ran
+      # while it was still off screen. A word is on screen a median 0.30s
+      # before its turn, so the pre-roll has to fit inside that.
+      hold_pre_ms: 260
+      # The plateau at full lift, between the colour turn and the descent.
+      # Without it the word began falling the instant it turned, so it never
+      # read as HELD -- the AE template puts the peak AT the turn and lets it
+      # come back down behind the colour boundary.
+      hold_hold_ms: 420
       hold_land_ms: 290        # how long the descent onto the baseline takes
       # 2.3's swell HOLDS, it does not just peak. intonation.mov: "louder" is
       # up by f388 and still up at f430, back to normal by f442 -- roughly a
@@ -722,7 +799,19 @@ motion:
       # for the same reason `expression.wght_range` does, because a voice at the
       # edge of the domain rendering hairline or black beside ordinary text is
       # legible in a poster and not in a live caption.
-      weight_range: [200, 760]
+      # FLOOR RAISED 200 -> 340 (2026-08-03). The motion may lighten a word,
+      # but only about as far as the design system's own renderer does.
+      # MEASURED on the 48 reference words with baked `motion.dwght` curves:
+      # 12 move at all, 5 lighten, and the deepest is **-53** from Regular.
+      # Ours reached -200, and 72 of the film's 165 words (44%) rendered
+      # lighter than Regular -- the drill sergeant thinner than the calm
+      # narration, which is what "the font weight is light, it should be bold"
+      # was pointing at. -60 here matches the reference's own worst.
+      # This is also half of what made the arithmetic in `voiceWeight` fail:
+      # the light half was 200 wide against a 360-wide bold half, so
+      # `weight_emphasis` had to exceed 200/360 = 0.556 for a fully-emphasised
+      # shout merely to return to Regular, and it was 0.55.
+      weight_range: [340, 760]
       # ...and how much of that range an EMPHASISED word takes on top of the
       # pitch map, 0 restoring the literal 2.3.9 behaviour.
       # ALL THREE CWI CHANNELS USED TO AGREE TO DRAW A SHOUT AS WEAK. A shout
@@ -1030,11 +1119,25 @@ live:
     # Pitch excursion above the speaker's running median, in dB of ratio. This
     # is what buys back the separation the blend costs: at blend 0 it moves the
     # shout-vs-narration AUC from 0.882 to 0.958.
+    # STAYS 1.0. Raising it to 1.8 was TRIED AND MEASURED AS A NO-OP on the
+    # drill-sergeant lines -- "sergeant" 524 -> 525, "army" 496 -> 442, and
+    # "this"/"purpose"/"tell"/"do" still scored a prominence of exactly 0 --
+    # so it was reverted rather than shipped. Pitch excursion feeds prominence
+    # THROUGH the deadband, and these words never clear it; the blocker is
+    # upstream of any gain on this term.
     pitch_gain: 1.0
     # Lengthening, measured per CHARACTER for the same reason tilt is
     # energy-weighted: raw word duration mostly measures syllable count, and
     # "identification." would then outrank every shout in the film.
-    length_gain: 0.5
+    # 0.0 SINCE 2026-08-03. Lengthening was a proxy for a level signal that
+    # was never actually missing: `_span_db` scores a word on its loud frames
+    # now, which separates "louder" (-11.4 dB) from "softer" (-23.6 dB) by
+    # 12.2 dB on its own. As a live term it did active harm, because the two
+    # words the film draws SMALL -- "or softer" -- are both drawn out, so
+    # lengthening enlarged exactly what should shrink; measured, "softer"
+    # rendered 1.28x. It also inflated the held "is" to 1.22x where the film
+    # keeps it at its resting size throughout the hold.
+    length_gain: 0.0
     percentiles: [10, 95]
     # Tilt's own units, and NOT db_min_span. Measured tilt spread on the film
     # is ~21 dB p10..p90, so the first value tried here (6.0) let ordinary

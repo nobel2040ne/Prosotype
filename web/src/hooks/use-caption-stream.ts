@@ -93,6 +93,8 @@ export interface RuntimeConfig {
   wordMotionMaxMs: number;
   wordMotionSpanStretch: number;
   wordMotionMinMs: number;
+  /** Ceiling for the 2.2.3 pop; the crest has its own. */
+  wordMotionPopMaxMs: number;
   syncPop: number;
   /** How far the character wave is suppressed as the WORD's own volume departs
    *  from normal: the two scopes trade off. See config.yaml. */
@@ -101,9 +103,12 @@ export interface RuntimeConfig {
   /** CWI, from the recordings: a word that waits rises, and lands on its turn. */
   holdLiftEm: number;
   holdFullS: number;
+  holdMaxS: number;
   holdMinS: number;
   /** Pre-roll: crouch + launch + float, before the landing. See globals.css. */
   holdPreMs: number;
+  /** Plateau at full lift, between the turn and the descent. */
+  holdHoldMs: number;
   holdLandMs: number;
   /** CWI 2.4.4/2.4.5: sound labels yield to speech; how long after it. */
   soundLingerMs: number;
@@ -142,30 +147,33 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   maxWords: 8,
   paragraphWordLimit: 0,
   stageParagraphHistory: 6,
-  stageWordsPerBlock: 6,
+  stageWordsPerBlock: 8,
   stageWordsMin: 3,
-  stageMinRows: 10,
+  stageMinRows: 16,
   readAheadDelayMs: 2500,
   readAheadColor: "#ffffff",
   readAheadColorLight: "#6e6e73",
   readAheadOpacity: 0.9,
   colorTurnMs: 90,
-  wordMotionBaseMs: 950,
-  wordMotionMaxMs: 1150,
+  wordMotionBaseMs: 420,
+  wordMotionMaxMs: 1050,
   wordMotionSpanStretch: 0.42,
   wordMotionMinMs: 320,
+  wordMotionPopMaxMs: 700,
   syncPop: 0.15,
   characterWaveFalloff: 1.0,
   characterWaveFloor: 0.0,
   holdLiftEm: 0.525,
-  holdFullS: 0.70,
-  holdMinS: 0.22,
-  holdPreMs: 420,
+  holdFullS: 0.92,
+  holdMaxS: 1.06,
+  holdMinS: 0.86,
+  holdPreMs: 260,
+  holdHoldMs: 420,
   holdLandMs: 290,
   soundLingerMs: 800,
   deliveryMotionEnabled: true,
   deliveryFlowDurationMs: 90,
-  weightRange: [200, 760],
+  weightRange: [340, 760],
   widthRange: [82, 124],
   voiceScaleRange: [0.90, 1.20],
   voiceScaleResponse: 0.25,

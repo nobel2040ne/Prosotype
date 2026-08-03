@@ -804,6 +804,14 @@ button {
    rather than flashing coloured. */
 .caption-word {
   --turn-delay: 600000ms;
+  /* THE 2.3 CREST AS A PLAIN MULTIPLIER, DEFINED ONCE.
+     The crest is carried as a FONT-SIZE (on `.word-ink`), which makes it the
+     one voice channel that changes a BOX rather than only its paint — so four
+     different rules need this exact number: the visible ink, the width
+     reservation, and both halves of the baseline anchoring on `.word-glyph`.
+     Four hand-copied instances of the same expression is precisely the drift
+     this file keeps getting caught by, so there is one. */
+  --crest-scale: calc(1 + var(--voice-phase) * (var(--voice-scale, 1) - 1));
   position: relative;
   display: inline-grid;
   flex: 0 0 auto;
@@ -836,8 +844,8 @@ button {
      its 28% rise finishes with the colour wipe instead of leading it — the
      film's "weigh" is big and bold exactly as far as its sweep has reached.
      The 2.2.3 pop and the wave stay on the natural `--motion-duration`. */
-  animation: voice-phase var(--crest-duration, var(--motion-duration))
-    cubic-bezier(.42, 0, .22, 1) var(--turn-delay);
+  animation: var(--voice-envelope, voice-phase)
+    var(--crest-duration, var(--motion-duration)) linear var(--turn-delay);
 }
 
 /* CWI 2.1.5: an off-camera voice is italic, and keeps its speaker colour. */
@@ -898,7 +906,7 @@ button {
    transform and needs no room. */
 .word-sizer-crest {
   font-size: calc(
-    1em * (1 + var(--voice-phase) * (var(--voice-scale, 1) - 1))
+    1em * var(--crest-scale)
         * (1 + var(--voice-phase) * (var(--sync-pop, 1.15) - 1))
   );
   font-weight: calc(400 + var(--voice-phase) * (var(--voice-weight, 400) - 400));
@@ -947,18 +955,57 @@ button {
      `useGlyphBaseline` (measured .3799em for Roboto Flex and .2598em for Noto
      Sans KR at this line-height -- the two faces genuinely differ, so this
      cannot be a constant). The fallback is the Roboto value and covers only the
-     frame before the measurement resolves. */
-  transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
+     frame before the measurement resolves.
+
+     ...AND IT HAS TO FOLLOW THE BASELINE THE CREST IS AT, NOT THE RESTING ONE
+     (2026-08-03). `100%` is this element's line box, which the crest INFLATES,
+     but `--glyph-baseline-em` resolves against THIS element's font-size, which
+     stays 1em. So during a crest the pivot sat `0.38 * (S - 1) em` below the
+     real baseline and `word-sync-pop`'s 1.15 scale about that wrong point added
+     a further lift of its own. `max(1, S)` because below 1 the strut, not the
+     ink, is what sets the box depth. */
+  transform-origin: 50% calc(
+    100% - var(--glyph-baseline-em, .38em) * max(1, var(--crest-scale))
+  );
+  /* HOLD THE BASELINE, NOT THE BOX BOTTOM. THE SAME ERROR, ONE LEVEL OUT.
+     The 2.3 crest is a FONT-SIZE on `.word-ink`, so the ink's depth below the
+     baseline grows with it -- while `bottom: 0` above pins this box's BOTTOM.
+     The word's baseline therefore rides up by `0.3799 * (S - 1) em` while every
+     neighbour's stays put, and the louder the word the higher it floats, which
+     is precisely the channel CWI does not have. MEASURED before this, guide
+     taken per frame from a settled neighbour in the same row: the rise
+     correlates 0.867 with `0.3799 * (crest - 1) * restingFont`, "louder" sat
+     +0.201em off the line and the largest words +0.236em. The reference's own
+     baked measurements (`assets/reference_specs/*.json`, 48 words) regress
+     lift on size at a slope of +0.043 -- and its single biggest word, "louder"
+     at 2.21x, has a lift of EXACTLY 0.000. Size does not raise a word; waiting
+     does, which is `--hold-lift`'s job and stays untouched.
+     Push the box back down by exactly what the ink grew.
+     `translate` rather than `bottom`: it composes after `transform` in the
+     parent's frame, costs no layout, and -- unlike anything inside
+     `word-sync-pop`'s keyframes -- is in effect even after that animation has
+     finished, which matters because `--crest-duration` can outlast
+     `--motion-duration`. `max(0, ...)` so a word that SHRINKS is untouched:
+     below 1 the strut sets the box depth and there is nothing to correct. */
+  translate: 0 calc(
+    var(--glyph-baseline-em, .38em) * max(0, var(--crest-scale) - 1)
+  );
   transform: translate3d(-50%, 0, 0) scale(1);
   white-space: nowrap;
-  will-change: transform;
+  will-change: transform, translate;
   /* CWI 2.2.3. `animation-fill-mode` stays at its default `none`, so the word
      rests here BOTH before the delay elapses and after the cue completes. A
      word whose onset is already past arrives with a delay negative enough that
      the browser treats the animation as finished, and it simply paints
      settled -- which is exactly what a late/replayed word should do. */
-  animation: word-sync-pop var(--motion-duration) cubic-bezier(.42,0,.22,1)
-    var(--turn-delay);
+  /* ON THE CREST CLOCK, NOT THE POP'S OWN. Both are SIZE, and splitting the
+     clocks decoupled them: the pop finished long before the crest peaked, so
+     the two stopped compounding and the visible peak fell well under
+     `voice-scale x sync-pop`. Watching our own capture beside the film, an
+     emphatic word reached ~1.3x where the film's "louder" reaches ~2x. The
+     speech-rate clock keeps the character wave, which is what it is for. */
+  animation: word-sync-pop var(--crest-duration, var(--motion-duration))
+    cubic-bezier(.42,0,.22,1) var(--turn-delay);
 }
 
 /* REMOVED 2026-07-31 (user request): the `textured` delivery family drew a
@@ -1004,8 +1051,8 @@ button {
    amplitude is gated by the same wait. */
 .word-ink {
   animation: word-hold-spring
-    calc(var(--hold-pre, 420ms) + var(--hold-land, 290ms))
-    linear calc(var(--turn-delay) - var(--hold-pre, 420ms)) backwards;
+    calc(var(--hold-pre, 260ms) + var(--hold-hold, 420ms) + var(--hold-land, 290ms))
+    linear calc(var(--turn-delay) - var(--hold-pre, 260ms)) backwards;
   /* THE SQUASH AND THE STRETCH PIVOT ON THE BASELINE, exactly like the 2.2.3
      pop -- see `.word-glyph`. The box bottom is a descender plus half-leading
      BELOW the baseline, so scaling about it would lift the word off the line
@@ -1014,7 +1061,7 @@ button {
      turn and the crest is what changes this font-size. */
   transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
   display: inline-block;
-  font-size: calc(1em * (1 + var(--voice-phase) * (var(--voice-scale, 1) - 1)));
+  font-size: calc(1em * var(--crest-scale));
   font-weight: calc(400 + var(--voice-phase) * (var(--voice-weight, 400) - 400));
   font-stretch: calc(100% + var(--voice-phase) * (var(--voice-width, 100%) - 100%));
   will-change: font-size, font-weight, font-stretch, transform;
@@ -1699,17 +1746,49 @@ button {
    not how a loud word sounds. `--voice-attack` / `--voice-release` are where
    the voice reaches and leaves its crest, as fractions of the motion window. */
 @keyframes voice-phase {
+  /* THE ORDINARY WORD: a smooth hump, no plateau. `(1-cos(2*pi*t))/2` every
+     10%, `linear` between the stops. Across the 43 reference words the shape
+     statistic (time-above-90% / time-above-50%) is 0.40 and a raised cosine is
+     0.41 -- but that median is carried by the 37 words that barely move. */
   0%, 100% { --voice-phase: 0; }
-  /* Literal on purpose: a keyframe SELECTOR cannot take a `var()`, and a
-     build that silently drops the rule leaves the swell doing nothing.
-     RE-FITTED 2026-08-02 to the PR film's own "louder" (t=16.43..17.48,
-     tracked at 24 fps): rise 0.25s, hold 0.55s, RETURN 0.25s, ~1.05s in all.
-     Against the previous 28%/62% on a 720ms window that is a hold more than
-     twice as long and a slower return, which is what the user asked for
-     ("increase the motion time of 'motion -> normal'"). 24% here and
-     `VOICE_PHASE_RISE_FRACTION` change together. */
-  24%, 76% { --voice-phase: 1; }
+  10% { --voice-phase: .095; }
+  20% { --voice-phase: .345; }
+  30% { --voice-phase: .655; }
+  40% { --voice-phase: .905; }
+  50% { --voice-phase: 1; }
+  60% { --voice-phase: .905; }
+  70% { --voice-phase: .655; }
+  80% { --voice-phase: .345; }
+  90% { --voice-phase: .095; }
 }
+
+@keyframes voice-phase-hold {
+  /* THE EMPHATIC WORD OVERSHOOTS, SETTLES, SUSTAINS, THEN RELEASES.
+     Read off the film as a continuous curve -- per frame, the tallest caption
+     cluster's ink height over the median cluster's, which needs no tracking
+     and so cannot be broken by the line re-flowing. On "louder" (16.46-17.46):
+
+        16.46  1.15   at rest
+        16.71  3.12   PEAK, reached in 0.25s
+        16.92  2.52   settled back over 0.21s
+        17.25  2.52   sustained flat for 0.33s
+        17.46  1.15   released over 0.21s
+
+     A single-peak envelope cannot express that, and neither can a plateau:
+     the word goes PAST where it ends up and then holds lower. In phase terms
+     the sustain is (2.52-1.15)/(3.12-1.15) = 0.70 of the peak, and the four
+     legs are 25% / 21% / 33% / 21% of a 1.0s window. */
+  0%, 100% { --voice-phase: 0; }
+  8%  { --voice-phase: .30; }
+  16% { --voice-phase: .78; }
+  25% { --voice-phase: 1; }
+  33% { --voice-phase: .84; }
+  46% { --voice-phase: .70; }
+  79% { --voice-phase: .70; }
+  88% { --voice-phase: .40; }
+  94% { --voice-phase: .16; }
+}
+
 
 @keyframes word-color-turn {
   from {
@@ -1766,41 +1845,78 @@ button {
    an ordinary word -- which is nearly all of them -- runs this animation as a
    flat identity and costs nothing. */
 @keyframes word-hold-spring {
+  /* A HELD WORD STAYS UP, AND STRETCHES ON THE WAY (2026-08-03).
+     Stops are fractions of `--hold-pre` + `--hold-hold` + `--hold-land`
+     (260 + 420 + 290 = 970ms): crouch bottom 70ms (7%), back through the
+     line 110ms (11%), the launch overshoot 165ms (17%), settled aloft 220ms
+     (23%), AT THE TURN and at full lift 260ms (27%), still up at 680ms (70%),
+     landed (100%).
+     THE PEAK IS AT THE TURN, NOT THE LANDING. The After Effects template
+     drives the -amp position and the fill from ONE selector, so a letter is at
+     the top of its lift the instant it turns and comes back down behind the
+     colour boundary -- "that is the bounce". A lift that merely LEADS the
+     colour, landing at rest as it arrives, is what the template's own notes
+     call smooth but dead.
+     ...AND IT HOLDS THERE. `--hold-hold` is the plateau between the turn and
+     the descent; without it the word started falling the moment it turned and
+     never read as held.
+     The stretch is bigger than the first attempt: the crouch squashes to .72
+     and the launch stretches to 1.32, because at .78/1.24 it was not visible
+     against the caption's own size change. `--hold-spring` gates all of it on
+     the wait, so an ordinary word runs this as a flat identity. */
   0% {
     transform: translateY(0) scale(1, 1);
     animation-timing-function: cubic-bezier(.4, 0, .7, .3);
   }
-  14% {
+  7% {
     transform:
-      translateY(calc(.12em * var(--hold-spring, 0)))
-      scale(calc(1 + .06 * var(--hold-spring, 0)),
-            calc(1 - .22 * var(--hold-spring, 0)));
+      translateY(calc(.15em * var(--hold-spring, 0)))
+      scale(calc(1 + .09 * var(--hold-spring, 0)),
+            calc(1 - .28 * var(--hold-spring, 0)));
     animation-timing-function: cubic-bezier(.2, .8, .4, 1);
+  }
+  11% {
+    transform:
+      translateY(0)
+      scale(calc(1 - .03 * var(--hold-spring, 0)),
+            calc(1 + .12 * var(--hold-spring, 0)));
+    animation-timing-function: cubic-bezier(.15, .7, .35, 1);
+  }
+  17% {
+    transform:
+      translateY(calc(-.82 * var(--hold-lift, 0em)))
+      scale(calc(1 - .07 * var(--hold-spring, 0)),
+            calc(1 + .32 * var(--hold-spring, 0)));
+    animation-timing-function: cubic-bezier(.3, 0, .3, 1);
   }
   23% {
     transform:
-      translateY(0)
-      scale(calc(1 - .02 * var(--hold-spring, 0)),
+      translateY(calc(-.94 * var(--hold-lift, 0em)))
+      scale(calc(1 - .015 * var(--hold-spring, 0)),
             calc(1 + .08 * var(--hold-spring, 0)));
-    animation-timing-function: cubic-bezier(.15, .7, .35, 1);
-  }
-  35% {
-    transform:
-      translateY(calc(-.78 * var(--hold-lift, 0em)))
-      scale(calc(1 - .05 * var(--hold-spring, 0)),
-            calc(1 + .24 * var(--hold-spring, 0)));
-    animation-timing-function: cubic-bezier(.3, 0, .3, 1);
-  }
-  48% {
-    transform:
-      translateY(calc(-.90 * var(--hold-lift, 0em)))
-      scale(calc(1 - .012 * var(--hold-spring, 0)),
-            calc(1 + .06 * var(--hold-spring, 0)));
     animation-timing-function: ease-out;
   }
-  59% {
+  27%, 70% {
     transform: translateY(calc(-1 * var(--hold-lift, 0em))) scale(1, 1);
     animation-timing-function: cubic-bezier(.32, 0, .24, 1);
+  }
+  /* THE STRETCH LIVES IN THE LANDING, BUT THE LANDING DOES NOT BOUNCE.
+     Two separate findings, and I had only acted on the first.
+     (a) The crouch and launch are scheduled BEFORE the turn, and measured,
+     that is off screen: read-ahead lead is a median 0.06s, so a held word
+     mounts essentially AT its turn and the browser starts the animation
+     already past 27%. Traced over the film, "is", "spoken" and "intonation"
+     were seen only from the plateau onward, at a peak stretch of exactly 1.00.
+     (b) But the film's own landing is a plain ease-out over ~290ms with NO
+     rebound and NO squash -- "is" floats down and stops. A damped bounce was
+     added here and read as weird, correctly, because the reference has none.
+     So: one taut stretch on the way down, and a clean stop. */
+  84% {
+    transform:
+      translateY(calc(-.30 * var(--hold-lift, 0em)))
+      scale(calc(1 - .035 * var(--hold-spring, 0)),
+            calc(1 + .11 * var(--hold-spring, 0)));
+    animation-timing-function: cubic-bezier(.33, 0, .28, 1);
   }
   100% {
     transform: translateY(0) scale(1, 1);
@@ -2276,4 +2392,9 @@ button {
 .studio-shell[data-reduced-motion="true"] .word-glyph {
   animation: none !important;
   transform: translate3d(-50%, 0, 0) scale(1) !important;
+  /* `--voice-phase: 0 !important` above already makes the baseline anchoring
+     compute to zero, so this is a statement rather than a fix: the mode that
+     must not move says so, and no future `!important` phase can smuggle a
+     displacement into it. */
+  translate: none !important;
 }

@@ -56,6 +56,36 @@ def _rms_db(x: np.ndarray) -> float:
     return 20 * np.log10(max(float(np.sqrt(np.mean(x**2))), 1e-8))
 
 
+def _span_db(x: np.ndarray, percentile: float = 90.0, frame_s: float = 0.03) -> float:
+    """How loud a WORD was -- the level where the voice actually is.
+
+    THE WHOLE-SPAN RMS CANNOT TELL A SHOUT FROM A WHISPER, AND THAT IS WHY
+    THE SIZE CHANNEL NEVER WORKED (2026-08-03). A word's span includes its
+    stops, its unvoiced consonants and the gaps between phones, and those are
+    near-silent whatever the speaker is doing; averaging over them buries the
+    difference. MEASURED on the PR film's own "so you can feel when my voice
+    gets louder or softer": by whole-span median "louder" reads -23.5 dB and
+    "my voice gets" -22.3, i.e. the emphasised word looks QUIETER, which is
+    what this repo concluded and wrote down as "the narrator never said
+    'louder' louder... the film's giant 'louder' is authored from MEANING".
+    That conclusion was an artefact of the statistic. Scored on the loud part
+    of each word instead, the same audio gives "louder" **-11.4 dB** and
+    "softer" **-23.6 dB** -- a 12.2 dB separation, in the right direction,
+    from plain level and nothing else.
+    This is the same correction `_vocal_effort` already makes for spectral
+    tilt ("the loudest half of the 30 ms frames measures the tilt where the
+    voice actually is"); level needed it for exactly the same reason.
+    """
+    if not len(x):
+        return -80.0
+    step = max(1, int(frame_s * SR))
+    if len(x) < step * 2:
+        return _rms_db(x)
+    frames = [x[i:i + step] for i in range(0, len(x) - step + 1, step)]
+    levels = np.array([float(np.sqrt(np.mean(f**2))) for f in frames])
+    return 20 * np.log10(max(float(np.percentile(levels, percentile)), 1e-8))
+
+
 def _realtime_voice_features(
     samples: np.ndarray,
     pitch_floor_hz: float = 75.0,
@@ -1394,7 +1424,7 @@ def word_events(utts, model, lang: str, cfg: dict, speaker: str = "S1"):
         for w in words:
             i0, i1 = int(w.start * SR), min(int(w.end * SR), len(audio))
             span = audio[i0:i1]
-            db = _rms_db(span) if len(span) else -80.0
+            db = _span_db(span) if len(span) else -80.0
             hist.append(db)
             if len(hist) >= 6:
                 med = float(np.median(hist))
@@ -2652,26 +2682,18 @@ class SortformerHybridSpeakerTracker:
                 # that this really is an additional person.
                 return None
             speaker_id = self._speaker_id(decision.speaker_index)
-            # ...AND AN UNVERIFIED SLOT MAY NOT BORROW A NAME SOMEONE ELSE
-            # ALREADY HOLDS. `S{slot+1}` is only a sensible guess while the
-            # arrival order of the native slots still matches the arrival
-            # order of the durable identities. Once an endpoint has attached
-            # that name to a DIFFERENT slot, handing it out here paints a new
-            # voice in an established speaker's colour, which is worse than
-            # saying nothing: CWI renders an unattributed word neutral, and a
-            # wrong colour actively misinforms. The endpoint still names them
-            # a moment later, and that correction lands as a direct write.
-            if speaker_id in self._slot_speakers.values():
-                return None
         result = self.fallback._base_result(
             speaker_id,
             "stable" if endpoint else "provisional",
             confidence,
             None,
             (
-                "streaming Sortformer endpoint assignment"
-                if endpoint
-                else "streaming Sortformer tentative assignment"
+                # The native slot is in the reason on purpose: it is the only
+                # way to tell "the model never separated them" from "the model
+                # separated them and the mapping lost it", and those need
+                # opposite fixes.
+                f"streaming Sortformer {'endpoint' if endpoint else 'tentative'}"
+                f" assignment (native slot {decision.speaker_index})"
             ),
             max(0.0, end_s - start_s),
             None,
@@ -2865,7 +2887,7 @@ class StreamingCaptioner:
         i0 = max(0, int(word.start * SR))
         i1 = min(len(audio), max(i0 + 1, int(word.end * SR)))
         span = audio[i0:i1]
-        db = _rms_db(span) if len(span) else -80.0
+        db = _span_db(span) if len(span) else -80.0
 
         # Pitch benefits from a small context pad while loudness stays confined
         # to the recognized word itself.
@@ -3508,6 +3530,25 @@ class StreamingCaptioner:
             if not (effort_cfg.get("enabled", True) and cue is not None
                     and gain > 0 and len(baseline_cues) >= 6):
                 return 0.0
+            # AND A WORD THAT IS MEASURABLY QUIET IS NOT A SHOUT, WHATEVER ITS
+            # SPECTRUM SAYS (2026-08-03). Effort exists because a mastered or
+            # AGC'd shout need not be louder on the meter -- but that argument
+            # only ever justified lifting a word AT OR ABOVE the speaker's own
+            # level, never one well below it. Tilt is energy-weighted and still
+            # tracks phonemes: the loudest frames of "softer" are its /s/, so
+            # the film's canonical QUIET word earned a full effort lift and
+            # rendered at 1.27x where the reference draws it SMALLER than
+            # normal. `_span_db` now separates it from "louder" by 12.2 dB on
+            # plain level, so the level channel can be trusted to veto this
+            # one. Below the pivot the lift fades out rather than switching, so
+            # two adjacent words either side of the median cannot render at
+            # obviously different sizes -- the same continuity `voiceScale`'s
+            # deadband edge is tested for.
+            if loudness < pivot:
+                fade = max(0.0, loudness / max(1e-6, pivot))
+                if fade <= 0.0:
+                    return 0.0
+                gain *= fade ** 2
             # The speaker's own pitch and word length, which `_prominence`
             # measures this word's excursion against. Derived from whichever
             # baseline is available, so the composite is the same quantity
@@ -5220,7 +5261,7 @@ def _studio_runtime_config(
             "studio_stack_words_per_block", 6
         ),
         "stageWordsMin": display.get("studio_stack_words_min", 3),
-        "stageMinRows": display.get("studio_stack_min_rows", 10),
+        "stageMinRows": display.get("studio_stack_min_rows", 16),
         # CWI 2.2.1. How far the caption playhead trails the acoustic clock,
         # and therefore how much recognized-but-uncoloured text the viewer can
         # read ahead. See the long note on `read_ahead_delay_s` in config.yaml.
@@ -5235,13 +5276,16 @@ def _studio_runtime_config(
             float(cfg.get("motion", {}).get("color_turn_ms", 90))
         ),
         "wordMotionBaseMs": round(
-            float(display.get("word_motion_duration_s", 0.95)) * 1000
+            float(display.get("word_motion_duration_s", 0.42)) * 1000
         ),
         "wordMotionMaxMs": round(
-            float(display.get("word_motion_max_duration_s", 1.15)) * 1000
+            float(display.get("word_motion_max_duration_s", 0.85)) * 1000
         ),
         "wordMotionSpanStretch": display.get(
             "word_motion_span_stretch", 0.42
+        ),
+        "wordMotionPopMaxMs": round(
+            float(display.get("word_motion_pop_max_duration_s", 0.70)) * 1000
         ),
         "wordMotionMinMs": round(
             float(display.get("word_motion_min_duration_s", 0.32)) * 1000
@@ -5250,9 +5294,11 @@ def _studio_runtime_config(
         "characterWaveFalloff": live_sync.get("character_wave_falloff", 1.0),
         "characterWaveFloor": live_sync.get("character_wave_floor", 0.0),
         "holdLiftEm": live_sync.get("hold_lift_em", 0.525),
-        "holdFullS": live_sync.get("hold_full_s", 0.70),
-        "holdMinS": live_sync.get("hold_min_s", 0.22),
-        "holdPreMs": live_sync.get("hold_pre_ms", 420),
+        "holdFullS": live_sync.get("hold_full_s", 0.92),
+        "holdMaxS": live_sync.get("hold_max_s", 1.06),
+        "holdMinS": live_sync.get("hold_min_s", 0.86),
+        "holdPreMs": live_sync.get("hold_pre_ms", 260),
+        "holdHoldMs": live_sync.get("hold_hold_ms", 420),
         "holdLandMs": live_sync.get("hold_land_ms", 290),
         # CWI 2.4.4/2.4.5: sound labels yield to speech (the PR film never
         # shows one beside an active dialogue caption).
@@ -5281,7 +5327,7 @@ def _studio_runtime_config(
             "delivery_flow_duration_ms", 90
         ),
         "weightRange": [
-            float(v) for v in live_sync.get("weight_range", [200, 760])
+            float(v) for v in live_sync.get("weight_range", [340, 760])
         ],
         "weightEmphasis": float(live_sync.get("weight_emphasis", 0.55)),
         "deliveryMinConfidence": live_sync.get(

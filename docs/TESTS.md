@@ -103,6 +103,35 @@ invariants, not the exact numbers:
 | DOM white words vs `aheadWords` | agree within ~2; a gap means the page is not showing what the schedule believes |
 | `lateWords` | a burst on attach, then flat. Steadily climbing means the delay is shorter than the recognizer's delivery latency |
 
+### Does a swelling word stay on its baseline?
+
+```bash
+.venv/bin/python -m autocwi live --sample --lang en --no-open &
+.venv/bin/python scripts/baseline_probe.py            # must PASS
+.venv/bin/python scripts/baseline_probe.py --broken   # must FAIL
+```
+
+CWI grows a word FROM its baseline and never moves it, and the design system's
+own measurements are per word: across the 48 words with baked curves in
+`assets/reference_specs/*.json`, peak lift regressed on peak size has a slope of
+**+0.043**, and its single biggest word — "louder" at 2.21x — has a lift of
+**exactly 0.000**. A held word at 1.32x has the largest lift in the whole
+reference. Size does not raise a word; waiting does.
+
+| metric | required |
+|---|---|
+| worst median \|rise\| over the pinned crests | ≤ 0.06em. The old anchoring gives **0.196em** on English, 0.093em on Korean |
+| `--broken` | must FAIL. A check never seen to go red is not evidence |
+| `--glyph-baseline-em` | 0.3617em English, **0.2598em** Korean. If the two faces report the SAME number the probe is measuring the wrong element — that has happened twice |
+| max \|rise\| | diagnostic only. At a 1.62x crest adjacent rows overlap vertically and a minority of crops catch the row below, in the fixed build and the broken one alike |
+
+**This is a separate probe because `studio_probe.py` cannot see it.** That one
+decides a word is moving from `|matrix.f| > 0.5` on `.word-glyph`, and this lift
+is LAYOUT — `matrix.f` stays 0 the whole time, so a real 0.24em lift shipped
+undetected. Korean is under-powered here (n=5); for a robust Korean answer take
+the DOM route instead, over a `--loop` capture: crest-vs-rise correlation must
+sit near 0 (measured **+0.002**, slope **+0.02 px per 1.0x**).
+
 **Measured 2026-08-01** on the bundled clip: read-ahead 2.43 s median against a
 2.5 s delay (English) and 1.47 s (Korean); 0 invisible words; 0 unarmed; peak
 simultaneous motions 4–6.

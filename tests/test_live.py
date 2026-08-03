@@ -972,7 +972,7 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     assert runtime["maxWords"] == cfg["display"]["max_words"]
     assert runtime["paragraphWordLimit"] == 0
     assert runtime["stageParagraphHistory"] == 6
-    assert runtime["stageWordsPerBlock"] == 6
+    assert runtime["stageWordsPerBlock"] == 8
     # CWI 2.2.1. The playhead trails the acoustic clock by this much, which is
     # what leaves recognized-but-uncoloured text on screen to read ahead into.
     # It has to exceed the recognizer's own latency (~1.1 s for the 1120 ms
@@ -986,12 +986,15 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     assert runtime["readAheadOpacity"] == 0.9
     # 2.2.2's turn eases with the lift; it is never a hard cut.
     assert runtime["colorTurnMs"] > 0
-    # RE-FITTED 2026-08-02 to the PR film's own "louder" (rise 0.25s, hold
-    # 0.55s, return 0.25s -- ~1.05s in all, tracked at 24 fps). The window is
-    # what sets the RETURN, because `@keyframes voice-phase`'s stops are
-    # fractions of it: at the old 520/720 the return measured 0.14s on screen.
-    assert runtime["wordMotionBaseMs"] == 950
-    assert runtime["wordMotionMaxMs"] == 1150
+    # THESE ARE THE TWO ENDS OF A RAMP, NOT A CLOCK. Size and duration are ONE
+    # channel: peak size vs motion FWHM measures r = +0.69 over the 48
+    # reference words with baked curves, the strongest relationship in that
+    # data. Its own FWHM by crest band is 0.160s / 0.240s / 1.560s, against a
+    # FLAT 0.69-1.02s measured on ours at every crest. The PDF settles nothing
+    # here -- it specifies no timing at all.
+    assert runtime["wordMotionMinMs"] < runtime["wordMotionMaxMs"]
+    assert runtime["wordMotionBaseMs"] == 420
+    assert runtime["wordMotionMaxMs"] == 1050
     assert runtime["wordMotionMinMs"] == 320
     # The reveal queue and its concurrency slots, catch-up gap, backlog target,
     # rate headroom and staleness ceiling are gone: the playhead schedules every
@@ -1025,7 +1028,10 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     assert 0 < runtime["voiceScaleResponse"] <= 1
     # 2.3.8's Regular 400 and 2.3.10's 100% must sit strictly inside both bands,
     # or the neutral band cannot be expressed at all.
-    assert runtime["weightRange"][0] < 400 < runtime["weightRange"][1]
+    # The floor is set from the reference's own worst lightening (-53 from
+    # Regular), not from the type's available axis: the motion may lighten a
+    # word, but only about as far as the design system's renderer does.
+    assert 320 <= runtime["weightRange"][0] < 400 < runtime["weightRange"][1]
     assert runtime["widthRange"][0] < 100 < runtime["widthRange"][1]
     assert runtime["deliveryMotionEnabled"] is True
     assert runtime["deliveryMinConfidence"] == 0.38
