@@ -82,6 +82,8 @@ export interface RuntimeConfig {
    * recognized-but-not-yet-coloured text on screen at all times.
    */
   readAheadDelayMs: number;
+  /** A word may not turn until it has been on screen this long. */
+  minReadAheadMs: number;
   /** 2.2.1: "full white at 90% opacity" -- against 2.4.1's black box. */
   readAheadColor: string;
   /** The boxless light stage measures white at 1.05:1. See config.yaml. */
@@ -151,6 +153,7 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   stageWordsMin: 3,
   stageMinRows: 16,
   readAheadDelayMs: 2500,
+  minReadAheadMs: 420,
   readAheadColor: "#ffffff",
   readAheadColorLight: "#6e6e73",
   readAheadOpacity: 0.9,
@@ -592,23 +595,45 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     // honest moment to turn this word. Returning null leaves it in read-ahead
     // type; it is scheduled as soon as the clock starts.
     if (!clock.started || !Number.isFinite(acousticMs)) return null;
-    const turnAtMs = monotonicTimeForAcousticMs(
+    const acousticTurnMs = monotonicTimeForAcousticMs(
       clock,
       acousticMs,
       runtimeRef.current.readAheadDelayMs,
     );
     const previous = scheduledRef.current.get(id);
-    scheduledRef.current.set(id, {turnAtMs, durationMs});
     if (previous) {
-      // The word was already scheduled, so this is a remount asking for its
-      // delay again. That is a supported path -- the turn moment is derived
-      // from the recording and the clock, never from "now", so the word
-      // resumes at the same wall moment against its new animation origin --
-      // but it is worth counting, because a large figure means the stack is
-      // churning React keys and paying for it.
+      /* Return the STORED moment, not a recomputed one. The floor below is
+         relative to when this word was first delivered, so recomputing it on
+         a remount would move the turn. Everything else about this path is
+         unchanged. */
       rearmedWordsRef.current += 1;
-      return {turnAtMs, epoch: clock.epoch};
+      return {turnAtMs: previous.turnAtMs, epoch: clock.epoch};
     }
+    /*
+     * A WORD MUST BE READABLE BEFORE IT IS SPOKEN, AND A TIME DELAY ALONE
+     * CANNOT GUARANTEE THAT (2026-08-03).
+     *
+     * `read_ahead_delay_s` sets the MEAN lead and nothing about its spread.
+     * The recognizer blocks ~1.3 s at each endpoint and then releases a batch,
+     * so the read-ahead arrives in bursts: MEASURED at 1.75 s, the median lead
+     * is a healthy 700 ms, but the stage still shows **zero** words ahead of
+     * the playhead in 11% of frames and one word in another 18%, against 28
+     * words at p75. Between bursts there is nothing to read early, which is
+     * the whole of CWI 2.2.1 missing a third of the time. Raising the delay
+     * moves the mean and leaves the spread alone -- 1.2 -> 1.75 s took the
+     * median lead 170 -> 700 ms and the viewer still saw words appear already
+     * in motion.
+     * So the floor is per WORD, not per second: a word may not turn until it
+     * has been on screen for `minReadAheadMs`, whenever it happened to arrive.
+     * `scheduledRef` is keyed by word id and the remount path above returns
+     * the stored moment, so this is frozen at first sight exactly like the
+     * duration and the axes -- no reference to "now" survives into a re-arm.
+     * A word delivered LATE is unaffected: its acoustic turn is already in the
+     * past, the floor is the later of the two, and it still paints settled.
+     */
+    const floorMs = performance.now() + runtimeRef.current.minReadAheadMs;
+    const turnAtMs = Math.max(acousticTurnMs, floorMs);
+    scheduledRef.current.set(id, {turnAtMs, durationMs});
     /*
      * A word delivered after its own onset had already passed needs no special
      * case: the negative delay puts both CSS animations past their end, so it

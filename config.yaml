@@ -162,7 +162,7 @@ display:
   # wrap risk is bounded by that budget rather than by this number. Verify no
   # row CLIPS after changing it: `.caption-words` is `nowrap`, so an over-long
   # row is silently cut rather than wrapped.
-  studio_stack_words_per_block: 8
+  studio_stack_words_per_block: 11
   # The floor. Below three, a row stops reading as a phrase.
   studio_stack_words_min: 3
   # Rows the stack must be able to show before a shorter row (and therefore
@@ -177,6 +177,21 @@ display:
   # MEASURED: ceiling 6 -> 8 left words-per-row at a median of 5. More words in
   # a row means smaller type, and this is the term that asks for it:
   #   10 rows -> 5 words/row, 40.9px      13 -> 7 words/row, 33.3px
+  #   16 rows -> 9 words/row, 28.3px      18 -> 11 words/row, 24.8px
+  # RAISED TO 18/11 ON 2026-08-03 (user: short rows "feel a little bit messy").
+  # BOTH had to move: at a ceiling of 8 the stack was already AT 8, so
+  # `min_rows` alone could do nothing. Verified at 1440x900, stage 1072x729.
+  # 13 words/row CLIPS. `.caption-words` is `nowrap` and `--row-budget-em` is
+  # sized for the word COUNT, so a row of unusually long words overruns and is
+  # silently CUT -- measured, 1 clipped row at 13/20. 10 words/row produced a
+  # ONE-WORD row, which this file forbids elsewhere. 11 is the largest setting
+  # with zero clipped rows and a minimum row of five words.
+  # ALWAYS re-check `CLIPPED rows: 0` after touching either number, AND run
+  # `scripts/ink_collision.py`. 18 rows measured a MEDIAN adjacent-row ink gap
+  # of 9px against 36px on the record; at 16 it is 11px with one pair under
+  # 4px instead of three. The MINIMUM is 1.0px at every density tested
+  # (15/16/18), so that floor is NOT set by row count -- it is motion
+  # amplitude, and `hold_lift_em` 0.525 is ~13px of upward travel on its own.
   # They are the same knob. If the type ends up too small, the way back is
   # fewer rows, not fewer words.
   studio_stack_min_rows: 16
@@ -253,7 +268,17 @@ display:
   # Below the recognizer's own delivery latency it buys nothing at all, and
   # `lateWords` in window.__cwiStudio.report() climbs because words arrive
   # after their own onset has already passed.
-  read_ahead_delay_s: 1.2
+  read_ahead_delay_s: 1.75
+  # ...AND A PER-WORD FLOOR, BECAUSE THE DELAY ABOVE ONLY SETS THE MEAN.
+  # The recognizer blocks ~1.3s at each endpoint and then releases a batch,
+  # so read-ahead arrives in bursts. MEASURED at 1.75s: median lead 700ms,
+  # yet ZERO words ahead of the playhead in 11% of frames and one word in
+  # another 18%, against 28 at p75. Raising the delay moves the mean and
+  # leaves the spread -- 1.2 -> 1.75s took the median lead 170 -> 700ms and
+  # words still appeared already in motion. A word may not turn until it
+  # has been on screen this long, whenever it arrived. ~1.6 words at the
+  # measured 262ms speech rate.
+  min_read_ahead_ms: 420
   # CWI 2.3 IS PER CHARACTER, and this is how many readings of the word's own
   # audio the client gets to shape them with. The design system's illustrations
   # are unambiguous: p.34 sets "Put that coffee dOWn!" under its own waveform
@@ -784,7 +809,14 @@ motion:
       # 10% and an ordinary quiet word got 3-5%, which the user could not see in
       # a live test. Weakening the response was the wrong lever: it made every
       # quiet word invisible instead of stopping ordinary words from moving.
-      voice_scale_response_quiet: 0.55
+      # 0.55 -> 0.92 (2026-08-03, user: "'softer' is just normal, it should be
+      # small as reference"). MEASURED on screen, "softer" bottomed at 0.88x --
+      # a 12% shrink, which beside a word that grows 83% reads as no motion at
+      # all. The film draws it unmistakably smaller than its neighbours. The
+      # quiet half is the one channel that was still at its old timid setting;
+      # `voice_scale_deadband` still decides WHICH words move, so this deepens
+      # the genuinely hushed ones without adding to the count that move.
+      voice_scale_response_quiet: 0.92
       # THE BAND AROUND THE MEDIAN WHERE SIZE DOES NOT MOVE AT ALL, as a
       # fraction of each side's own range (the 2.3.5 pivot is not centred: the
       # quiet half spans 0..0.22 of normalised loudness, the loud half
@@ -811,7 +843,17 @@ motion:
       # the light half was 200 wide against a 360-wide bold half, so
       # `weight_emphasis` had to exceed 200/360 = 0.556 for a fully-emphasised
       # shout merely to return to Regular, and it was 0.55.
-      weight_range: [340, 760]
+      # CEILING 760 -> 900 AND `weight_emphasis` 0.55 -> 0.92 (2026-08-03). The
+      # film sets the stressed word of a shouted line in BLACK; measured with
+      # `scripts/word_motion.py`, the whole "What's your sole purpose in this
+      # army? / To do whatever you tell me, Drill Sergeant." line peaked at 592
+      # and "louder" at 579 -- SemiBold, not Black. That was arithmetic, not
+      # taste: a fully-prominent word reaches 400 + emphasis x (ceiling - 400),
+      # so 0.55 x 360 = 198 capped every emphatic word at ~598 and the 760
+      # ceiling could never be approached. 0.92 x 500 = 460 puts a fully
+      # emphasised word at ~860, which is Black, and leaves the ordinary and
+      # quiet halves untouched because both are gated on prominence.
+      weight_range: [340, 900]
       # ...and how much of that range an EMPHASISED word takes on top of the
       # pitch map, 0 restoring the literal 2.3.9 behaviour.
       # ALL THREE CWI CHANNELS USED TO AGREE TO DRAW A SHOUT AS WEAK. A shout
@@ -830,7 +872,7 @@ motion:
       # airy voice, and it has left that domain. So emphasis withdraws the
       # Light half in proportion and adds weight of its own; ordinary speech,
       # which is all 2.3.9 is about, is untouched at emphasis 0.
-      weight_emphasis: 0.55
+      weight_emphasis: 0.92
       # 2.3.9/2.3.10: rich low harmonics read wider, thin high harmonics
       # condensed. Centred on 100% so the CONDENSED half is reachable -- the
       # previous mapping summed two always-positive terms and measured width

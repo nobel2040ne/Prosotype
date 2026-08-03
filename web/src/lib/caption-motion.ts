@@ -311,19 +311,38 @@ export function voiceDeviationOf(
 }
 
 export function voiceTypeFor(
-  {loudness, pitchHz, texture}: {
+  {loudness, pitchHz, texture, registerHz}: {
     loudness: number;
     pitchHz: number;
     texture: number;
+    registerHz?: number;
   },
   ranges: VoiceTypeRanges,
 ): CaptionType {
-  const tone = voiceTone(pitchHz);
+  /* THE REGISTER HALF IS A PROPERTY OF THE VOICE, NOT OF THE WORD (2026-08-03).
+     2.3.9 draws high pitch LIGHT, and taken per word that turns every shout
+     into the thinnest text on screen: a shout's F0 doubles (this film's
+     narration 140 Hz against 278 Hz shouting), so MEASURED, 20 words rendered
+     lighter than Regular including "damn" from "Goddamnit" -- a word the film
+     sets BLACK. 2.3.7 is what resolves it, and it is explicit that its domain
+     is a VOICE: "lower voices are represented with a heavier weight ... the
+     frequency range of a typical human voice". That is a statement about WHO
+     IS SPEAKING. Within one speaker, going high is EFFORT, not register.
+     So the register term reads the speaker's running median F0
+     (`pitch_register_hz`) and a word's own excursion above it can no longer
+     drive it toward Light. Pitch still varies the weight between speakers,
+     which is all 2.3.9 is actually about; falls back to the word's own pitch
+     when no register is known yet, which is the old behaviour. */
+  const register = typeof registerHz === "number" &&
+    Number.isFinite(registerHz) && registerHz > 0 ? registerHz : pitchHz;
+  const tone = voiceTone(register);
   const scale = voiceScale(loudness, ranges);
   return {
     scale,
     weight: voiceWeight(tone, ranges, prominenceOf(loudness)),
-    width: voiceWidth(tone, texture, ranges),
+    // Width stays on the WORD's pitch: 2.3.10's diagonal is about the sound of
+    // the utterance, and unlike weight it has no Light floor to fall into.
+    width: voiceWidth(voiceTone(pitchHz), texture, ranges),
   };
 }
 
@@ -378,7 +397,11 @@ export function sampleContour(
 export function characterVoiceTypes(
   characterCount: number,
   envelope: VoiceEnvelope | null | undefined,
-  wordVoice: {loudness: number; pitchHz: number; texture: number},
+  wordVoice: {
+    loudness: number; pitchHz: number; texture: number;
+    /** The SPEAKER's median F0 -- 2.3.7's register half. */
+    registerHz?: number;
+  },
   ranges: VoiceTypeRanges,
   expression = 1,
 ): CaptionType[] {
@@ -396,7 +419,8 @@ export function characterVoiceTypes(
     const texture = envelope?.texture?.length
       ? sampleContour(envelope.texture, position)
       : wordVoice.texture;
-    const target = voiceTypeFor({loudness, pitchHz, texture}, ranges);
+    const target = voiceTypeFor(
+      {loudness, pitchHz, texture, registerHz: wordVoice.registerHz}, ranges);
     types.push({
       scale: 1 + (target.scale - 1) * amount,
       weight: Math.round(400 + (target.weight - 400) * amount),
@@ -412,7 +436,11 @@ export function peakCharacterScale(types: readonly CaptionType[]): number {
 }
 
 export function captionMotionFor(
-  voice: {loudness: number; pitchHz: number; texture: number},
+  voice: {
+    loudness: number; pitchHz: number; texture: number;
+    /** The SPEAKER's median F0 -- 2.3.7's register half. */
+    registerHz?: number;
+  },
   ranges: VoiceTypeRanges,
   expression: number,
   syncPop: number,

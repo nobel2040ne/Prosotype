@@ -605,6 +605,40 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     measurement is confounded (ink-to-ink across separated letters at peak
     versus one merged cluster at rest) and an unmeasured change is worse than
     none.
+    **THE REGISTER HALF IS PER SPEAKER, NOT PER WORD (2026-08-03).** This is
+    the real resolution of 2.3.9 against the shout, and it replaces leaning on
+    `weight_emphasis` to claw the Light half back. 2.3.9 draws high pitch
+    LIGHT; a shout's F0 doubles (140 Hz narration -> 278 Hz here); so taken
+    PER WORD the mapping renders the angriest voice in the film as its
+    thinnest text. MEASURED with `scripts/word_motion.py`, **20 words rendered
+    lighter than Regular, including "damn" from "Goddamnit"** — which the film
+    sets Black. 2.3.7's own wording is the fix: its domain is "the frequency
+    range of a typical human voice" and it says "lower VOICES are represented
+    with a heavier weight". That is a statement about WHO IS SPEAKING. Within
+    one speaker, going high is EFFORT, not register.
+    So `live.py` publishes `pitch_register_hz` — the speaker's running median
+    F0, already computed for `_prominence`'s baseline — and `voiceTypeFor`
+    takes the register term from THAT. A word's own excursion above its
+    speaker can no longer drive it toward Light. Pitch still separates
+    speakers, which is all 2.3.9 is really about. Width keeps the WORD's own
+    pitch: 2.3.10's diagonal is about the utterance and has no floor to fall
+    into. Falls back to the word's pitch before a register is known.
+    MEASURED after: words lighter than Regular **20 -> 0**; "louder" weight
+    **893** and "Goddamnit" 807 where the film sets both Black; whole-film
+    median peak stays 1.15x, i.e. the ordinary word still just pops.
+    **THE BOLD CEILING WAS UNREACHABLE BY CONSTRUCTION UNTIL 2026-08-03.**
+    A fully-prominent word renders `400 + emphasis x (ceiling - 400)`, so with
+    `weight_range` [340, **760**] and `weight_emphasis` 0.55 the most emphatic
+    word possible was 400 + 198 = ~598 and the 760 ceiling could never be
+    approached. MEASURED with `scripts/word_motion.py`, "louder" rendered 579
+    and the whole drill-sergeant line peaked at 592 — SemiBold, where the film
+    sets its stressed words BLACK. Now [340, **900**] at **0.92**: 0.92 x 500
+    = 460, so a fully emphasised word lands ~860. AFTER: "louder" **823**,
+    "Sergeant." 714, "your" 694, "whatever" 656. The ordinary and quiet halves
+    are untouched, because both terms are gated on prominence.
+    Note `whats`/`this` still render Light (340/355) on that line and that is
+    2.3.9 WORKING: they are the unstressed words of "What's your SOLE purpose
+    in this army?", and the film does not emphasise them either.
     MEASURED after: no word that grows past 1.35x renders near the Light floor
     any more (the drill sergeant's line runs 231–539 where it ran 200), and the
     floor is now reached only by words peaking at 1.15x — i.e. unemphasised
@@ -931,6 +965,16 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
       scores 0.92, "spoken." 0.82 and "or" 0.72, so `hold_min_s` 0.86 /
       `hold_full_s` 0.92 gives the film's word a full lift and the other two
       none. MEASURED: lifting words 36 → 10 → 4 → **1**.
+    **AND THE EXCLUSION RUNS BOTH WAYS: A LIFTED WORD IS AT REST IN SIZE AND
+    WEIGHT (2026-08-03, user: "'is''s lift motion don't have a size and weight
+    effect").** Stepping the film's "is", once the launch overshoot decays the
+    word floats at EXACTLY its resting size for 0.67 s and is never bolder than
+    its neighbours — the whole of its motion IS the lift and the spring.
+    MEASURED here before the fix, "is" rendered peak **1.41x at weight 838**,
+    carrying all three channels at once. Size and weight are now withdrawn in
+    proportion to `holdAmount`, so a partially-held word degrades smoothly.
+    AFTER: "is" peak **1.15** (the bare 2.2.3 pop and nothing else) at weight
+    **400..400**, lift 0.525em, with "louder" 1.82x/892 untouched.
     **SIZE AND LIFT ARE INDEPENDENT CHANNELS, AND THE GATE IS BINARY.** The
     film's "louder" more than doubles and never leaves the baseline; "is" is at
     its RESTING size the whole time it floats. Letting a loud word do both
@@ -1087,6 +1131,28 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     stacks a full wave on top of a full swell. Re-run `ink_collision.py` after
     any change to `voice_scale_range`, the wave amplitude, `hold_lift_em` or
     `character_wave_falloff` — this is the first constraint that will break.
+    **IT IS `scripts/ink_collision.py` NOW, NOT A SCRATCHPAD FILE, AND THE
+    CONSTRAINT HAS DEGRADED (2026-08-03).** Re-run after the weight ceiling
+    went to 900, `hold_lift_em` to 0.525, the landing spring, and the row
+    density: minimum gap **8px -> 1.0px**, median **36px -> 11px**, pairs under
+    4px **0 -> 1**. Rows are not touching, but there is essentially no margin
+    left. The minimum is 1.0px at 15, 16 AND 18 rows, so it is NOT set by row
+    density or type size -- it is motion amplitude. `hold_lift_em` 0.525 alone
+    is ~13px of upward travel at 24.8px type, straight at the row above.
+    **AND IT IS THE CREST, NOT THE LIFT — BOTH WERE TESTED.** Setting
+    `hold_lift_em: 0.0` left the minimum at 1.0px with 3 pairs under 4px, so
+    the held word is not what closes the gap; do not shrink it to buy
+    clearance. Freezing EVERY voice channel instead (`--voice-phase: 0`,
+    `--hold-lift: 0`, `--char-wave: 0`, `transform: none`) and re-measuring the
+    settled stage gives **9.0px minimum, 11px median** — so the layout hands
+    each row 9px at rest and MOTION EATS 8px OF IT. That is the 1.83x crest on
+    weight-892 ink, which is the reference behaviour and not something to tune
+    away casually.
+    Note the resting MEDIAN is 11px where this file once recorded 36px: that
+    is the row density (more rows in the same stage), and it is the term to
+    move if clearance is ever needed. The 1.0px floor itself is unchanged at
+    15, 16 and 18 rows.
+    (Superseded note follows.)
     **It is a scratchpad tool and it does not survive the session**, so it gets
     rewritten each time; the method is the durable part: screenshot the stage
     densely (0.45 s is enough), band the ink by row, and take the minimum gap
@@ -1217,6 +1283,29 @@ sampled every frame. It validates on both words that can be checked by eye
 BOTTOMS instead of heights — each cluster's bottom against the median bottom of
 its own frame. Guides are stripped BY HUE (cyan rules, yellow playhead), never
 by density.
+**USE `scripts/word_motion.py`, NOT AN AD-HOC AGGREGATE.** It reports ONE ROW
+PER WORD -- peak and floor against that word's OWN modal rest, weight peak and
+floor with a flag when a word renders lighter than Regular, half-excursion
+width and window measured INSIDE the motion, character count, and hold lift.
+It excludes words that were only ever sampled settled instead of counting them
+as 1.00x. Validated against the three words whose behaviour can be checked by
+eye: "louder" peak 1.62 / lift 0.000, "softer" floor 0.79 and flagged Light,
+"is" lift 0.525. Four ad-hoc metrics gave confidently wrong answers in one
+session before it existed; the two below are why.
+**`scrollWidth` ON `.caption-words` DOES NOT MEASURE CLIPPING (2026-08-03).**
+`.word-glyph` is `position: absolute` and out of flow, so a swelling word's
+overhang inflates `scrollWidth` without any text being lost -- that is the
+design (the visible glyph moves nothing; the in-flow `.character-sizer` owns
+the width). A probe on that basis reported 46-58px of "silent cutting" across
+~500 of ~3300 row-samples and it was a FALSE POSITIVE, chased through two
+attempted fixes: `--word-em-linear` 1.45 -> 1.72 (measured 47px vs 46px, and
+structurally incapable of helping -- that budget DERIVES the type size, so
+inflating it shrinks the type by the same proportion and overflow in `em` is
+invariant) and a per-row CHARACTER budget in the chunker (no change, and it
+broke 8 selector tests). Both reverted.
+To ask whether text is actually cut, compare the IN-FLOW sizers
+(`.character-sizer`, `.word-sizer-crest`) against their row's client box.
+MEASURED that way, worst excursion is **0.0px** -- nothing is clipped.
 **AND `max/min` OVER A WORD'S SAMPLES CANNOT TELL GROWTH FROM SHRINKAGE.** This
 cost a whole round: "softer" was reported as rendering 1.27x and chased as a
 bug, when 1.27 was `rest / crest` — the word was correctly SHRINKING to 0.79x,

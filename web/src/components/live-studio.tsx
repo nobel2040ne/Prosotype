@@ -208,8 +208,12 @@ const MotionWord = memo(function MotionWord({
     ? String(motionWord.delivery_profile ?? "steady")
     : "steady";
   const pitch = number(motionWord.pitch_hz, 0);
+  /* The SPEAKER's running median F0. 2.3.7's weight ladder describes a voice,
+     so the register half reads this and a word's own excursion above it is
+     treated as effort rather than as a lighter voice. */
+  const register = number(motionWord.pitch_register_hz, 0);
   const motion = captionMotionFor(
-    {loudness, pitchHz: pitch, texture},
+    {loudness, pitchHz: pitch, texture, registerHz: register},
     voiceRanges(runtime),
     intensity,
     runtime.syncPop,
@@ -257,7 +261,7 @@ const MotionWord = memo(function MotionWord({
           texture: motionWord.env_texture,
         }
       : null,
-    {loudness, pitchHz: pitch, texture},
+    {loudness, pitchHz: pitch, texture, registerHz: register},
     voiceRanges(runtime),
     intensity,
   );
@@ -379,8 +383,21 @@ const MotionWord = memo(function MotionWord({
     // CWI 2.3 is a WORD-level property: in intonation.mov every glyph of
     // "louder" is the same size and weight, and every glyph of "softer" is
     // uniformly small. Only the wave below is per character.
-    "--voice-scale": motion.voice.scale.toFixed(3),
-    "--voice-weight": String(motion.voice.weight),
+    /* A LIFTED WORD IS AT REST. THE EXCLUSION RUNS BOTH WAYS.
+       `holdAmount` already refuses to lift a word that SWELLS; this is the
+       other direction, and the reference is explicit about it. Stepping the
+       film's "is" frame by frame, once the launch overshoot decays the word
+       floats at EXACTLY its resting size for 0.67s, and it is never bolder
+       than its neighbours — the whole of its motion is the lift and the
+       spring. MEASURED here before this, "is" rendered peak 1.41x at weight
+       838, so a held word was carrying all three channels at once and read as
+       doing too much. Size and weight are withdrawn in proportion to the lift,
+       so a partially-held word degrades smoothly rather than switching. */
+    "--voice-scale": (1 + (motion.voice.scale - 1) * (1 - holdAmount))
+      .toFixed(3),
+    "--voice-weight": String(
+      Math.round(400 + (motion.voice.weight - 400) * (1 - holdAmount)),
+    ),
     "--voice-width": `${motion.voice.width}%`,
     // The wave hands off letter to letter across ~55% of the window, so it
     // travels visibly instead of pulsing the word as one block.

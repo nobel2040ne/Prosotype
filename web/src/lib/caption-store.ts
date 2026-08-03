@@ -29,6 +29,8 @@ export interface CaptionWord {
   loudness_db?: number;
   pitch?: number;
   pitch_hz?: number;
+  /** The SPEAKER's running median F0, for 2.3.7's register half. */
+  pitch_register_hz?: number;
   voiced_frac?: number;
   spectral_centroid_hz?: number;
   pitch_confidence?: number;

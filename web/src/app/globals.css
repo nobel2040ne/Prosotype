@@ -91,6 +91,22 @@
      (the voice scale still centres on 1.0 at the median loudness) -- what grew
      is the variance, which is exactly what `spread*sqrt(N)` is for. Raising
      `linear` instead would have over-budgeted every ordinary row. */
+  /* THIS KNOB CANNOT FIX ROW CLIPPING -- TRIED AND MEASURED (2026-08-03).
+     `.caption-words` is `nowrap`, so an over-long row is silently CUT: no
+     error, no visual warning, and a check on a SETTLED stage cannot see it
+     (one passed by sampling a lucky instant). Polled through live playback
+     with `clip_probe.py`, rows overflow by up to 58px on 497 of 3277
+     row-samples at 8 words/row and 46px on 603 of 3577 at 11. It is
+     PRE-EXISTING and slightly WORSE at the larger type, so it is not a
+     consequence of denser rows.
+     Raising this from 1.45 to 1.72 to cover the measured shortfall changed
+     nothing (47px, 531 samples) and was reverted. The reason is structural:
+     this budget DERIVES THE TYPE SIZE, so inflating it shrinks the type by the
+     same proportion and a row's overflow in `em` is invariant under it.
+     The cause is that rows are chunked by WORD COUNT while a row's width is
+     set by its CHARACTERS -- the offender is always a row carrying
+     "synchronized" or "precisely". The fix is a character budget in
+     `selectStableCaptionStack`'s chunker, not a bigger per-word estimate. */
   --word-em-linear: 1.45;
   --word-em-spread: 6.60;
   /* The resolved budget for the current row width. `planStageLayout` writes this
@@ -1784,9 +1800,23 @@ button {
   25% { --voice-phase: 1; }
   33% { --voice-phase: .84; }
   46% { --voice-phase: .70; }
+  /* THE RELEASE IS SHORTER THAN THE FILM'S, DELIBERATELY (2026-08-03, user:
+     "bolded thing's turning into normal font's returning speed is too slow").
+     The film releases over 0.21s of a 1.0s window (21%); reported on screen
+     that reads as the weight hanging on. Weight is the channel that shows it
+     -- a 900 -> 400 fall is a far larger perceptual step than 1.8x -> 1.0x --
+     and both ride this one phase.
+     DELAYING THE SUSTAIN INSTEAD WAS TRIED AND MADE IT WORSE: running the
+     hold to 85% and falling over the last 15% MEASURED as a LONGER motion
+     (time above half-peak 0.68s -> 0.74s), because the word simply stayed up
+     longer before letting go. The sustain still ends at 79%, exactly where
+     the film's does; what changed is the SHAPE of the fall, which now sheds
+     two thirds of the phase in its first 5% and is essentially home by 89%
+     (~105ms at the 1050ms ceiling) instead of easing out to 100%. Rise,
+     overshoot and hold are untouched. */
   79% { --voice-phase: .70; }
-  88% { --voice-phase: .40; }
-  94% { --voice-phase: .16; }
+  84% { --voice-phase: .26; }
+  89% { --voice-phase: .07; }
 }
 
 

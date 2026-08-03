@@ -72,6 +72,20 @@ def _span_db(x: np.ndarray, percentile: float = 90.0, frame_s: float = 0.03) -> 
     of each word instead, the same audio gives "louder" **-11.4 dB** and
     "softer" **-23.6 dB** -- a 12.2 dB separation, in the right direction,
     from plain level and nothing else.
+    **THE PERCENTILE STAYS 90. THE MEDIAN WAS TRIED AND MEASURED WORSE
+    (2026-08-03).** Within the drill-sergeant line the median looks strictly
+    better: it ranks "sole" first (-16.8, against "What's" -18.6 and "purpose"
+    -27.1) where p90 puts "What's" and "purpose" ABOVE it, and it separates
+    "louder" (-16.4) from "softer" (-32.3) by 15.9 dB where p90 gives 12.2. A
+    stressed word is loud SUSTAINED -- "sole" spans 3.2 dB from median to p90
+    while "purpose", a stop with silence inside it, spans 14.4 -- so on paper
+    the median is the right discriminator.
+    SHIPPED, IT IS NOT. On screen "louder" fell from **1.82x to 1.15x**, the
+    bare pop, and "sole" did not improve at all. A statistic that ranks better
+    WITHIN ONE LINE need not render better: the crest comes from a word's
+    position in the SPEAKER's running percentile window, and lowering every
+    word's dB moves that window with it. Rank order inside a sentence is not
+    what drives the size channel. Reverted.
     This is the same correction `_vocal_effort` already makes for spectral
     tilt ("the loudest half of the 30 ms frames measures the tilt where the
     voice actually is"); level needed it for exactly the same reason.
@@ -3557,6 +3571,10 @@ class StreamingCaptioner:
                 float(np.median([c[1] for c in baseline_cues if c[1] > 0] or [0.0])),
                 float(np.median([c[2] for c in baseline_cues if c[2] > 0] or [0.0])),
             )
+            # Published as `pitch_register_hz`: 2.3.7's domain is a VOICE, and
+            # the renderer needs the speaker's register to tell a light voice
+            # apart from a pushed one.
+            self._pitch_register_hz = baseline[0]
             # THE SMOOTHING WINDOW CANNOT READ `effort_history`: that holds
             # FINAL words only, and a word is first seen -- and its lift first
             # frozen -- while its own utterance is still open. During the
@@ -3704,6 +3722,11 @@ class StreamingCaptioner:
             "pitch": 0.5,
             "loudness_db": round(db, 2),
             "pitch_hz": round(pitch_hz, 2),
+            # The SPEAKER's running median F0, not this word's. See
+            # `voiceTone` -- 2.3.7 describes who is speaking, so the register
+            # half of the weight axis must be measured per voice.
+            "pitch_register_hz": round(
+                float(getattr(self, "_pitch_register_hz", 0.0) or 0.0), 2),
             "voiced_frac": round(voiced_frac, 3),
             **delivery,
             "conf": round(word.conf, 3),
@@ -5267,6 +5290,14 @@ def _studio_runtime_config(
         # read ahead. See the long note on `read_ahead_delay_s` in config.yaml.
         "readAheadDelayMs": round(
             float(display.get("read_ahead_delay_s", 2.5)) * 1000
+        ),
+        # A per-WORD floor on the read-ahead. `read_ahead_delay_s` sets the
+        # MEAN lead and says nothing about its spread; the recognizer releases
+        # a batch at each endpoint, so measured at 1.75s the median lead is a
+        # healthy 700ms while 11% of frames still show ZERO words ahead of the
+        # playhead. This guarantees every word is readable before it turns.
+        "minReadAheadMs": round(
+            float(display.get("min_read_ahead_ms", 420))
         ),
         "readAheadColor": read_ahead.get("color", "#FFFFFF"),
         # Same read-ahead, legible on the boxless light stage. See config.yaml.

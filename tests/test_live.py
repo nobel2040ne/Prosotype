@@ -972,12 +972,12 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     assert runtime["maxWords"] == cfg["display"]["max_words"]
     assert runtime["paragraphWordLimit"] == 0
     assert runtime["stageParagraphHistory"] == 6
-    assert runtime["stageWordsPerBlock"] == 8
+    assert runtime["stageWordsPerBlock"] == 11
     # CWI 2.2.1. The playhead trails the acoustic clock by this much, which is
     # what leaves recognized-but-uncoloured text on screen to read ahead into.
     # It has to exceed the recognizer's own latency (~1.1 s for the 1120 ms
     # accurate stream) or it buys no read-ahead at all.
-    assert runtime["readAheadDelayMs"] == 1200
+    assert runtime["readAheadDelayMs"] == 1750
     # It must still clear the median time for a word's TEXT to arrive (~0.62 s
     # measured), or words land past their own onset and never animate.
     assert runtime["readAheadDelayMs"] > 620
