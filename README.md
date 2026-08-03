@@ -13,8 +13,8 @@ recorded video is kept as the reference generator for the caption data contract.
 Everything runs **locally and offline**. No cloud inference, no telemetry. The
 only network access is one-time downloads of model weights and fonts.
 
-> New here? Start with **[docs/ONBOARDING.md](docs/ONBOARDING.md)** for a
-> step-by-step first run, and **[docs/GLOSSARY.md](docs/GLOSSARY.md)** for the
+> New here? Start with **[CONTRIBUTING.md — first day](CONTRIBUTING.md#your-first-day)** for a
+> step-by-step first run, and **[ARCHITECTURE.md — glossary](ARCHITECTURE.md#glossary)** for the
 > terminology.
 
 ## What it does
@@ -54,7 +54,7 @@ Then run the bundled demo — no microphone needed:
 ```
 
 Full setup notes (download sizes, offline extras, gated model tokens) are in
-**[docs/ONBOARDING.md](docs/ONBOARDING.md)**.
+**[CONTRIBUTING.md — first day](CONTRIBUTING.md#your-first-day)**.
 
 ## Common commands
 
@@ -102,14 +102,15 @@ A fuller breakdown of every module is in
 
 | Document | What's in it |
 |---|---|
-| [docs/ONBOARDING.md](docs/ONBOARDING.md) | Day-one setup and first run |
-| [docs/GLOSSARY.md](docs/GLOSSARY.md) | Definitions of every domain term |
+| [CONTRIBUTING.md — first day](CONTRIBUTING.md#your-first-day) | Day-one setup and first run |
+| [ARCHITECTURE.md — glossary](ARCHITECTURE.md#glossary) | Definitions of every domain term |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, modules, and the data contract |
 | [docs/LIVE.md](docs/LIVE.md) | How live mode works in depth |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, conventions, ground rules, PR flow |
 | [docs/TESTS.md](docs/TESTS.md) | Test layout and how to run/regenerate them |
-| [docs/SOURCES.md](docs/SOURCES.md) | The primary source materials |
-| [docs/DESIGN.md](docs/DESIGN.md) | Exact design values, by PDF section |
+| [docs/RESEARCH.md — sources](docs/RESEARCH.md#sources) | The primary source materials |
+| [docs/MOTION.md](docs/MOTION.md) | **The motion contract** — five channels, the rules, the acceptance figures |
+| [docs/DESIGN.md](docs/DESIGN.md) | PDF values by section, plus superseded interpretation (read MOTION.md first) |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | Research grounding for design decisions |
 | [web/README.md](web/README.md) | The studio frontend |
 

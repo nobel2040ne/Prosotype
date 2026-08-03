@@ -167,6 +167,22 @@ export function voiceScale(
   // Re-span what is left of the side so the mapping stays continuous at the
   // band edge and still reaches 2.3.6's limit at the extreme.
   const shaped = (Math.abs(deviation) - dead) / Math.max(1e-6, sideRange - dead);
+  /* WHY `voice_scale_range[0]` DOES NOT MOVE THE QUIET FLOOR (2026-08-04).
+     The two sides are not symmetric. The loud limit (12%/5% = 2.40) sits
+     BEYOND `voice_scale_range`'s ceiling, so the clamp binds and the ceiling
+     is the real control. The quiet limit (3%/5% = 0.60) sits INSIDE its
+     floor, so the floor never binds -- moving it 0.72 -> 0.55 -> 0.46 was
+     measured as a complete no-op three times, because the mapping stops at
+     0.60 regardless. On screen that is 0.60 x the 1.15 pop = 0.73.
+     TAKING `min(0.60, floor)` HERE MAKES "softer" REACH 0.59 AND WAS TRIED
+     AND REVERTED. It works, but this expression is shared: `reachableScaleRange`
+     answers "how far from normal is this word, as a fraction of the possible"
+     for the character-wave suppression and `emphasisOf`, and the two must
+     move together or a word renders more extreme than the range claims is
+     reachable. Changing both perturbed the held word's motion, which is a
+     high price for one word's depth. If the quiet half must go below 2.3.6's
+     3% minimum, change BOTH functions together and re-verify the hold and the
+     wave, not just the word that prompted it. */
   const limit = deviation >= 0
     ? SIZE_MAX_PCT / SIZE_BASELINE_PCT
     : SIZE_MIN_PCT / SIZE_BASELINE_PCT;
@@ -270,6 +286,7 @@ export function reachableScaleRange(
     ranges.scale[0],
     1 - ranges.scaleResponseQuiet * (1 - SIZE_MIN_PCT / SIZE_BASELINE_PCT),
   );
+
   return [quiet, loud];
 }
 

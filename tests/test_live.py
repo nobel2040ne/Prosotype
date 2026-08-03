@@ -995,7 +995,7 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     assert runtime["wordMotionMinMs"] < runtime["wordMotionMaxMs"]
     assert runtime["wordMotionBaseMs"] == 420
     assert runtime["wordMotionMaxMs"] == 1050
-    assert runtime["wordMotionMinMs"] == 320
+    assert runtime["wordMotionMinMs"] == 520
     # The reveal queue and its concurrency slots, catch-up gap, backlog target,
     # rate headroom and staleness ceiling are gone: the playhead schedules every
     # word from its own recorded onset, so none of them has anything to decide.

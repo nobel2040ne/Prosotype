@@ -4,7 +4,7 @@ Live mode is the primary product: a microphone streams into CWI-styled open
 captions in the browser, in real time. This document explains how it behaves.
 For the system diagram and data contract, see
 [../ARCHITECTURE.md](../ARCHITECTURE.md); for terminology, see
-[GLOSSARY.md](GLOSSARY.md).
+[ARCHITECTURE.md — glossary](../ARCHITECTURE.md#glossary).
 
 ## Running it
 

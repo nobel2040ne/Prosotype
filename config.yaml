@@ -340,7 +340,22 @@ display:
   # `word_motion_max_duration_s` above is the CREST's ceiling, which is a
   # different clock -- see `crestWindowMs`.
   word_motion_pop_max_duration_s: 0.70
-  word_motion_min_duration_s: 0.32
+  # 0.32 -> 0.52 (2026-08-03, user: "the motions look so fast", raised three
+  # times across the session). THIS EXCEEDS THE FILM AND THAT IS DELIBERATE
+  # — flagged, not hidden. The 0.32 came from the reference's own band
+  # analysis: 37 of 43 words sit at peak 1.05-1.20 with a span-above-half of
+  # 0.160s, and the pulse envelope spends 0.50 of its window there, so
+  # 0.32 reproduces it exactly. At 0.52 an ordinary word runs ~0.26s above
+  # half — 1.6x the reference.
+  # MEASURED, rise rest->peak 100ms -> 165ms against the film's 250ms on
+  # "louder". Note the rise:return RATIO is NOT the thing to fit: ours is
+  # 1:1.3 over all words and the film's "louder" is 1:3, but that compares
+  # a median dominated by ordinary words against one emphatic word. Split
+  # by band, the symmetric pulse IS the reference shape for ordinary words
+  # (shape statistic 0.40 vs a raised cosine's 0.41).
+  # So this is a viewer-preference deviation from a measured value. If the
+  # reference is ever the tiebreak again, 0.32 is the fitted number.
+  word_motion_min_duration_s: 0.52
   word_motion_backlog_target_s: 0.60
   # Above this much acoustic backlog a word is HISTORY, not live speech: it is
   # revealed settled and un-paced instead of animating. Cold start is why this
@@ -692,12 +707,18 @@ motion:
       # isolated by 0.96s before and 0.80s after, so it scores 0.80 and the
       # old 0.85 floor gave the one word the film DOES hold only 46% of a
       # lift. The band moves down with the statistic it now reads.
+      # WIDENED 2026-08-04: 0.86..0.92 is a 0.06s band and "is" scores 0.92,
+      # i.e. exactly on its edge. ASR onsets move a few tens of ms run to run,
+      # so the hold fired on one capture (475 lifted samples) and not at all on
+      # the next -- a coin flip, reported as "the 'is' motion has broken".
+      # 0.78..0.88 gives it real margin. "spoken." at 0.82 now takes a partial
+      # lift; that is the price of a band this signal can actually hold.
       # Measured on min(before, after): "is" scores 0.92, "spoken." 0.82 and
       # "or" 0.72, so the band is narrow but the three ARE separable -- the
       # word the film holds clears it and the two it leaves on the line do
       # not. A wider band admits them; a higher floor only part-lifts "is".
-      hold_full_s: 0.92        # interval at which the lift reaches its maximum
-      hold_min_s: 0.86         # below this a word is ordinary speech: no lift
+      hold_full_s: 0.88        # interval at which the lift reaches its maximum
+      hold_min_s: 0.78         # below this a word is ordinary speech: no lift
       # ...and ABOVE this it is a sentence break, which the film does not
       # lift either. Measured over the film's first 18s, exactly one word
       # leaves the line -- "is", after a 0.96s gap -- while `Caption`,
@@ -764,6 +785,12 @@ motion:
       # swelling, shrinking its neighbours to make room and restoring them
       # afterwards (visible across frames 350-440). Doing the same here would
       # buy the rest of the range back at full size; it is the next real step.
+      # THE FLOOR HERE DOES NOT CONTROL THE QUIET HALF -- see `voiceScale` in
+      # web/src/lib/caption-motion.ts. 2.3.6's 3%/5% ratio (0.60) is reached
+      # before this clamp, so moving it 0.72 -> 0.55 -> 0.46 measured as a
+      # no-op three times. Restored to the tested value. The loud ceiling DOES
+      # bind (2.40 sits beyond it), which is why the two halves behave
+      # differently to the same edit.
       voice_scale_range: [0.72, 1.62]
       # How much of the 2.3.6 excursion survives, applied ABOUT the baseline so
       # 2.3.5's anchor is exact at any value. This is the live narrowing lever,
@@ -1273,7 +1300,23 @@ live:
     short_turn_max_duration_s: 1.1  # weak short turns prefer recent-speaker continuity
     retain_threshold: 0.32          # separate lower threshold for retaining current voice
     switch_threshold: 0.33          # separate higher threshold for switching voices
-    min_confidence_margin: 0.08     # best-minus-second-best ambiguity guard
+    min_confidence_margin: 0.08
+    # A LONE WORD MAY NOT CHANGE SPEAKER MID-UTTERANCE (2026-08-03).
+    # Identity is decided per SEGMENT and a segment may legally be one word
+    # (`min_assignment_duration_s` 0.25s; terminal punctuation forces a
+    # boundary at every sentence-final word). Three paths then hand a single
+    # word a saturated `stable` label with no persistence check --
+    # `accepted-short-stable`, the per-word Sortformer decision, and one-word
+    # segments -- and `switch_hysteresis_s` guards none of them, because it
+    # measures observation TIME and not word RUNS.
+    # MEASURED: of 11 colour runs over 104 settled words, 4 were exactly one
+    # word, including seen/Forrest/many -- three consecutive single-word
+    # flips inside one narrator's sentence. CWI 2.1 makes colour THE speaker
+    # signal, so a false flip is worse than neutral.
+    # Utterance EDGES are left instant, because that is where real
+    # turn-taking happens; only interior words need corroboration, and only
+    # when both neighbours agree on someone else.
+    speaker_min_run_words: 2     # best-minus-second-best ambiguity guard
     # Clean short replies score below full-turn cosine thresholds even with a
     # good embedding model. Accept them as stable only when an already-stable
     # profile wins by a large margin; enrollment still uses the stricter values

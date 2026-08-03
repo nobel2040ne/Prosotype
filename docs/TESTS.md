@@ -1,6 +1,6 @@
 # Testing
 
-Last updated: 2026-07-30
+Last updated: 2026-08-04
 
 The pytest suite is **fully offline by design** — no model loads, no network, no
 video decoding. Audio is synthesised with known ground truth, and the reference
@@ -10,13 +10,38 @@ that way: a suite that needs 1.9 GB of weights or a 9 MB `.mov` stops being run.
 Anything that needs a model, a browser, or the FLEURS set is a **manual check**
 below, not a test.
 
+## Measuring the motion (manual, needs a browser)
+
+None of this is a pytest test -- each needs a running `autocwi live` and headless
+Chrome -- but each one is the ONLY trustworthy answer to its question, and every
+one of them exists because an ad-hoc metric gave a confidently wrong answer.
+
+| tool | answers | trap it replaces |
+|---|---|---|
+| `scripts/word_motion.py --trace rows.json` | one row per word: peak, floor, weight, motion width, lift | `max/min` over a word's samples cannot tell GROWTH from SHRINKAGE; font-size alone misses the 2.2.3 pop, which is a transform |
+| `scripts/ink_collision.py` | do adjacent rows' INK touch | line-box arithmetic says rows overlap constantly and is useless; only pixels answer it |
+| `scripts/baseline_probe.py` | does a swelling word stay on its line | `.word-ink`'s rect excludes the child transform; `.word-glyph`'s bottom is pinned by `bottom: 0`. Run `--broken` first -- a check never seen to fail is not evidence |
+
+**Screenshot before concluding anything about layout or typography.** Three
+numeric probes reported "confounded but probably fine" on a glyph-anchoring
+change that a single screenshot showed was catastrophically broken -- words
+overlapping and clipped off the stage.
+
+Two more traps, both of which cost a full round each:
+* `scrollWidth` on `.caption-words` does NOT measure clipping. `.word-glyph` is
+  out of flow, so a swelling word inflates it with no text lost. Compare the
+  IN-FLOW sizers against their row instead.
+* Keying a word by `(DOM index, text)` conflates repeats -- the stage scrolls,
+  so one index holds different words over time, and "is" appears twice in the
+  bundled film.
+
 ## Running
 
 ```bash
 python3.11 -m venv .venv                       # one time
 .venv/bin/pip install -r requirements.txt
 
-.venv/bin/python -m pytest                     # 151 tests, offline, ~seconds
+.venv/bin/python -m pytest                     # 161 tests, offline, ~seconds
 npm --prefix web install                       # one time
 npm --prefix web run check                     # lint + 49 TS tests + static build
 ```
@@ -239,6 +264,22 @@ not in Python.
 Measured on the bundled samples with a real browser attached. These are what
 "normal" looks like — a change that moves them by a lot needs an explanation, but
 they are timing-sensitive observations, not assertions.
+
+**These figures measured the LEGACY renderer and are kept only as its record.**
+The product studio's are below, from `scripts/word_motion.py` on the bundled
+film (which is the PR film, not the old booth clip):
+
+| channel | studio, English `sample.mp4` |
+|---|---|
+| motion window | 520–1050 ms (crest), speech-rate for pop and wave |
+| peak size, ordinary word | **1.15** — the 2.2.3 pop and nothing else |
+| peak size, `"louder"` | **1.83** |
+| floor, `"softer"` | **0.82** |
+| weight | 400 resting, **~890** on the film's emphatic words, none below 400 |
+| lift | 0 for ordinary speech; **0.525 em** on a held word, which shows no crest and no weight |
+| adjacent-row ink gap | 9 px at rest, **1.0 px under motion** — no headroom left |
+
+Legacy renderer, for reference only:
 
 | channel | English `sample.mp4` | Korean `sample-ko.wav` |
 |---|---|---|

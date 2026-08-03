@@ -6,8 +6,8 @@ Everything a contributor needs, organized by purpose. Start at the top.
 
 | Document | What's in it |
 |---|---|
-| [ONBOARDING.md](ONBOARDING.md) | From a fresh clone to running captions and a first change |
-| [GLOSSARY.md](GLOSSARY.md) | Plain-language definitions of every domain term |
+| [CONTRIBUTING.md — first day](../CONTRIBUTING.md#your-first-day) | From a fresh clone to running captions and a first change |
+| [ARCHITECTURE.md — glossary](../ARCHITECTURE.md#glossary) | Plain-language definitions of every domain term |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Setup, conventions, ground rules, and the PR flow |
 
 ## How the system works
@@ -23,7 +23,7 @@ Everything a contributor needs, organized by purpose. Start at the top.
 
 | Document | What's in it |
 |---|---|
-| [SOURCES.md](SOURCES.md) | The primary sources, in order of authority |
+| [docs/RESEARCH.md — sources](RESEARCH.md#sources) | The primary sources, in order of authority |
 | [DESIGN.md](DESIGN.md) | Exact design values, by PDF section |
 | [RESEARCH.md](RESEARCH.md) | Research grounding for the design decisions |
 | `cwi-design-system-v1.0.pdf` | The design system itself — the ultimate source of truth |
@@ -36,5 +36,5 @@ Everything a contributor needs, organized by purpose. Start at the top.
 - `Caption with Intention – Quickstart Guide.pdf` — the After Effects template
   workflow.
 
-See [SOURCES.md](SOURCES.md) for how these fit together and which
+See [docs/RESEARCH.md — sources](RESEARCH.md#sources) for how these fit together and which
 one wins when they disagree.

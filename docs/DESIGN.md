@@ -10,8 +10,9 @@
 
 Source: [Design System PDF](https://download.captionwithintention.org/Caption-With-Intention_Design-System_V1.0.pdf)
 (V1.0 | 2025.1, 54 pp., captionwithintention.org, with the Chicago Hearing
-Society). These are the exact values our implementation uses; section numbers
-refer to the PDF. Also downloadable there: After Effects project, Roboto Flex TTF.
+Society). Section numbers refer to the PDF. These were the values the
+implementation used WHEN EACH SECTION WAS WRITTEN, which is not the same as
+what it uses now — see the warning above, and CLAUDE.md for the live contract. Also downloadable there: After Effects project, Roboto Flex TTF.
 
 ## 2.1 Attribution (speaker → color)
 
@@ -267,6 +268,17 @@ and the reference the live renderer is measured against:
 
 ### Read off the reference captures (docs/*.mov, docs/*.png)
 
+> **THOSE RECORDINGS HAVE NO AUDIO STREAM.** `ffprobe` returns only
+> `0,h264,video` for all three. Anything here keyed to loudness, pitch or
+> voicing is therefore NOT a measurement — it was solved backwards out of the
+> measured motion by `ccprosody.fit_spec_prosody`, and regressing motion
+> against it returns confident nonsense (peak size vs loudness −0.02, weight vs
+> pitch −0.54: all circular). What these captures CAN answer is what the motion
+> DOES — `motion.scale/lift/dwght` are real pixel measurements and the word
+> timings are read off the frames. The only source where motion AND audio are
+> both real is `assets/sample.mp4`, which is the PR film and what `--sample`
+> streams.
+
 The user's captures of the official site settle three things the PDF notes and
 the free AE template could not:
 
@@ -361,7 +373,18 @@ across every stressed condition, so English live mode stays on the 2026-04-25
 English model. Re-run this A/B with `--streaming-model` before adopting any new
 checkpoint.
 
-## Read-ahead does not survive contact with live ASR
+## (SUPERSEDED 2026-08-04) Read-ahead does not survive contact with live ASR
+
+> **This section's conclusion is wrong and the studio now does the opposite.**
+> It argued that live ASR cannot give CWI 2.2.1's read-ahead because it guesses
+> and corrects. The missing piece was that read-ahead is not a property of the
+> TEXT but of the PLAYHEAD: presenting from a clock that trails the acoustic
+> one puts every word on screen before its own turn arrives, and a per-WORD
+> floor (`min_read_ahead_ms`) guarantees it even when the recogniser delivers
+> in bursts. MEASURED: words turning with under 100 ms of lead went **42% ->
+> 0%**, median lead 170 ms -> ~700 ms. Kept for the measurement below, which is
+> still a fair account of what raw hypothesis text does if you render it
+> directly.
 
 CWI 2.2.1 has the line appear whole, in white, *before* it is spoken. That works
 because a film caption is authored in advance: it never revises, and that
@@ -519,49 +542,13 @@ sustained whisper    5 5 5 5 4 3 3 3 3 3          2 changes
 Noise produces no change at all; real dynamics still reach the ends of the
 scale.
 
-## Implementation status here
+## Implementation status
 
-Implemented: main+supporting palettes, streaming-hypothesis read-ahead,
-accurate-profile provisional color cues, stable final words, PDF §2.2.3's
-constant per-word 15% pop plus 25% elevation in authored `cc`, and a separate
-live first-display adaptation (15% / 0.25 em cue plus transient voice axes).
-The base cue and 0.085 em / 3% upward character ribbon are
-independent of the delivery-profile deadband, so an active word remains
-perceptible even when classified `steady`. Live words reveal in acoustic order
-with at most two active,
-return to scale 1 / weight 400 / width 100, and keep colour on an independent
-clock that cannot restart geometry. Also implemented: speaker-specific stacked
-paragraphs with in-place late partitioning, source-clock diagnostics, span-safe
-eased colour turn, syllable/phoneme variation for drawn-out words,
-synchronization timeline, %-of-height sizing (3/5/12), absolute-Hz weight +
-width mapping, live intonation meters, 90% captions box, bottom margin, and
-max-two-boxes (live page). English and Korean now share those renderer
-semantics: language selection happens before capture, Korean 어절 are reconstructed
-from the streaming model's leading-space tokens, and Hangul syllable pieces
-retain their recognizer timestamps. Korean uses a locally served Noto Sans KR
-variable `wght` axis because the design-system Roboto Flex file has no Hangul
-outlines; a static system fallback did not express the pitch-driven weight
-motion continuously.
-The product Transcript treats a speaker/ASR utterance as one semantic paragraph.
-Audience Stage derives fixed-width rows from immutable semantic word order,
-sizes both the row and the type from the measured stage, and retains as many
-rows as that stage holds,
-so already read words do not compete with an ever-growing wall of boxes. The
-current accurate hypothesis remains visible in the active block while the
-reveal scheduler limits simultaneous word motions to two; concurrency is not a
-visibility filter. Settled words keep their semantic nodes and never replay
-motion when a ninth word opens the next block. Diarization and provisional
-utterance segmentation may relabel
-a word but never partition Stage geometry; this prevents pending attribution
-or unstable segmentation from producing one-word rows. The row stack is lively
-without reanimating typography: existing
-rows glide to the next slot over 540 ms and a new row settles upward over
-620 ms from opacity 0, `translateY(0.58em)`, and `scale(.985)`, using a calm
-`(0.18, 0.72, 0.22, 1)` curve. The initial caption block enters the same way;
-an initial multi-row replay stays settled. Only a first-seen bottom
-row can trigger that FLIP pass; late text, color, speaker, removal, and
-reappearance updates cannot. Smaller 2.65-vh
-resting type and 1.14 leading keep the stack readable without a duplicate
-sentence panel.
-Not implemented: minor-character pastels, off-camera italics, dedicated
-harmonic-spectrum analysis, box breakout, sound-effect/music captions.
+**Moved.** This section listed a reveal queue with "at most two active", a 25%
+elevation and a 0.085 em character ribbon — all removed. The queue in
+particular no longer exists at all: words are placed by their recorded onset,
+not by arrival, so there are no slots, gaps or concurrency caps to describe.
+
+The current, measured contract is the five-channel table at the top of
+`../CLAUDE.md`'s motion section, and the acceptance figures are in
+`TESTS.md`. Do not maintain a third copy here.

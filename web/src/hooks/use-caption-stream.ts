@@ -167,9 +167,9 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   characterWaveFalloff: 1.0,
   characterWaveFloor: 0.0,
   holdLiftEm: 0.525,
-  holdFullS: 0.92,
+  holdFullS: 0.88,
   holdMaxS: 1.06,
-  holdMinS: 0.86,
+  holdMinS: 0.78,
   holdPreMs: 260,
   holdHoldMs: 420,
   holdLandMs: 290,
@@ -406,7 +406,15 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
      * the viewer has already read. Raising `display.read_ahead_delay_s` widens
      * the window in which it can still win.
      */
-    const freezeText = <T extends {text?: string}>(word: T): T => {
+    /** Same letters, differing only in punctuation or case. */
+  const sameWordDifferentMarks = (a: string, b: string | undefined) => {
+    if (typeof b !== "string") return false;
+    const strip = (text: string) =>
+      text.normalize("NFKC").toLowerCase()
+        .replace(/[^\p{L}\p{N}']/gu, "");
+    return strip(a) === strip(b) && strip(a).length > 0;
+  };
+  const freezeText = <T extends {text?: string}>(word: T): T => {
       const key = wordKey(word as unknown as CaptionWord);
       // Recorded when the playhead passed the word -- NOT read from the live
       // model here. The reducer routinely deletes a non-final word and re-adds
@@ -417,6 +425,27 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       // "Right,") until this was remembered independently.
       const settled = settledTextRef.current.get(key);
       if (settled === undefined || settled === word.text) return word;
+      /* ...BUT PUNCTUATION AND CASE ARE NOT A RESPELLING, AND REFUSING THEM
+         COST THE CAPTIONS THEIR SENTENCES (2026-08-03).
+         The invariant this freeze protects is that a word the viewer has READ
+         does not change under them. Adding a period to "spoken" or capitalising
+         "the" does not rewrite the word -- the glyphs already read are
+         untouched -- and it is the ONLY source of sentence structure the live
+         path has: the streaming Nemotron emits no punctuation at all (measured,
+         0 of 152 commits) while the Parakeet verifier supplies it, and Python
+         passes it through intact.
+         The verifier only fires at the UTTERANCE endpoint, and the bundled
+         film's first utterance runs 0.2s -> 27.5s, so essentially every word
+         had settled unpunctuated before its punctuated spelling arrived. That
+         is why the stage read "as each word is spoken intonation the system
+         brings in" where the recogniser had produced "as each word is spoken.
+         Intonation. The system brings in".
+         So compare on the same normalisation Python aligns with
+         (`_normalized_token` in live.py): if the two spellings differ only by
+         punctuation or case, the newer one wins. Anything that changes a
+         LETTER is still frozen, which is the case the measurement covered
+         ("tab" -> "tab." is allowed; a genuine respelling is not). */
+      if (sameWordDifferentMarks(settled, word.text)) return word;
       frozenTextRef.current += 1;
       return {...word, text: settled};
     };

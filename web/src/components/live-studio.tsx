@@ -336,12 +336,22 @@ const MotionWord = memo(function MotionWord({
   const holdEmphasis = motion.voice.scale > 1
     ? emphasisOf(motion.voice.scale, voiceRanges(runtime))
     : 0;
-  const holdAmount = clamp(
+  /* FROZEN AT MOUNT, like the duration and the axes -- and for a sharper
+     reason than either. `holdGapS` is recomputed from the whole word list on
+     every render, so a later insertion or deletion could move it AFTER the
+     word had already been drawn lifted. `--hold-spring` gates the crest and
+     the weight (see globals.css), so the instant it dropped to 0 mid-motion a
+     held word un-gated and snapped to its full crest: MEASURED, "is" floated
+     at weight 400 / 28.3px for 0.42s and then, on landing, jumped to weight
+     837 and 39.8px in a single step -- reported as "when it lands, it gets
+     black". Recomputing a gate under a running animation is the same class of
+     bug as rewriting `animation-delay` under one. */
+  const [holdAmount] = useState(() => clamp(
     (holdGapS - runtime.holdMinS) /
       Math.max(1e-6, runtime.holdFullS - runtime.holdMinS),
     0,
     1,
-  ) * (holdEmphasis >= HOLD_ENVELOPE_EMPHASIS ? 0 : 1);
+  ) * (holdEmphasis >= HOLD_ENVELOPE_EMPHASIS ? 0 : 1));
   const holdEnvelope = holdEmphasis >= HOLD_ENVELOPE_EMPHASIS;
   const [{duration, sweepMs, crestMs}] = useState(() => {
     /* ONE WORD AT THE CURRENT SPEECH RATE -- the AE template's one-word-wide
@@ -401,8 +411,6 @@ const MotionWord = memo(function MotionWord({
     "--voice-width": `${motion.voice.width}%`,
     // The wave hands off letter to letter across ~55% of the window, so it
     // travels visibly instead of pulsing the word as one block.
-    "--wave-step": `${(duration * 0.40 / Math.max(1, characters.length))
-      .toFixed(1)}ms`,
     "--wave-span": `${(duration * 0.72).toFixed(0)}ms`,
     /* A word that waited crouches, springs, floats and lands as it turns.
        Zero for ordinary speech, so nothing moves unless the speaker actually
@@ -410,6 +418,14 @@ const MotionWord = memo(function MotionWord({
        so the keyframes collapse to an identity for every ordinary word. */
     "--hold-lift": `${(holdAmount * runtime.holdLiftEm).toFixed(3)}em`,
     "--hold-spring": holdAmount.toFixed(3),
+    /* BINARY, unlike `--hold-spring`. The spring's amplitude ramps with the
+       wait, but the CREST does not get to half-fire: a word that holds at all
+       shows no size and no weight, exactly as the reference's "is" floats at
+       its resting size throughout. Gating the crest proportionally meant a
+       partially-held word ("spoken." at gap 0.82 against a 0.78..0.88 band)
+       came out part-bold while aloft -- MEASURED, 11-16 lifted samples bold
+       per run. */
+    "--hold-gate": holdAmount > 0 ? "1" : "0",
     "--hold-pre": `${runtime.holdPreMs}ms`,
     "--hold-hold": `${runtime.holdHoldMs}ms`,
     "--hold-land": `${runtime.holdLandMs}ms`,
@@ -656,6 +672,8 @@ function CaptionFeed({
   transcript: boolean;
   reducedMotion: boolean;
 }) {
+  /** Hold gap per word id, frozen at first sight; survives child remounts. */
+  const holdMemoRef = useRef(new Map<string, number>());
   const rowNodes = useRef(new Map<string, HTMLElement>());
   const previousPositions = useRef<CaptionStackPosition[]>([]);
   const stackInitialized = useRef(false);
@@ -778,6 +796,18 @@ function CaptionFeed({
    * timeline while `start`/`end` are utterance-relative, so the word's end on
    * the stream clock is `t + (end - start)`.
    */
+  /* KEYED BY WORD ID AND PERSISTED, BECAUSE A REMOUNT MUST NOT RE-DERIVE IT.
+     The gap is computed from the whole word list, so it moves as words arrive
+     -- and `--hold-spring` gates the crest and the weight (globals.css), so
+     the instant it changed under a word already drawn lifted, that word
+     un-gated and snapped to its full crest. Freezing it in the child's
+     `useState` was not enough: MEASURED, "is" held translateY -14.9px at
+     weight 400 for 0.38s, then at 5.68s its `--hold-lift` went 0.525em ->
+     0.000em in one frame -- a REMOUNT, which re-runs the initialiser against
+     the newer gap -- and from 6.11s the weight climbed 403 -> 554. Reported as
+     "when 'is' is landing, it gets bold".
+     This ref lives in the parent, so it outlives any child remount, exactly
+     like `scheduledRef` does for the turn moment. First answer wins. */
   const holdGaps = new Map<string, number>();
   /*
    * ...AND HOW LONG THE MOTION LASTS, WHICH IS ONE WORD AT THE CURRENT SPEECH
@@ -850,7 +880,24 @@ function CaptionFeed({
           ? Math.max(0, nextOnset - onset)
           : before;
         const gap = Math.min(before, after);
-        if (before <= runtime.holdMaxS) holdGaps.set(id, gap);
+        /* ...BUT ONLY ONCE BOTH NEIGHBOURS EXIST. The gap is
+           `min(before, after)`, and `after` needs the NEXT word -- which has
+           usually not arrived on the render where this word first appears. A
+           memo written then freezes a value computed from half a
+           neighbourhood, and MEASURED it froze "is" at a full 0.525em lift on
+           one run and at 0.000 on the next: the hold became a coin flip. Wait
+           for the real neighbourhood, then freeze; until it exists, compute
+           live and commit nothing. */
+        const remembered = holdMemoRef.current.get(id);
+        const settledGap = before <= runtime.holdMaxS ? gap : 0;
+        if (remembered !== undefined) {
+          holdGaps.set(id, remembered);
+        } else {
+          if (Number.isFinite(nextOnset)) {
+            holdMemoRef.current.set(id, settledGap);
+          }
+          if (settledGap > 0) holdGaps.set(id, settledGap);
+        }
       }
       if (Number.isFinite(onset) && Number.isFinite(nextOnset)) {
         paceGaps.set(id, Math.max(0, nextOnset - onset));
@@ -1433,7 +1480,6 @@ export function LiveStudio() {
   const inputGood = level.status === "good";
   const studioStyle: CSSVars = {
     "--caption-scale": settings.captionScale,
-    "--motion-intensity": settings.motionIntensity,
     "--active-color": activeColor,
     // The CSS width cap is derived from this, so the type size and the row width
     // can never disagree about how many words a row holds.

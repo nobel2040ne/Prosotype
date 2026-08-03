@@ -5,7 +5,7 @@ auto-CWI ("Prosotype"): a local, offline pipeline that automates the
 **Primary mode = live captions** (mic → CWI-styled captions in the browser,
 English or Korean, selected before capture). The offline video pipeline is kept as the source of the
 **CaptionSpec contract** that a future haptic device module will consume. See
-`ARCHITECTURE.md` and `docs/DESIGN.md`.
+`ARCHITECTURE.md`, and `docs/MOTION.md` for the motion contract.
 
 ## Commands
 
@@ -74,20 +74,54 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   generated diagnostics page; a built studio keeps it at `/legacy`.
 - **THE PLAYHEAD. READ THIS BEFORE TOUCHING LIVE MOTION.**
   Captions are presented from a clock running `display.read_ahead_delay_s`
-  (**1.2 s**) BEHIND the acoustic clock. That is what makes this a CWI renderer:
+  (**1.75 s**) BEHIND the acoustic clock, with a per-WORD floor beneath it
+  (`display.min_read_ahead_ms`, **420 ms**) — see the entry after this one,
+  because the delay alone does not deliver read-ahead. That is what makes this a CWI renderer:
   CWI 2.2.1 needs the line on screen before it is spoken, and a live recognizer
   cannot produce text early — but ASR delivers a word ~0.6 s AFTER it was
-  spoken, so colouring only up to `now - 1.2 s` leaves real, recognized,
+  spoken, so colouring only up to `now - 1.75 s` leaves real, recognized,
   still-uncoloured text ahead of the colour. Nothing is predicted.
   **THE DELAY IS THE LAG, ONE FOR ONE.** A word's turn and pop happen at
   `onset + delay`. Shipped at 2.5 s first; the user's verdict was "motion should
   be real-time... motion applies after the determination of speaker", and both
   halves were right — MEASURED, a word's TEXT arrives at a median 0.62 s but
   durable speaker attribution at 4.48 s, so at 2.5 s the word popped NEUTRAL and
-  took its colour ~2 s later. 1.2 s clears the text latency and reads as
-  synchronized. Read-ahead is thin there (median 0-1 words) and that is the
-  trade. Do NOT gate the turn on attribution: it must happen on time in whatever
-  colour is known.
+  took its colour ~2 s later. Do NOT gate the turn on attribution: it must
+  happen on time in whatever colour is known.
+  **THE DELAY SETS THE MEAN LEAD AND NOTHING ABOUT ITS SPREAD, WHICH IS WHY
+  1.2 s DELIVERED ALMOST NO READ-AHEAD (2026-08-03, user: "the feeling of
+  awful comes from the timing").** Every per-word curve measured correct
+  against the film — rise, overshoot, sustain, release — and the studio still
+  read as wrong. MEASURED at 1.2 s: a word was on screen a median of **170 ms**
+  before its own motion began, p25 **0 ms**, and **42% of words turned within
+  100 ms of appearing**. They materialised already moving, so there was never
+  a moment to read the line early, which is the whole of 2.2.1 absent nearly
+  half the time.
+  Raising the delay is not sufficient and 1.2 -> 1.75 s proves it: the median
+  lead went 170 -> 700 ms while the stage still showed ZERO words ahead of the
+  playhead in 11% of frames and one in another 18%, against 28 at p75. The
+  recognizer blocks ~1.3 s at each endpoint and then releases a BATCH, so
+  read-ahead arrives in bursts and a time delay moves the mean of that
+  distribution without touching its variance.
+  **The floor is therefore per WORD** (the user's suggestion: "intentionally
+  adding a delay of about one or two words"). A word may not turn until it has
+  been on screen `min_read_ahead_ms`, whenever it arrived — 420 ms is ~1.6
+  words at the measured 262 ms speech rate. AFTER: words turning with under
+  100 ms of lead **42% -> 0%**, p10 lead **478 ms**, motion-onset interval
+  unchanged at 233 ms, and every per-word crest/weight/lift identical.
+  **It lives in `scheduleWord` and the remount path had to change with it.**
+  That path used to RECOMPUTE `turnAtMs`, which was safe only because the old
+  value was a pure function of the recording; the floor is relative to when a
+  word was first delivered, so a recompute would move the turn. It now returns
+  the STORED moment, which keeps the invariant intact — frozen at first sight
+  exactly like the duration and the axes.
+  **What the floor cannot do is invent words the recognizer has not sent.**
+  Frames showing zero words ahead stayed 11% -> 12%: between endpoint flushes
+  there is genuinely no text to read into. That is ASR latency, not
+  presentation, and no scheduling change reaches it.
+  Now that the floor does the work, `read_ahead_delay_s` is likely reducible
+  back toward 1.2 s — the two are partly redundant, and the delay is the lag
+  one for one. Unmeasured.
   `web/src/lib/caption-clock.ts` is the clock, and is pure. It recovers acoustic
   time from `level.t` (~64 ms cadence, same timeline as `word.t`) with a
   **max-filter plus 5 ms/s decay**: jitter can only make a sample look late, so
@@ -439,6 +473,43 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   spec. Treat `docs/DESIGN.md` as a changelog of superseded interpretation.
   `docs/RESEARCH.md` maps prior DHH-captioning research onto design decisions
   here and is unaffected.
+- **THE MOTION SPEC AS SHIPPED — READ THIS FIRST (2026-08-04).**
+  Standalone copy for non-agent readers: `docs/MOTION.md`. Change both together. Everything
+  after this entry is the derivation and the record of what was tried; this is
+  the current answer. Five channels, each with one owner and one input.
+
+  | channel | CSS | driven by | resting | reachable |
+  |---|---|---|---|---|
+  | 2.2.2 colour turn | `word-color-turn` per `.caption-character` | word onset, wiped across the spoken span | read-ahead ink | speaker colour |
+  | 2.2.3 pop | `word-sync-pop` on `.word-glyph` | constant, every word | 1.00 | 1.15 |
+  | 2.3.5/6 crest (SIZE) | `--voice-phase` x `--voice-scale` as a FONT-SIZE on `.word-ink` | `loudness` (p90 of the word's 30 ms frames) | 1.00 | 0.72 .. 1.62 |
+  | 2.3.8/9 weight | `font-weight: calc(...)` | pitch vs the SPEAKER's median F0, plus prominence | 400 | 340 .. 900 |
+  | hold / lift | `word-hold-spring` on `.word-ink` | silence around the word, `min(gap_before, gap_after)` | 0 | 0 .. 0.525em |
+
+  Measured on the bundled film, and these are the acceptance numbers:
+  `"louder"` **1.83x / weight ~890**, `"softer"` **0.82x**, held `"is"`
+  **lift 0.525em at 1.15x / weight 400**, whole-film **median peak 1.15x**
+  (i.e. the ordinary word carries the pop and nothing else), **0 words lighter
+  than Regular**, and **0 bold samples on any lifted word**.
+
+  Rules that are not obvious from the table:
+  * **Size and lift are INDEPENDENT and mutually exclusive.** A word that
+    swells does not leave the line; a word that lifts shows no crest and no
+    weight. Both gates are BINARY, because every word carries the 2.2.3 pop and
+    a proportional gate taxes a word for that alone. The reference's "louder"
+    doubles and never leaves the baseline; its "is" floats at resting size.
+  * **The crest envelope OVERSHOOTS, settles, sustains, then releases** —
+    peak, back to 0.70 of it, hold, go. Two endpoints cannot express it.
+  * **Weight is a property of the VOICE, not the word.** The register term
+    reads the speaker's running median F0 (`pitch_register_hz`); a word's own
+    excursion above its speaker is effort, not a lighter voice.
+  * **Every word is readable before it moves** — a per-WORD floor
+    (`min_read_ahead_ms`), not a time delay, because the recogniser delivers in
+    bursts.
+  * **All of it is frozen at first sight.** Duration, axes, sweep, hold gap and
+    turn moment are computed once and survive remounts. Recomputing any of them
+    under a running animation is the bug this project keeps re-committing.
+
 - **THE MOTION SYSTEM, IN FULL.** The PDF describes exactly three things and
   the studio implements exactly those. `docs/cwi-design-system-v1.0.pdf`
   pp.26-41 — and READ THE PICTURES, not only the prose: they are what settled
@@ -714,6 +785,19 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
       the mean lands at −12.2 and the lift computes to **0.000 at every setting
       of everything else**. `emphasis_blend` is how much of a word's own tilt
       survives the mean.
+    **THE SYMMETRIC-CONTRAST REWRITE THIS WAS MEANT TO BE REPLACED BY IS CLOSED
+    UNBUILT (2026-08-04).** The plan was to spend the one-word lookahead
+    measuring emphasis against a SYMMETRIC neighbourhood, retiring
+    `emphasis_blend` -- a patch that exists only because there was no future.
+    It is not needed. The reason a causal mean erased "louder" was never the
+    window's asymmetry; it was that the LEVEL signal feeding it was destroyed
+    upstream by a whole-span average. `_span_db` now scores each word on its
+    loud frames and separates "louder" from "softer" by 12.2 dB on plain level,
+    so the tilt/pitch/lengthening composite does far less work than when it was
+    written (`length_gain` is already 0). Rebuilding the window symmetric would
+    re-tune a term whose job has largely gone away, and cost one word of latency
+    on every prosody decision. Revisit only if a measurement shows the composite
+    still deciding something the level channel gets wrong.
     `_prominence` therefore scores `blend·own + (1−blend)·mean`, plus two more
     correlates that survive mastering exactly as tilt does and were already
     measured here: **F0 excursion** above the speaker's running median, and
@@ -791,7 +875,9 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     and close back up (`animation,` f194-216, `spo|ken` f282). It happens on
     every motion, not only long words.
     Shipped as a TRANSFORM on `.caption-character`: ±13% scaleY, ∓2.2% scaleX,
-    a small translateY, staggered by `--wave-step` so it travels.
+    a small translateY, staggered by `--char-turn-delay` so it travels.
+    (`--wave-step` and `--motion-intensity` were written per word and read
+    by NOTHING -- deleted 2026-08-04. `--wave-span` is real and stays.)
     **THE TWO SCOPES TRADE OFF, AND THIS IS THE RULE THAT TIES THEM TOGETHER.**
     A word carried by VOLUME — loud or hushed — moves as a WORD and its letters
     stay together; a word at ordinary volume has little word-level motion and
@@ -868,6 +954,15 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     response outside it. Ordinary words then sit at exactly 1.0 and only
     genuinely loud or hushed ones move — which is what "occasional emphasis"
     means. `voice_scale_response_quiet` is back to **0.55**.
+    **`voice_scale_response_quiet` 0.55 -> 0.92 ON 2026-08-03** (user:
+    "'softer' is just normal, it should be small as reference"). It was the
+    last channel still at its original timid setting after the loud half went
+    to 1.0, and a 12% shrink beside a word that GROWS 83% reads as no motion
+    at all. The deadband still decides WHICH words move, so this deepens the
+    genuinely hushed ones without adding to the count: MEASURED, "softer"
+    floor **0.88 -> 0.83**, words that shrink 11 -> 14, median floor 0.88 ->
+    0.83, and ink clearance did not move (a shrinking word retreats FROM its
+    neighbours).
     MEASURED after: median exactly **1.000**, **22%** of words move (was 48%),
     floor **0.780** — a visible 22% shrink where it was an invisible 10%.
     Fewer words move, and the ones that do read.
@@ -1048,6 +1143,18 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     four legs are 25% / 21% / 33% / 21% of a 1.0 s window — which is why the
     ceiling is 1.05 s. Verified on screen, phase traced
     `0.36 0.74 0.92 0.94 0.83 0.76 0.70 0.70 0.70 0.70 0.70 0.70 0.55 0.35 0.10`.
+    **THE RELEASE IS SHORTER THAN THE FILM'S, DELIBERATELY (2026-08-03, user:
+    "bolded thing's turning into normal font's returning speed is too slow").**
+    Weight is where a slow release shows: 900 -> 400 is a far larger
+    perceptual step than 1.8x -> 1.0x, and both ride this one phase.
+    LENGTHENING THE SUSTAIN INSTEAD WAS TRIED AND MEASURED WORSE — running the
+    hold to 85% and falling over the last 15% took time-above-half-peak from
+    0.68 s to **0.74 s**, because the word simply stayed up longer before
+    letting go. The sustain still ends at 79% where the film's does; what
+    changed is the SHAPE of the fall, which sheds two thirds of the phase in
+    its first 5% and is home by 89% (~105 ms) rather than easing to 100%.
+    AFTER: "louder" 0.74 -> **0.65 s**, "Sergeant." 0.75 -> 0.66 s, with rise,
+    overshoot and hold untouched.
     **A rise time and a fall time cannot express this** — that is the whole
     reason "start and end points" kept failing to reproduce the reference.
     **The envelope decides how much of the window sits above half-peak**, so
@@ -1060,33 +1167,6 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     pop finished long before the crest peaked and the visible peak fell to
     ~1.3x where the film reaches ~2.0x. Only the character wave rides the
     speech rate.
-  * **(superseded) THE SWELL DOES NOT HOLD — IT IS A SMOOTH HUMP.**
-    The entry below was derived from watching ONE word ("louder" in
-    intonation.mov) and was wrong for the other 42. The shape statistic is
-    time-above-90% / time-above-50%, which cares only about shape and not about
-    how long the motion runs: a raised cosine scores **0.41**, the reference
-    scores **0.40**, and our trapezoid (0 -> 1 at 24%, held flat to 76%, -> 0)
-    scored **0.88**. Sitting rigidly at the peak for 88% of the motion is what
-    was reported as "stiff" — and it is also why it read as TOO FAST, because
-    every bit of actual movement was crammed into the remaining 12%.
-    `@keyframes voice-phase` is now `(1 - cos(2*pi*t))/2` sampled every 10%,
-    `linear` between the stops. Measured after: **0.49**.
-    Two consequences to keep together:
-    - **A hump spends HALF its window above half-peak; a trapezoid spends
-      ~0.64.** Replacing the plateau therefore halved every measured span, so
-      the windows doubled with it (210/2050 -> 320/3120 ms).
-    - `VOICE_PHASE_RISE_FRACTION` is the PEAK stop and moved 0.24 -> **0.50**.
-    Only the two most emphatic words in the reference hold at all (2 of 41
-    above 0.15 s), which is exactly the pair the old entry was written from.
-  * **(superseded) THE SWELL HOLDS; IT DOES NOT JUST PEAK.** `intonation.mov`: "louder" is
-    up by f388 and still up at f430, back to normal by f442 — a ~0.35 s sustain
-    inside a ~0.73 s swell. A single symmetric crest read as a twitch, which is
-    not how a loud word sounds. `@keyframes voice-phase` holds 28%..62% of the
-    motion window.
-    **The stops are literal on purpose.** A keyframe SELECTOR cannot contain a
-    `var()` — the build silently DROPS the whole rule if it does, and the swell
-    then does nothing at all. That is why there are no `voice_attack` /
-    `voice_release` config keys: dead knobs are worse than none.
   * **ONE PHASE PER WORD DRIVES EVERY CHARACTER.** `@property --voice-phase` is
     animated once on `.caption-word`; each character computes
     `calc(1em * (1 + phase * (charScale - 1)))`. Per-character animations do NOT

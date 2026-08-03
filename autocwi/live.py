@@ -1649,6 +1649,7 @@ class SpeakerTracker:
         retain_threshold: float = 0.64,
         switch_threshold: float | None = None,
         min_confidence_margin: float = 0.08,
+        speaker_min_run_words: int = 2,
         short_stable_threshold: float | None = None,
         short_stable_min_margin: float = 0.12,
         short_stable_max_duration_s: float = 1.3,
@@ -1703,6 +1704,7 @@ class SpeakerTracker:
         self.switch_hysteresis_s = max(0.0, float(switch_hysteresis_s))
         self.short_turn_max_duration_s = max(0.0, float(short_turn_max_duration_s))
         self.min_confidence_margin = max(0.0, float(min_confidence_margin))
+        self.speaker_min_run_words = max(1, int(speaker_min_run_words))
         self.short_stable_threshold = float(
             short_stable_threshold
             if short_stable_threshold is not None
@@ -2599,7 +2601,71 @@ class SpeakerTracker:
                 replace(public_result, revision_id=0),
                 key,
             ))
-        return labels
+        return self._smooth_isolated_switches(labels)
+
+    def _smooth_isolated_switches(
+        self, labels: list[SpeakerAttribution]
+    ) -> list[SpeakerAttribution]:
+        """A LONE WORD MAY NOT CHANGE SPEAKER IN THE MIDDLE OF AN UTTERANCE.
+
+        Everything upstream of this decides identity per SEGMENT, and a segment
+        may legally be one word long (`min_assignment_duration_s` is 0.25 s, and
+        terminal punctuation forces a boundary at every sentence-final word).
+        Three separate paths then hand a single word a fully-saturated
+        ``stable`` label with no persistence check at all -- ``accepted-short-
+        stable``, the per-word Sortformer decision, and one-word segments -- and
+        ``switch_hysteresis_s`` guards none of them because it measures
+        observation TIME, not word RUNS. There is no run-length guard anywhere
+        upstream.
+
+        MEASURED on the studio: of 11 colour runs across 104 settled words,
+        **4 were exactly one word**, including ``seen``(green) ``Forrest``(olive)
+        ``many``(green) -- three consecutive single-word flips inside one
+        narrator's sentence. CWI 2.1 makes colour the speaker signal, so a false
+        flip is worse than neutral: it actively lies about who is talking.
+
+        The rule the user chose is boundary-aware. Real turn-taking happens at
+        the EDGES of an utterance, so the first and last word are left alone and
+        stay instant. Inside the utterance a switch must be corroborated by
+        ``speaker_min_run_words`` neighbours; an isolated dissenter inherits the
+        speaker surrounding it. This runs after attribution and mutates no
+        centroid, so enrollment and every per-segment test are untouched -- a
+        word whose colour is corrected here still taught the tracker whatever it
+        taught it.
+        """
+        run = max(1, int(self.speaker_min_run_words))
+        if run <= 1 or len(labels) < 3:
+            return labels
+        ids = [label.speaker_id for label in labels]
+        smoothed = list(labels)
+        for index in range(1, len(ids) - 1):
+            current = ids[index]
+            if current is None:
+                continue
+            # How many neighbours on each side agree with this word?
+            left = index - 1
+            while left >= 0 and ids[left] == current:
+                left -= 1
+            right = index + 1
+            while right < len(ids) and ids[right] == current:
+                right += 1
+            if (right - left - 1) >= run:
+                continue
+            # An isolated run. Only override when BOTH sides agree on someone
+            # else -- otherwise this is the edge of a genuine turn, not a blip.
+            before = ids[left] if left >= 0 else None
+            after = ids[right] if right < len(ids) else None
+            if before is None or before != after:
+                continue
+            donor = smoothed[left]
+            smoothed[index] = replace(
+                labels[index],
+                speaker_id=before,
+                status=donor.status,
+                confidence=min(labels[index].confidence, donor.confidence),
+                switch_decision="smoothed-isolated-word",
+            )
+        return smoothed
 
 
 class SortformerHybridSpeakerTracker:
@@ -4478,6 +4544,7 @@ def load_speaker_tracker(cfg: dict) -> SpeakerTracker | None:
         retain_threshold=policy.get("retain_threshold", 0.64),
         switch_threshold=policy.get("switch_threshold", 0.72),
         min_confidence_margin=policy.get("min_confidence_margin", 0.08),
+        speaker_min_run_words=policy.get("speaker_min_run_words", 2),
         short_stable_threshold=policy.get("short_stable_threshold"),
         short_stable_min_margin=policy.get("short_stable_min_margin", 0.12),
         short_stable_max_duration_s=policy.get(
@@ -5325,9 +5392,9 @@ def _studio_runtime_config(
         "characterWaveFalloff": live_sync.get("character_wave_falloff", 1.0),
         "characterWaveFloor": live_sync.get("character_wave_floor", 0.0),
         "holdLiftEm": live_sync.get("hold_lift_em", 0.525),
-        "holdFullS": live_sync.get("hold_full_s", 0.92),
+        "holdFullS": live_sync.get("hold_full_s", 0.88),
         "holdMaxS": live_sync.get("hold_max_s", 1.06),
-        "holdMinS": live_sync.get("hold_min_s", 0.86),
+        "holdMinS": live_sync.get("hold_min_s", 0.78),
         "holdPreMs": live_sync.get("hold_pre_ms", 260),
         "holdHoldMs": live_sync.get("hold_hold_ms", 420),
         "holdLandMs": live_sync.get("hold_land_ms", 290),

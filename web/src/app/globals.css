@@ -827,7 +827,21 @@ button {
      reservation, and both halves of the baseline anchoring on `.word-glyph`.
      Four hand-copied instances of the same expression is precisely the drift
      this file keeps getting caught by, so there is one. */
-  --crest-scale: calc(1 + var(--voice-phase) * (var(--voice-scale, 1) - 1));
+  /* ...AND A HELD WORD SHOWS NO CREST. `(1 - --hold-spring)` is the gate.
+     The reference is explicit: its "is" floats at EXACTLY its resting size for
+     0.67s and is never bolder than its neighbours -- the whole of its motion
+     is the lift and the spring. Withdrawing size/weight in the COMPONENT (via
+     `holdAmount`) was not enough, because the spring and the crest run on
+     different clocks: `word-hold-spring` starts `--hold-pre` BEFORE the turn
+     while `voice-phase` starts AT it, so the crest fired exactly as the word
+     landed. MEASURED: aloft at weight 400 / 28.3px for 0.42s, then on landing
+     weight jumped to 837 and size to 39.8px in one step -- reported as "when
+     it lands, it gets black". Gating here is declarative and cannot be
+     defeated by when React last computed the style. */
+  --crest-scale: calc(
+    1 + var(--voice-phase) * (var(--voice-scale, 1) - 1)
+      * (1 - var(--hold-gate, 0))
+  );
   position: relative;
   display: inline-grid;
   flex: 0 0 auto;
@@ -925,7 +939,10 @@ button {
     1em * var(--crest-scale)
         * (1 + var(--voice-phase) * (var(--sync-pop, 1.15) - 1))
   );
-  font-weight: calc(400 + var(--voice-phase) * (var(--voice-weight, 400) - 400));
+  font-weight: calc(
+    400 + var(--voice-phase) * (var(--voice-weight, 400) - 400)
+        * (1 - var(--hold-gate, 0))
+  );
   font-stretch: calc(100% + var(--voice-phase) * (var(--voice-width, 100%) - 100%));
   line-height: 0;
 }
@@ -956,6 +973,18 @@ button {
 
 .word-glyph {
   position: absolute;
+  /* CENTRED, AND LEFT-ANCHORING IT WAS TRIED AND TOTALLY BROKE THE STAGE
+     (2026-08-04). `left: 0` + `translate3d(0,0,0)` + `transform-origin: 0`
+     looks equivalent to `left: 50%` + `translate3d(-50%,0,0)` -- it is not.
+     The glyph is out of flow and this pairing is what keeps it registered on
+     the in-flow `.character-sizer` cell that owns the width; moving the anchor
+     desynchronised the two and words overlapped and clipped off the left edge
+     ("Synchronization" rendered as "ronization", "with intention" as
+     "witlhtention"). A screenshot showed it instantly where three numeric
+     probes had not.
+     If left-baseline anchoring is wanted again, it has to move the SIZER with
+     the glyph, not just the glyph. Do not change one of these three lines
+     alone. */
   left: 50%;
   bottom: 0;
   display: block;
@@ -1078,7 +1107,10 @@ button {
   transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
   display: inline-block;
   font-size: calc(1em * var(--crest-scale));
-  font-weight: calc(400 + var(--voice-phase) * (var(--voice-weight, 400) - 400));
+  font-weight: calc(
+    400 + var(--voice-phase) * (var(--voice-weight, 400) - 400)
+        * (1 - var(--hold-gate, 0))
+  );
   font-stretch: calc(100% + var(--voice-phase) * (var(--voice-width, 100%) - 100%));
   will-change: font-size, font-weight, font-stretch, transform;
 }
@@ -1092,7 +1124,7 @@ button {
    It is a TRANSFORM, so it cannot disturb layout: the row's width is owned by
    the word-level sizer, which is why this needs no reservation of its own and
    cannot desynchronise from it.
-   Each letter is offset by `--wave-step` so the stretch travels instead of
+   Each letter is offset by `--char-turn-delay` so the stretch travels rather than
    pulsing the word as a block, and `--char-wave` scales its amplitude with that
    letter's own loudness, so the wave still rides the audio. */
 .caption-character {
@@ -1815,8 +1847,17 @@ button {
      (~105ms at the 1050ms ceiling) instead of easing out to 100%. Rise,
      overshoot and hold are untouched. */
   79% { --voice-phase: .70; }
-  84% { --voice-phase: .26; }
-  89% { --voice-phase: .07; }
+  86% { --voice-phase: .22; }
+  /* LAND ON ZERO AND STAY THERE. The previous stops fell to .07 at 89% and
+     then let the browser interpolate that last sliver across the remaining
+     11% of the window (~115ms at the 1050ms ceiling) -- so the word shed most
+     of its swell quickly and then SAT visibly-still-enlarged, creeping home.
+     Reported as "the motion of the font getting bigger, it gets normal so
+     slowly", which is precisely the tail and not the fall. A keyframe that
+     ends at a non-zero value hands the remainder to the longest, slowest,
+     least visible part of the curve; end AT zero instead, with the last 8%
+     already settled. */
+  92% { --voice-phase: 0; }
 }
 
 
@@ -1853,7 +1894,7 @@ button {
 /* THE CHEWY BIT. Up and down hard, sideways only a little -- the proportions
    the reference shows when the colour passes through a word ("animation," in
    intonation.mov f194-216, "spo|ken" in synchronization.mov f282). Each letter
-   is offset by `--wave-step`, so the stretch TRAVELS instead of pulsing the
+   is offset by `--char-turn-delay`, so the stretch TRAVELS instead of pulsing the
    word as one block, and `--char-wave` scales its amplitude with that letter's
    own loudness. Both endpoints are identity, so a settled row is plain type,
    and because it is a transform it cannot disturb the row's layout. */
