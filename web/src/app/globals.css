@@ -78,8 +78,9 @@
      window over one clip's word order, and live text beat it: MEASURED on the
      running studio, the widest real row reached 19.49em against an 18.93em
      budget at N=6 -- a 3% under-prediction. The row spilled into the right clip
-     gutter, which is sized for the voice orb, and a row-final word caught
-     mid-pop then pushed 43px past the clip edge and was cut off. It went
+     gutter (then sized for the voice orb, which no longer exists), and a
+     row-final word caught mid-pop then pushed 43px past the clip edge and was
+     cut off. It went
      unnoticed for as long as it did because the old reveal queue capped
      concurrency at three, so the row's LAST word was rarely mid-motion when a
      probe sampled; the playhead animates every word at its own onset and peak
@@ -124,8 +125,13 @@
      `planStageLayout` measures the real padding, so a drift between them shows up
      as a row-count/type-size mismatch in the CDP probe.
      Motion never changes the row budget: normal type owns layout and the
-     transient glyph is overlaid. The gutter covers only visual overhang and the
-     trailing orb. */
+     transient glyph is overlaid. The gutter covers visual overhang only -- it
+     also had to clear the trailing voice orb until that was removed on
+     2026-08-04, and it has NOT been reclaimed since. Doing so is a real gain in
+     caption width, but the last time this number moved it was because a
+     row-final word mid-pop was being CLIPPED, silently, on 15% of row-samples;
+     shrinking it wants `clip_probe.py` through live playback first, not
+     arithmetic. */
   --caption-gutter-em: 2.50;
   /* `--caption-width-cap` is NOT declared here -- see `.studio-shell`. */
 }
@@ -619,8 +625,11 @@ button {
      clips at the PADDING box, so a padding strip is room INSIDE the clip that
      layout does not consume -- which is the only way to keep a transform from
      being cut off without letting it change where the words sit.
-     - right: the trailing voice orb, positioned .55em past its row's right edge
-       and .82em wide, used to push through the clip and lose half its sphere.
+     - right: a row-final word's own transient overhang. Its scale channel grows
+       the ink by (scale-1)/2 of the word's width, measured up to .842em past
+       the row edge mid-motion. (This gutter also used to clear the trailing
+       voice orb, removed 2026-08-04; the value is unchanged -- see
+       `--caption-gutter-em`.)
      - left: the overlaid first word grows about `transform-origin: 50% 100%`,
        so the clip needs room for the configured voice shape and 15% pop.
      - top: the same scale grows upward, and the word carries up to .25em of
@@ -628,16 +637,13 @@ button {
        leading. Without this the TOP row's motion was clipped flat.
      - bottom: the box hugs its content, so the newest row's bottom edge IS the
        content edge -- and the Stage FLIP entry starts that row at
-       `translateY(0.58em)`. Measured, the entering row and the voice orb riding
-       on it were cut off for the whole 620 ms entry. Raised .66 -> .84em on
+       `translateY(0.58em)`. Measured, the entering row was cut off for the
+       whole 620 ms entry. Raised .66 -> .84em on
        2026-08-01: the cue now grows a word about its BASELINE, so a crest
        scales the descenders downward as well and the bottom row clipped by a
        measured 1.3px. This gutter is the one the eviction path never uses:
        `justify-content: flex-end` sends overflow to the TOP, so the bottom
        strip stays free.
-     Capping the row with `max-width` instead resolved its `%` against a
-     shrink-wrapped `.caption-surface` and dragged the orb onto the last word.
-     The right gutter covers the orb plus the last word's transient overhang.
      Keep `--caption-gutter-em` equal to left + right. */
   padding: .40em 1.90em .84em .60em;
   /* No gap: consecutive blocks are one continuous read, spaced only by the
@@ -785,18 +791,18 @@ button {
 .caption-feed .caption-words {
   flex-wrap: nowrap;
   white-space: nowrap;
-  /* The box must hug its content so the trailing orb, which is positioned off the
-     box's right edge, always lands after the last word. The inherited
-     `max-width: 100%` capped the box while the words overflowed it, which parked
-     the sphere on top of the final word (measured -19px of overlap at 390px).
-     `flex: 0 0 auto` is the SAME BUG BY ANOTHER ROUTE, and it survived that fix:
-     this box is a flex ITEM of `.caption-surface`, so it inherited
+  /* THE BOX MUST HUG ITS CONTENT, OR ITS WIDTH IS A LIE. Both declarations
+     below exist for that and are load-bearing for MEASUREMENT, which is why
+     they outlived the trailing orb they were originally added for.
+     The inherited `max-width: 100%` capped the box while the words overflowed
+     it. `flex: 0 0 auto` is the SAME BUG BY ANOTHER ROUTE and survived that
+     fix: this box is a flex ITEM of `.caption-surface`, so it inherited
      `flex-shrink: 1` and was squeezed to the surface width whenever the row was
-     wider, while its own children (`flex: 0 0 auto`) refused to shrink and simply
-     overflowed it. The orb then attached to the SHRUNKEN right edge -- measured
-     84px on top of the last word -- and every probe that measured this box
+     wider, while its own children (`flex: 0 0 auto`) refused to shrink and
+     simply overflowed it. Either way every probe that measured this box
      under-reported the true row width, which is how an over-wide row read as
-     fitting. */
+     fitting. (It also dragged the orb, then positioned off this box's right
+     edge, onto the last word -- measured 84px of overlap.) */
   flex: 0 0 auto;
   max-width: none;
 }
@@ -1153,89 +1159,15 @@ button {
   transform-origin: 0 50%;
 }
 
-/* Sized to be READ, not just noticed. At .52em it measured 20.9px across on a
-   37px caption -- the pitch bead inside it was under 4px and the periodicity
-   ring under 1px, so the three channels it carries were below the resolution a
-   viewer could resolve at stage distance. .82em roughly doubles its area and
-   takes the bead to ~7px; the resting opacity comes up with it, because a .34
-   circle on a white stage reads as a smudge rather than an instrument. */
-.line-voice-orb {
-  --orb-color: var(--active-color);
-  position: relative;
-  display: inline-block;
-  flex: 0 0 auto;
-  width: .82em;
-  height: .82em;
-  margin: 0 .11em 0 -.02em;
-  border: .05em solid var(--orb-color);
-  border-radius: 50%;
-  background: var(--stage-bg);
-  color: var(--orb-color);
-  opacity: .52;
-  transform:
-    scale(var(--orb-scale))
-    scaleX(var(--delivery-stretch-x))
-    scaleY(var(--delivery-stretch-y))
-    rotate(var(--delivery-tilt))
-    translateZ(0);
-  box-shadow: 0 0 var(--orb-halo) color-mix(in srgb, var(--orb-color) 54%, transparent);
-  transition:
-    transform 140ms cubic-bezier(.2,.72,.24,1),
-    box-shadow 140ms ease,
-    opacity 160ms ease;
-}
-
-.caption-words > .line-voice-orb {
-  /* Attach the live indicator outside layout. It must never push the second
-     word onto another line or change a completed row's geometry. `right` plus
-     the orb's own width has to stay inside `.caption-feed`'s right padding, or
-     the sphere is clipped at the stage edge again. */
-  position: absolute;
-  /* `right` positions the orb's RIGHT edge, so this value is (clearance + the
-     orb's own .82em width) -- at -.78em the orb's LEFT edge actually sat .04em
-     INSIDE the row and the last word ran straight over it. Clearance is measured,
-     not guessed: the last word's ink reaches -0.005em past the row edge at rest
-     (p99) but up to **0.842em** while its scale channel is mid-motion, because
-     the scale grows the ink by (scale-1)/2 of the word's own width. 1.66em clears
-     that worst case, so a moving final word never reaches the sphere. */
-  right: -1.66em;
-  bottom: .24em;
-  margin: 0;
-}
-
-.line-voice-orb[data-speech="true"] {
-  opacity: .96;
-}
-
-.line-voice-orb::before {
-  content: "";
-  position: absolute;
-  z-index: 2;
-  left: 50%;
-  top: var(--pitch-y);
-  width: 22%;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: currentColor;
-  transform: translate(-50%, -50%);
-  transition: top 110ms cubic-bezier(.2,.72,.24,1);
-}
-
-.line-voice-orb i {
-  position: absolute;
-  inset: 29% 18%;
-  border: .028em solid currentColor;
-  border-radius: 50%;
-  opacity: var(--texture-opacity);
-  transform:
-    scale(var(--texture-size))
-    scaleX(var(--texture-x))
-    rotate(var(--texture-angle));
-  filter: blur(calc(var(--delivery-texture) * .35px));
-  transition:
-    transform 130ms cubic-bezier(.2,.72,.24,1),
-    filter 130ms ease;
-}
+/* `.line-voice-orb` LIVED HERE AND IS GONE (2026-08-04, at the user's request).
+   It was a .82em sphere positioned 1.66em past the right edge of whichever row
+   the playhead was inside, mapping volume to its radius, F0 to a bead and
+   periodicity/brightness to an inner ring. Every one of those channels is still
+   published on `level` and still rendered, at a readable size, by
+   `.voice-compass` in the side rail -- what went is the copy that sat INSIDE the
+   caption surface. The stage holds captions and nothing else.
+   The right clip gutter it needed is deliberately unchanged: see the note on
+   `.caption-feed`'s padding. */
 
 .caption-stage.is-transcript {
   background: var(--surface);
@@ -2390,8 +2322,9 @@ button {
     max-width: 100%;
   }
   /* Transcript only -- the Stage rule above stays `nowrap` here too. At 390px the
-     stage font drops to `clamp(16px, 4.5vw, 24px)`, so six words plus the orb
-     measure ~306px inside a ~342px feed and still fit on one line. */
+     stage font drops to `clamp(16px, 4.5vw, 24px)`, so six words measured ~306px
+     (with the since-removed orb) inside a ~342px feed and still fit on one
+     line. */
   .transcript-feed .caption-words {
     flex-wrap: wrap;
     max-width: 100%;

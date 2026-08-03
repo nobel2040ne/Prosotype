@@ -67,8 +67,7 @@ colour remains reserved for speaker attribution; settled type returns to
 normal. Together with Caption Royale's readability/minimal-distraction
 findings, this rules out jagged baselines, flicker, and automatic
 emotion-labelled effects. Continuous frequency/texture belongs in the
-line-edge voice circle and the larger Voice Compass instead of the caption
-letters.
+side-rail Voice Compass instead of the caption letters.
 
 **CuCap** (ASSETS '25,
 [doi](https://dl.acm.org/doi/epdf/10.1145/3663547.3746400)) — expressive
@@ -369,9 +368,8 @@ changing that conservative diagnostic label.
 
 The per-word result is written to `delivery_cache` on the first event for its
 time slot and is never remeasured for verification. The ~64 ms `level` lane
-separately sends rolling force/attack/contour/flow/texture to the line orb and
-Voice Compass, so the voice has an immediate visual presence before ASR emits a
-word. All word paths end at identity transform, weight 400, width 100, and zero
+separately sends rolling force/attack/contour/flow/texture to the Voice Compass,
+so the voice has an immediate visual presence before ASR emits a word. All word paths end at identity transform, weight 400, width 100, and zero
 halo.
 
 Paced 2026-07-25 product acceptance used both standard samples in real Chrome.

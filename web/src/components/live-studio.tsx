@@ -560,14 +560,24 @@ const MotionWord = memo(function MotionWord({
   );
 });
 
-function VoiceOrb({
+/*
+ * THE SIDE-GRID INSTRUMENT, AND NOW THE ONLY ONE.
+ *
+ * There used to be a second, smaller rendering of exactly these channels --
+ * `.line-voice-orb`, a sphere parked just past the right edge of whichever row
+ * the playhead was inside. Removed 2026-08-04 at the user's request. It was the
+ * one live instrument that sat INSIDE the caption surface, and the stage is
+ * meant to hold captions and nothing else (the same reasoning that took out the
+ * nav rail, the workspace header and the transport bar on 2026-07-30). The
+ * compass carries every channel it carried -- volume, F0, brightness,
+ * periodicity, the delivery terms -- at a size where they can actually be read.
+ */
+function VoiceCompass({
   level,
   color,
-  large = false,
 }: {
   level: LevelEvent;
   color: string;
-  large?: boolean;
 }) {
   const volume = clamp((number(level.rms_db, -72) + 60) / 45, 0, 1);
   const pitch = clamp((number(level.pitch_hz, 165) - 80) / 170, 0, 1);
@@ -590,10 +600,8 @@ function VoiceOrb({
   const directionKnown = Number.isFinite(direction);
   const style: CSSVars = {
     "--orb-color": color,
-    "--orb-scale": large
-      ? (0.84 + volume * 0.29).toFixed(3)
-      : (0.72 + volume * 0.62).toFixed(3),
-    "--orb-halo": `${(volume * periodicity * (large ? 38 : 14)).toFixed(1)}px`,
+    "--orb-scale": (0.84 + volume * 0.29).toFixed(3),
+    "--orb-halo": `${(volume * periodicity * 38).toFixed(1)}px`,
     "--pitch-y": `${(78 - pitch * 56).toFixed(1)}%`,
     "--texture-x": (0.68 + brightness * 0.78).toFixed(3),
     "--texture-size": (0.74 + volume * 0.48).toFixed(3),
@@ -609,21 +617,6 @@ function VoiceOrb({
   const label = `${profile} delivery, ${number(level.rms_db, -72).toFixed(1)} dB, ${
     number(level.pitch_hz) > 0 ? `${Math.round(number(level.pitch_hz))} Hz` : "unvoiced"
   }${directionKnown ? `, ${Math.round(direction)} degrees` : ""}`;
-
-  if (!large) {
-    return (
-      <span
-        className="line-voice-orb"
-        data-speech={level.speech ? "true" : "false"}
-        data-delivery={profile}
-        role="img"
-        aria-label={`Live voice: ${label}`}
-        style={style}
-      >
-        <i />
-      </span>
-    );
-  }
 
   return (
     <div
@@ -648,7 +641,6 @@ function VoiceOrb({
 function CaptionFeed({
   paragraphs,
   speakerColors,
-  level,
   intensity,
   runtime,
   clockEpoch,
@@ -659,7 +651,6 @@ function CaptionFeed({
 }: {
   paragraphs: CaptionParagraph[];
   speakerColors: SpeakerColorMap;
-  level: LevelEvent;
   intensity: number;
   runtime: RuntimeConfig;
   clockEpoch: number | null;
@@ -784,12 +775,12 @@ function CaptionFeed({
   /*
    * WHERE SPEECH ACTUALLY IS, which is no longer the bottom of the stack.
    *
-   * With read-ahead the last row holds words nobody has said yet, so pinning
-   * the voice orb to it would park the live instrument next to white text. The
-   * orb belongs on the row the playhead is inside. This changes only when the
-   * playhead crosses a row boundary, so the coarse playhead tick is plenty --
-   * and because the words themselves take no playhead prop, their memoisation
-   * is untouched by it.
+   * With read-ahead the last row holds words nobody has said yet, so marking it
+   * as current would point `data-current` at white text. The row the playhead is
+   * inside is the one being spoken. This changes only when the playhead crosses
+   * a row boundary, so the coarse playhead tick is plenty -- and because the
+   * words themselves take no playhead prop, their memoisation is untouched by
+   * it.
    */
   /*
    * How long the speaker paused before each word. `t` is on the stream
@@ -966,9 +957,6 @@ function CaptionFeed({
                     key={id}
                   />
                 ))}
-                {paragraphIndex === spokenRow && !transcript && (
-                  <VoiceOrb level={level} color={color} />
-                )}
               </div>
             </div>
           </section>
@@ -1612,7 +1600,6 @@ export function LiveStudio() {
           <CaptionFeed
             paragraphs={stageParagraphs}
             speakerColors={speakerColors}
-            level={level}
             intensity={settings.motionIntensity}
             runtime={runtime}
             clockEpoch={clockEpoch}
@@ -1657,7 +1644,7 @@ export function LiveStudio() {
             <Navigation size={16} />
           </header>
           <div className="compass-layout">
-            <VoiceOrb level={level} color={activeColor} large />
+            <VoiceCompass level={level} color={activeColor} />
             <div className="compass-readout">
               <div>
                 <span>Direction</span>

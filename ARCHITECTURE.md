@@ -339,9 +339,11 @@ stack of the most recent caption rows.
 **Transcript** — the secondary UI surface that keeps the complete history of
 what was said, organized by speaker and utterance.
 
-**Voice Compass / voice circle** — UI indicators that show continuous voice
+**Voice Compass** — the side-rail indicator that shows continuous voice
 qualities (volume, pitch, brightness) as shapes, separate from the caption text.
-The compass reserves a direction marker for future multi-microphone input.
+It reserves a direction marker for future multi-microphone input. A second,
+line-edge copy of the same channels (the "voice circle") sat beside the active
+caption until 2026-08-04; the stage now carries captions only.
 
 **Haptics** — physical/vibration feedback. Not built yet. A future haptic module
 would subscribe to the same CaptionSpec / SSE contract and buzz on meaningful

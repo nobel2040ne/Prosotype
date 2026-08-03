@@ -441,6 +441,11 @@ stable nodes instead of rebuilding earlier lines.
 
 ## Continuous voice circle (live-only extension)
 
+> **SUPERSEDED 2026-08-04: there is no line-edge circle any more.** It was
+> removed at the user's request; the stage carries captions and nothing else.
+> Everything below still describes the **Voice Compass**, which kept every
+> channel — read "the indicator" as the compass alone.
+
 The design-system type axes remain the semantic caption channels. Live also
 has measurements before any word exists, so a small indicator immediately
 after the active speaker line exposes them without guessing text or emotion.

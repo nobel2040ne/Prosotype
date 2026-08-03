@@ -266,8 +266,8 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     the "mixed radii grammar" the Don'ts name. Weight ladder 300/400/600/700 —
     **500 is deliberately absent**, so no 560/590/650/680. No shadows on chrome
     and no decorative gradients: surface-colour alternation is the divider. A
-    shadow on chrome is allowed only where it is a DATA channel (the voice orb /
-    compass halo carries periodicity); `.voice-compass` also had a hardcoded
+    shadow on chrome is allowed only where it is a DATA channel (the compass
+    halo carries periodicity); `.voice-compass` also had a hardcoded
     `inset 0 0 34px rgba(0,0,0,.38)` that was pure decoration and, being black,
     smudged the dial on the light stage instead of inverting with `--tint`.
     Focus ring `#0071e3`; `button:active { transform: scale(.95) }` once,
@@ -1274,28 +1274,41 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   `AudioChunk.samples` must stay at the true captured level because prosody
   measures `loudness_db` from it; the gained copy is `asr_samples`. Gaining
   before that measurement would flatten whisper and shout to one size.
-- **The voice circle is continuous audio state, not another caption effect.**
+- **The voice instrument is continuous audio state, not another caption effect
+  — AND IT NO LONGER TOUCHES THE STAGE (2026-08-04).**
   `_realtime_voice_features()` estimates F0, autocorrelation periodicity, and
   spectral centroid from each true ~64 ms capture block. `level_event()` sends
-  those with RMS. The line-edge `.intent-circle` (legacy) /
-  `.line-voice-orb` (Next) sits immediately after the active caption and maps
-  radius=volume, bead height=F0, oval width=brightness,
-  opacity/halo=periodicity. **It has to be big enough to READ those three
-  channels (2026-07-30).** At `.52em` it measured 20.9px across on a 37px
-  caption, which put the F0 bead under 4px and the periodicity ring under 1px —
-  the instrument was present and unresolvable, which is what "the small sphere
-  isn't readable" meant. It is `.82em` now (~28–42px, bead 22%), and its resting
-  opacity went .34 → .52 because a .34 circle on the light stage reads as a
-  smudge rather than a readout. Rolling delivery force/attack/contour/flow/texture
-  also tilt/stretch the line orb and shape the compass's inner resonance;
+  those with RMS. The side-grid `.voice-compass` maps radius=volume, bead
+  height=F0, oval width=brightness, opacity/halo=periodicity, and reserves
+  direction for `direction_deg`/`azimuth_deg`. Rolling delivery
+  force/attack/contour/flow/texture shape its inner resonance;
   `delivery_profile` is a descriptive acoustic readout, not an emotion
-  classifier. The side-grid `.voice-compass` mirrors them at a
-  larger scale and reserves direction for `direction_deg`/`azimuth_deg`.
+  classifier.
+  **`.line-voice-orb` IS GONE — DO NOT RE-ADD IT.** The Next studio used to
+  render a second copy of the same channels as a `.82em` sphere just past the
+  right edge of whichever row the playhead was inside. Removed at the user's
+  request ("let's remove the sphere next to the captions"). It was the one live
+  instrument INSIDE the caption surface, and the stage is captions and nothing
+  else — the same reasoning that removed the nav rail, the workspace header and
+  the transport bar on 2026-07-30. No channel was lost: the compass carries all
+  of them, at a size where they can actually be read. Verified on `--sample`,
+  two captures: zero `.line-voice-orb` in the DOM or the built export, compass
+  live, caption rows unchanged.
+  It was out of flow (`position: absolute`), so removing it changed NO row
+  geometry — but `.caption-feed`'s right padding was sized to clear it and is
+  **deliberately unreclaimed**. Shrinking `--caption-gutter-em` (2.50 = .60 left
+  + 1.90 right) is real caption width, but that gutter also absorbs a row-final
+  word's mid-pop overhang, measured up to .842em, and the last time this number
+  moved it was because words were being CLIPPED silently on ~15% of
+  row-samples. Measure with `clip_probe.py` through live playback before
+  touching it.
   Current mono input must say `awaiting array`; never fabricate direction. The
   compass carries **no `front` label** (removed 2026-07-30): with direction
   reserved there is no bearing to orient, so the word was labelling an axis the
   instrument does not yet report. The rail's `DIRECTION / Awaiting array` readout
   is what states that.
+  The legacy diagnostics page (`livepage.py`) still has its own
+  `.intent-circle`; it was left alone as a diagnostic, not a product surface.
   Keep these signals outside glyphs; completed captions must never shake
   because a later audio block arrived. Do not infer or label emotion.
 - **Korean caption motion requires the local variable font.** Roboto Flex has
@@ -1685,10 +1698,11 @@ words-per-row constant—chooses its visual lines.
   fill downward from the top of the stage, and product Stage is always bounded
   to fixed-width
   rows. Older rows remain in Transcript; do not let them accumulate behind
-  the active caption. The line-edge voice circle is on: volume changes its outer radius,
-  F0 moves the bead vertically, and periodicity/brightness shape its restrained
-  inner texture. It follows the active speaker line without entering the
-  glyphs. A larger Voice Compass mirrors those channels in the side grid and
+  the active caption. **The stage carries captions and nothing else** — the
+  line-edge voice circle that used to ride the active row was removed
+  2026-08-04. The Voice Compass in the side grid is now the only live voice
+  instrument: volume changes its outer radius, F0 moves the bead vertically,
+  periodicity/brightness shape its restrained inner texture, and it
   reserves its direction marker for future 2+ microphone
   `direction_deg`/`azimuth_deg`; mono must display `awaiting array`. A
   provisional/stable/corrected speaker change or a new ASR utterance starts a

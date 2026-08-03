@@ -219,8 +219,8 @@ const EMPTY_LEVEL: LevelEvent = {
  *
  * Nothing about a word's own motion depends on this: colour and pop are CSS
  * animations the browser schedules from a frozen `animation-delay`. The tick
- * exists only for things that track WHERE speech currently is — the trailing
- * voice orb's row, and the diagnostics probe — so it is deliberately coarse.
+ * exists only for things that track WHERE speech currently is — the current-row
+ * marking, and the diagnostics probe — so it is deliberately coarse.
  */
 const PLAYHEAD_TICK_MS = 66;
 
@@ -678,9 +678,9 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
   /*
    * Publish the playhead coarsely.
    *
-   * No word's motion depends on this -- CSS runs those. It exists so the
-   * trailing voice orb can sit on the row speech has actually reached, and so
-   * the probe can report the read-ahead it is really delivering.
+   * No word's motion depends on this -- CSS runs those. It exists so
+   * `data-current` can mark the row speech has actually reached, and so the
+   * probe can report the read-ahead it is really delivering.
    */
   useEffect(() => {
     let frame = 0;

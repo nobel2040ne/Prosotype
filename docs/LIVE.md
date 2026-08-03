@@ -130,16 +130,17 @@ speaker and utterance.
 
 ## Voice indicators
 
-Two indicators show continuous voice qualities *without* touching the caption
-glyphs (so completed captions never shake when a later audio block arrives):
+The **Voice Compass** in the side grid shows continuous voice qualities
+*without* touching the caption glyphs (so completed captions never shake when a
+later audio block arrives). Its radius follows true captured volume, its bead
+height follows pitch, and its inner texture follows periodicity and brightness.
+It reserves an angular marker for a future multi-microphone direction estimate;
+mono input explicitly displays `awaiting array` rather than inventing an angle.
 
-- The **voice circle** sits just after the active caption. Its radius follows
-  true captured volume, its bead height follows pitch, and its inner texture
-  follows periodicity and brightness.
-- The larger **Voice Compass** in the side grid mirrors those channels and
-  reserves an angular marker for a future multi-microphone direction estimate.
-  Mono input explicitly displays `awaiting array` rather than inventing an
-  angle.
+A second, smaller copy of the same channels — a voice circle that sat just after
+the active caption — was removed on 2026-08-04. The stage carries captions and
+nothing else; no channel was lost, and the compass renders them at a size where
+they can actually be read.
 
 ## Live motion
 
