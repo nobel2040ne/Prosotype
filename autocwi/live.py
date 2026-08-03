@@ -2390,6 +2390,31 @@ class SpeakerTracker:
             self._queue_stabilized_profile(speaker_id, observation_key)
         return result
 
+    def provisional_span(
+        self,
+        start_s: float,
+        end_s: float,
+        *,
+        timestamp_offset: float = 0.0,
+    ) -> SpeakerAttribution | None:
+        """A FREE guess for a read-ahead word, or None. Never the embedding.
+
+        This is the hypothesis lane: it runs for every uncommitted word on
+        every hypothesis emission, so it must cost approximately nothing and
+        must have no side effects at all -- no `_record`, no centroid, no
+        revision counter. The embedding classifier is ~66 ms on English and
+        would be paid several times per word before the word is even
+        committed, so the pure-embedding tracker has no cheap signal to offer
+        and says so by returning None.
+
+        Returning None is a real answer, not a failure: it publishes a word
+        with no speaker, which the renderer draws in neutral read-ahead ink.
+        That is what CWI's `unknown` state is for, and it is strictly better
+        than asserting a speaker nobody measured.
+        """
+
+        return None
+
     def classify_span(
         self,
         audio: np.ndarray,
@@ -2783,6 +2808,69 @@ class SortformerHybridSpeakerTracker:
             "sortformer",
         )
         return self.fallback._record(result, observation_key)
+
+    def provisional_span(
+        self,
+        start_s: float,
+        end_s: float,
+        *,
+        timestamp_offset: float = 0.0,
+    ) -> SpeakerAttribution | None:
+        """The native timeline's answer for a read-ahead word, or None.
+
+        WHY THE HYPOTHESIS LANE NEEDS ITS OWN METHOD. `classify_span` falls
+        through to the embedding tracker when Sortformer has nothing, which is
+        right at commit time and wrong here: this runs for every uncommitted
+        word on every hypothesis emission. So this asks the native timeline
+        only -- an in-memory scan of recent segments under a lock, costing
+        microseconds -- and returns None rather than reaching for the model.
+
+        NOTHING IS RECORDED. `_from_sortformer` routes through
+        `_record`, which bumps the global revision counter, overwrites
+        `revision_history[word_id]` and drives the endpoint's own
+        stable->corrected logic. Calling that several times per word before the
+        word is committed would let a read-ahead guess masquerade as the
+        previous durable answer an endpoint is about to correct. The result
+        here is display-only and deliberately carries `revision_id=0`, which
+        the store still accepts because `newestRevision` falls through to the
+        SSE id on a tie.
+        """
+
+        try:
+            decision = self.bridge.decision(
+                timestamp_offset + start_s,
+                timestamp_offset + end_s,
+            )
+        except Exception:
+            # A dead helper must degrade to neutral captions, never abort one.
+            return None
+        if decision is None or decision.coverage < self.min_word_coverage:
+            return None
+        speaker_id = self._slot_speakers.get(decision.speaker_index)
+        if speaker_id is None:
+            if decision.speaker_index >= self.fallback.immediate_speaker_limit:
+                # An unverified higher slot has no durable name yet, and
+                # inventing one here would publish a speaker the endpoint has
+                # never seen. Neutral until it does.
+                return None
+            speaker_id = self._speaker_id(decision.speaker_index)
+        confidence = float(np.clip(
+            0.55 + 0.35 * decision.coverage + 0.10 * decision.activity,
+            0.0,
+            1.0,
+        ))
+        return SpeakerAttribution(
+            speaker_id=speaker_id,
+            status="provisional",
+            confidence=confidence,
+            speaker_change_probability=None,
+            revision_id=0,
+            reason=(
+                "streaming Sortformer read-ahead"
+                f" (native slot {decision.speaker_index})"
+            ),
+            observation_duration_s=max(0.0, end_s - start_s),
+        )
 
     def classify_span(
         self,
@@ -3261,6 +3349,31 @@ class StreamingCaptioner:
             ids.append(word_id)
         return ids
 
+    def _read_ahead_speaker(self, word) -> SpeakerAttribution | None:
+        """Free provisional identity for a word that has not committed yet.
+
+        Deliberately NOT cached per word id. A hypothesis word is re-published
+        as the recognizer extends it, and Sortformer's answer for the same span
+        IMPROVES as more audio is processed -- a word at the edge of the buffer
+        may have no coverage on its first emission and a confident slot two
+        emissions later. Freezing the first answer would keep the worst one.
+        Churn before the colour turn is invisible anyway: the word is still in
+        read-ahead ink until the playhead reaches it.
+        """
+
+        tracker = self.speaker_tracker
+        if tracker is None:
+            return None
+        probe = getattr(tracker, "provisional_span", None)
+        if probe is None:
+            return None
+        try:
+            return probe(
+                word.start, word.end, timestamp_offset=self.stream_base,
+            )
+        except Exception:
+            return None
+
     def _attribution(
         self,
         value: SpeakerAttribution | str | None,
@@ -3274,11 +3387,17 @@ class StreamingCaptioner:
                 value, "stable" if final else "provisional", 1.0, 0.0, 0,
                 "explicit speaker label",
             )
-        if getattr(self, "speaker_tracker", None) is None and final:
+        if getattr(self, "speaker_tracker", None) is None:
             # Backward-compatible single-speaker degradation when the optional
-            # local embedding model is disabled or absent.
+            # local embedding model is disabled or absent. THIS IS THE ONLY
+            # PLACE `self.speaker` IS A DEFENSIBLE ANSWER: with no tracker
+            # there is exactly one speaker by construction, so it is a fact
+            # rather than a guess. It now covers non-final words too, because
+            # the publication path no longer supplies a blanket fallback --
+            # without this a diarization-disabled session would render its
+            # whole read-ahead neutral.
             return SpeakerAttribution(
-                self.speaker, "stable", 1.0, 0.0, 0,
+                self.speaker, "stable" if final else "provisional", 1.0, 0.0, 0,
                 "single-speaker fallback (tracker unavailable)",
             )
         return SpeakerAttribution(
@@ -3778,10 +3897,23 @@ class StreamingCaptioner:
             "start": event_start,
             "end": event_end,
             **revision_fields,
-            # Keep the original required speaker contract. Unknown live
-            # assignments carry the configured fallback id but are rendered
-            # neutral because ``speaker_status`` is authoritative.
-            "speaker": speaker_fields.pop("speaker") or self.speaker,
+            # AN UNDECIDED WORD PUBLISHES NO SPEAKER. This used to read
+            # `or self.speaker`, defaulting every unattributed word to "S1",
+            # and the comment justifying it said unknown assignments "are
+            # rendered neutral because speaker_status is authoritative". That
+            # was true when it was written and stopped being true on
+            # 2026-08-02, when `speakerStatus` began promoting a
+            # speaker-carrying unknown to `provisional` -- itself a correct
+            # fix, for durable words that were stuck grey forever. The two
+            # composed into a false claim: MEASURED on the PR film, the
+            # default was right 17 times out of 43, which is just how often
+            # the narrator happens to be talking (79/172), i.e. it carried no
+            # information at all while painting 26 words in the wrong
+            # speaker's colour.
+            # `speakerColor(null)` is already `--caption-unknown` and the
+            # legacy renderer already keys on `speaker_known`, so both
+            # renderers draw this correctly; only the id was dishonest.
+            "speaker": speaker_fields.pop("speaker"),
             "speaker_known": attribution.speaker_id is not None,
             **speaker_fields,
             "loudness": round(loudness, 4),
@@ -4002,6 +4134,19 @@ class StreamingCaptioner:
             self._word_event(
                 word, audio, final=False,
                 word_id=current_word_ids[partial_start + index],
+                # THE READ-AHEAD LANE HAD NO ATTRIBUTION AT ALL, AND IT IS THE
+                # FIRST THING THE VIEWER SEES. Every word reaches the stage as
+                # a hypothesis first; this call site passed no speaker, so
+                # `_attribution` returned unknown and the publication line
+                # below defaulted it to `self.speaker` -- "S1". MEASURED on the
+                # PR film, 160 of 172 words first painted as S1/unknown and 83
+                # of them were somebody else, so 45.9% of words were still the
+                # WRONG colour when the playhead reached them, narrator yellow
+                # over the drill sergeant's whole exchange.
+                # Sortformer already knows: it runs continuously at 1.04 s
+                # latency, which is well inside the 1.75 s the playhead trails
+                # by, and asking it costs nothing.
+                speaker=self._read_ahead_speaker(word),
             )
             for index, word in enumerate(pending)
         ]
@@ -4611,6 +4756,8 @@ def load_speaker_tracker(cfg: dict) -> SpeakerTracker | None:
             cache_dir,
             startup_timeout_s=sortformer.get("startup_timeout_s", 120.0),
             debug=policy.get("debug", False),
+            preset=str(sortformer.get("preset", "fastV2_1")),
+            fp16=bool(sortformer.get("fp16", False)),
         )
     except Exception as exc:
         print(

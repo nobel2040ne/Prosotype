@@ -98,10 +98,45 @@ private struct AutoCWISortformer {
                 return arguments[index + 1]
             }()
 
-            var config = SortformerConfig.fastV2_1
+            // PRESET AND PRECISION ARE ARGUMENTS, NOT CONSTANTS (2026-08-04).
+            // Both were hardcoded, and both are live hypotheses about the one
+            // measured defect in live attribution: the native model has four
+            // slots and reuses them across eleven speakers on the PR film.
+            // FluidAudio's own preset notes speak directly to that -- the v2.1
+            // weights "may degrade when many speakers are talking
+            // simultaneously" while the v2 ones "may handle high-speaker-count
+            // scenarios better" -- and the palettized weights carry 96.4%
+            // speaker-argmax parity with NeMo against fp16's 100%, on a defect
+            // that IS argmax confusion. Rebuilding Swift per A/B is slow enough
+            // to discourage measuring, which is how a constant like this
+            // survives unexamined. Config decides; `live.diarization.sortformer`
+            // holds the values.
+            let named: String = {
+                guard
+                    let index = arguments.firstIndex(of: "--preset"),
+                    arguments.indices.contains(index + 1)
+                else { return "fastV2_1" }
+                return arguments[index + 1]
+            }()
+            var config: SortformerConfig
+            switch named {
+            case "balancedV2": config = SortformerConfig.balancedV2
+            case "balancedV2_1": config = SortformerConfig.balancedV2_1
+            case "efficientV2_1": config = SortformerConfig.efficientV2_1
+            case "highContextV2": config = SortformerConfig.highContextV2
+            case "highContextV2_1": config = SortformerConfig.highContextV2_1
+            default: config = SortformerConfig.fastV2_1
+            }
+            // Reported to Python, which uses it only for logging. It must
+            // track the preset: highContext runs 30.4s, not 1.04s, and a stale
+            // constant here would misreport the read-ahead budget.
+            let presetLatency: Double = named.hasPrefix("highContext")
+                ? 30.4
+                : (named == "efficientV2_1" ? 2.0 : 1.04)
             // The palettized build was measured at 8.6–8.9x real time on the
             // target Apple Silicon machine while using a fraction of fp16 RAM.
-            config.precision = .palettized
+            config.precision =
+                arguments.contains("--fp16") ? .fp16 : .palettized
             let cacheURL = URL(
                 fileURLWithPath: cachePath,
                 isDirectory: true
@@ -116,7 +151,7 @@ private struct AutoCWISortformer {
                     BridgeEvent(
                         type: "prepared",
                         processedThrough: nil,
-                        latencySeconds: 1.04,
+                        latencySeconds: presetLatency,
                         segments: nil,
                         message: cacheURL.path
                     )
@@ -130,7 +165,7 @@ private struct AutoCWISortformer {
                 BridgeEvent(
                     type: "ready",
                     processedThrough: 0,
-                    latencySeconds: 1.04,
+                    latencySeconds: presetLatency,
                     segments: [],
                     message: nil
                 )

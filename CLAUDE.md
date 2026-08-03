@@ -42,6 +42,7 @@ AUTOCWI_FAST=1 .venv/bin/python -m autocwi live --file x.wav --once  # headless 
 .venv/bin/python scripts/benchmark.py --lang ko \
   --backends local,speechmatics,soniox   # provider A/B (UPLOADS audio; needs keys)
 .venv/bin/python scripts/studio_probe.py --samples 40  # read-ahead + motion (CDP)
+.venv/bin/python scripts/speaker_probe.py         # CWI 2.1: is the FIRST colour right?
 .venv/bin/python scripts/baseline_probe.py            # does a swelling word stay on its line?
 .venv/bin/python scripts/baseline_probe.py --broken   # ...and prove that check can fail
 .venv/bin/python -m autocwi live --list-devices   # pick a mic if the default is wrong
@@ -387,6 +388,97 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   context, or running the endpoint embedding at segmentation boundaries
   instead of only at ASR endpoints, since one ASR utterance here contains four
   speakers.
+- **THE 47% WAS NOT ALL THE MODEL. HALF OF IT WAS A HARDCODED "S1" (fixed
+  2026-08-04).** Measure it with `scripts/speaker_probe.py`, which is new and
+  is the only honest way to see this: `live_events.jsonl` holds durable words
+  only, so every word in it already carries its settled speaker and the churn
+  scores 0%. The probe subscribes to SSE, scores the FIRST speaker a `word_id`
+  was ever published with, and — this is the part that matters — scores it
+  **against the playhead**, because a correction landing inside the 1.75 s
+  delay is never seen. It does not: 45.9% of words were still the wrong colour
+  at their own colour turn.
+  Every word reaches the stage as a `hypothesis` first, and that call site
+  passed **no speaker at all**, so `_attribution` returned unknown and the
+  publication line defaulted it to `self.speaker` = "S1". MEASURED: 160 of 172
+  words first painted as S1/unknown. Two individually-correct changes composed
+  into a false claim — the server defaulted to S1 because "unknown assignments
+  are rendered neutral, `speaker_status` is authoritative", which stopped being
+  true on 2026-08-02 when `speakerStatus` began promoting a speaker-carrying
+  unknown to `provisional` (itself right, for durable words stuck grey
+  forever). After that, `speakerColor("S1")` is narrator yellow.
+  Two fixes, both measured:
+  * **The read-ahead lane asks Sortformer** (`provisional_span`). Free
+    timeline lookup, no embedding fallback (~66 ms, would run several times per
+    word before commit) and **no `_record`** — a read-ahead guess must not
+    masquerade as the durable answer an endpoint is about to correct. Answers
+    117 of 172 words at **62%** correct.
+  * **An undecided word publishes `speaker: null`.** `self.speaker` survives
+    only where it is a fact — no tracker at all. The old default measured 17
+    right out of 43, which is just the narrator's base rate (79/172): zero
+    information, 26 words painted wrong. Both renderers already draw null
+    neutrally (`speakerColor(null)`, and legacy keys on `speaker_known`).
+  MEASURED, wrong-at-turn **45.9% → 40.1% → 29.2%**; deterministic across runs
+  on `--sample`. The cost is deliberate: 9.6 points moved from "accidentally
+  correct" to neutral. A wrong colour is a false claim about who spoke, which
+  is the one thing 2.1 exists to prevent; neutral is the design system's own
+  `unknown` state and is already the read-ahead ink.
+- **MID-UTTERANCE VERIFICATION: BUILT, MEASURED, REVERTED (2026-08-04).** The
+  entry above says the next step is verifying at segmentation boundaries rather
+  than ASR endpoints. It was implemented both ways and neither shipped. The
+  residual error is entirely in multi-speaker utterances — per utterance,
+  first-paint wrong ran **9%** on the single-speaker monologue against
+  **49–64%** on the ones carrying three to five speakers.
+  * **Without enrollment (`learn=False`): a no-op**, 29.2% → 28.7%. It
+    withdraws a wrong guess (S1 → neutral) but cannot NAME a voice appearing
+    for the first time — and a first appearance inside a long utterance is
+    exactly the failing case.
+  * **With enrollment: it MERGES SPEAKERS.** Spans are cut at COMMIT
+    boundaries, not turn boundaries, so a 1.6 s span straddles a real turn, the
+    mixed embedding enrolls a broad centroid, and that centroid swallows
+    everyone: utterance 3 went from three speakers to **one**, and a single id
+    took 74 words across three utterances. That is the "one speaker switch in
+    68 seconds" failure fixed on 2026-08-02, reintroduced.
+  **AND IT LOOKED LIKE A WIN — THIS IS THE TRAP TO REMEMBER.** First-paint-vs-
+  final agreement rose 50.3% → **62.2%**, because first paint and the final
+  answer now agreed on the same WRONG identity. Agreement is not accuracy.
+  Always score identity STRUCTURE beside it — speakers and switches per
+  utterance — which is why `speaker_probe.py` prints both.
+  If retried: find turn boundaries FIRST and verify only spans lying inside one
+  turn. Note also that sharing one `observation_group` per utterance is
+  mandatory for any repeated pass, because `_profile_is_stable` counts DISTINCT
+  groups and `label_words` allocates one per call.
+- **SORTFORMER IS DOING ALL OF THE ON-TIME ATTRIBUTION, AND SWAPPING WEIGHTS
+  INSIDE IT CHANGES NOTHING (measured 2026-08-04).** `preset` and `fp16` are
+  now config (`live.diarization.sortformer`) so this is a one-line A/B; every
+  option below runs at the SAME 1.04 s latency. Measured on `--sample`, all
+  with the shipped read-ahead attribution:
+  | config | wrong at turn | neutral | **correct at turn** | speakers | switches |
+  |---|---|---|---|---|---|
+  | `fastV2_1` palettized (shipped) | 30.4% | 19.3% | **50.3%** | 8 | 19 |
+  | `fastV2_1` **fp16** | 29.2% | 21.1% | **49.7%** | 8 | 19 |
+  | `balancedV2_1` (fifo 188 vs 40) | 31.0% | 18.1% | **50.9%** | 8 | 18 |
+  | `balancedV2` (v2 weights) | 26.6% | 23.7% | **49.7%** | 8 | 23 |
+  | **Sortformer OFF** (`--diarizer embedding`) | 3.3% | **88.7%** | **7.9%** | 8 | 19 |
+  Every Sortformer variant lands at 49.7–50.9% correct — inside the ~2-word
+  run-to-run noise (the shipped config itself measured 29.2% and 30.4% on two
+  runs). **fp16 is a no-op**: identical first-paint, identical speakers and
+  switches, identical slot reuse, at 2.5x the model size (235 MB vs 93 MB). Its
+  96.4% -> 100% NeMo argmax parity is real and lands somewhere other than our
+  errors. `balancedV2`'s lower wrong-at-turn is bought entirely with neutrals,
+  not with correct answers. Do not re-litigate these without a new measurement.
+  **The last row is the finding.** With Sortformer off, 88.7% of words are
+  neutral at their turn and only 7.9% are correct — the endpoint lane cannot
+  inform the playhead AT ALL, and its final answers are unchanged (8 speakers,
+  19 switches), i.e. it is right but late. Sortformer alone takes correct-at-turn
+  7.9% -> 50.3%. So it is not underperforming; it is doing everything, and the
+  ceiling is structural: **four native slots cannot represent eleven speakers.**
+  Read the slot histogram in `speaker_probe.py` — one slot published S1 x76,
+  S8 x56, S10 x40 in a single pass.
+  Precision and context are therefore the wrong knobs. The levers that remain
+  are MORE SLOTS (`mago-ai/ultra_diar_streaming_sortformer_8spk_v1`, Apache-2.0,
+  fine-tuned from our exact `4spk-v2.1` base — but unbenchmarked, NeMo-only, and
+  FluidAudio hardcodes four slots, so it needs a Core ML conversion AND a fork),
+  or an on-time identity signal that is not Sortformer at all.
 - **Pinned versions** in `requirements.txt`. Seed anything stochastic.
 - **The CaptionSpec (`autocwi/schema.py`) is a versioned contract.** Renderers
   and the future haptic module consume ONLY `spec.json` / the SSE word events

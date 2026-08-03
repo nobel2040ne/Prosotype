@@ -63,7 +63,7 @@ Attribution (the CWI "who is speaking" pillar) runs live with four states:
 
 | State | Meaning | Rendering |
 |---|---|---|
-| `unknown` | no defensible assignment | white |
+| `unknown` | no defensible assignment — the event carries **no speaker** | neutral |
 | `provisional` | a revisable estimate | subdued color + dotted underline |
 | `stable` | enrolled and confident | full speaker color; eligible for haptics |
 | `corrected` | a stable assignment replacing an earlier one | recolored in place |
@@ -71,6 +71,15 @@ Attribution (the CWI "who is speaking" pillar) runs live with four states:
 Only `stable` and `corrected` may signal a speaker change to downstream
 consumers (`speaker_change: true`). Tuning lives under
 `live.speaker_attribution` in `config.yaml`.
+
+**An undecided word carries no speaker at all.** It used to carry the fallback
+id `S1`, on the basis that the renderer drew unknowns neutrally anyway; once
+that stopped being true, every unattributed word was being painted in the
+narrator's colour — measured, 46% of words were the wrong colour when the
+playhead reached them. A word is now drawn neutral until its speaker has
+actually been measured. Read-ahead words are attributed from the continuous
+Sortformer timeline where it has an answer, which is most but not all of them.
+Measure it with `scripts/speaker_probe.py`.
 
 **How identity is decided.** On Apple Silicon the default backend runs NVIDIA
 Streaming Sortformer continuously through a native Core ML helper for

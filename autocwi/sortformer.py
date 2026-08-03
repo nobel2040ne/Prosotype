@@ -97,10 +97,14 @@ class SortformerBridge:
         *,
         startup_timeout_s: float = 120.0,
         debug: bool = False,
+        preset: str = "fastV2_1",
+        fp16: bool = False,
     ):
         self.executable = Path(executable)
         self.cache_dir = Path(cache_dir)
         self.debug = bool(debug)
+        self.preset = str(preset)
+        self.fp16 = bool(fp16)
         self._condition = threading.Condition()
         self._segments: list[dict] = []
         self._processed_through = 0.0
@@ -113,6 +117,9 @@ class SortformerBridge:
                 str(self.executable),
                 "--cache",
                 str(self.cache_dir),
+                "--preset",
+                self.preset,
+                *(["--fp16"] if self.fp16 else []),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

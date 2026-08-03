@@ -1265,6 +1265,21 @@ live:
       executable: native/sortformer/.build/release/autocwi-sortformer
       cache_dir: assets/sortformer-coreml
       startup_timeout_s: 120
+      # FluidAudio preset. All of fastV2_1/balancedV2/balancedV2_1 run at the
+      # SAME ~1.04 s latency, so these are free to A/B against
+      # `scripts/speaker_probe.py`; highContext* run 30.4 s and cannot inform a
+      # 1.75 s playhead. FluidAudio's own notes bear directly on this project's
+      # one measured defect -- four native slots reused across eleven speakers:
+      # the v2.1 weights "may degrade when many speakers are talking
+      # simultaneously" while v2 "may handle high-speaker-count scenarios
+      # better". balancedV2/balancedV2_1 differ from fast only in fifoLen
+      # (188 vs 40).
+      preset: fastV2_1
+      # fp16 weights instead of the 6-bit palettized ones. FluidAudio measures
+      # speaker-argmax parity with NeMo at 100% (fp16) against 96.4%
+      # (palettized) -- and argmax slot confusion is exactly the defect -- at
+      # the cost of RAM and a little throughput.
+      fp16: false
       # Require real overlap with the word; missed quiet speech falls back to
       # the endpoint embedding tracker rather than being forced onto a slot.
       min_word_coverage: 0.24
@@ -1329,6 +1344,28 @@ live:
     direction_prior_weight: 0.05    # optional direction contribution (weak prior only)
     provisional_color_strength: 0.55 # speaker-color share in tentative word color
     debug: false                    # add decision details and print session metrics
+    # MID-UTTERANCE VERIFICATION WAS BUILT, MEASURED AND REMOVED (2026-08-04).
+    # Identity is verified once per ASR utterance, and one utterance is not one
+    # turn -- on the PR film a single utterance carries FIVE speakers, which is
+    # where essentially all the wrong-colour words are. Re-running the
+    # segmentation-and-match pass over the words committed since it last ran is
+    # the obvious fix and BOTH forms of it failed:
+    #   * without enrollment it is a no-op (wrong-at-turn 29.2% -> 28.7%). It
+    #     withdraws a wrong guess but cannot NAME a voice appearing for the
+    #     first time, and a first appearance inside a long utterance is exactly
+    #     the failing case.
+    #   * with enrollment it MERGES SPEAKERS. Spans are cut at commit
+    #     boundaries, not turn boundaries, so a 1.6 s span straddles a real
+    #     turn, the mixed embedding enrolls a broad centroid and that centroid
+    #     then swallows everyone: measured, utterance 3 went from three
+    #     speakers to ONE and a single id took 74 words across three
+    #     utterances.
+    # The second form LOOKED like a win -- first-paint-vs-final agreement rose
+    # from 50.3% to 62.2% -- because first paint and the final answer now agreed
+    # on the same WRONG identity. Score identity structure (speakers and
+    # switches per utterance), never agreement alone.
+    # Doing this properly means finding turn boundaries FIRST and verifying
+    # only spans that lie inside one turn. Not attempted.
   # Non-speech / paralinguistic sound tagging (CWI 2.x descriptors). A local
   # Zipformer AudioSet model tags the true-level audio; results are de-bounced
   # into one caption event per real sound and shown in a distinct non-speech
