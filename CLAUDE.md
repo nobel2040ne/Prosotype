@@ -447,6 +447,99 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   turn. Note also that sharing one `observation_group` per utterance is
   mandatory for any repeated pass, because `_profile_is_stable` counts DISTINCT
   groups and `label_words` allocates one per call.
+- **THE STAGE ROWS FEED THE MOTION CLOCK. LAYOUT CHANGES ARE MOTION CHANGES
+  (2026-08-05).** Rows fill a median of **65%** of the line because they break
+  on a WORD COUNT while a row's width is set by its CHARACTERS, and the type
+  size comes from the worst case that count can produce. Chunking on width
+  instead fixes it — measured, median fill 65% -> 76%, max 95%, rows carrying
+  1–14 words, 0 overflow in 531 row-samples — and it was still REVERTED,
+  because the user reported "the motion has changed" and they were right:
+  * `live-studio.tsx` derives `paceGaps` by flattening the **stage rows**, and
+    `paceGapS` sets `--motion-duration`, i.e. how long every word's pop and
+    wave run. The rows are a partition of the word list and the retained window
+    holds however many words those rows happen to carry, so re-chunking moves
+    which words sit at the edges of that list.
+  * Row ids are `stage:${firstWordId}`, so re-chunking re-keys rows, remounts
+    them and re-arms every word inside.
+  * Bigger rows also change how often the Stage FLIP runs — a new row appears
+    less often but carries more text.
+  Fixing the first point is easy and is a genuine repair (pass the full
+  ordered word list for timing, not the rows). The other two are inherent to
+  changing row composition. **Anything that touches the chunker must be
+  fingerprinted with `scripts/word_motion.py` before and after**, not just
+  measured for fill.
+- **"is" OCCURS TWICE IN THE FILM AND ONLY THE FIRST IS HELD (2026-08-05).**
+  "as each word **is** spoken" is the held one; "This **is** what it looks
+  like" is not. A `word_motion.py` comparison keyed by word TEXT silently reads
+  whichever occurrence comes last, and that produced a confident, wrong
+  diagnosis that the held word had regressed, a wrong attribution to
+  `read_ahead_delay_s`, and a re-calibration of `hold_min_s`/`hold_full_s` that
+  actually broke it. **Compare by OCCURRENCE (position), never by text.**
+  Measured correctly, three words lift and the set is identical on pristine
+  HEAD and on the current build: **`is` 0.525em, `god` 0.525em, `spoken`
+  0.105em** (the config's claim of "exactly one word" is stale).
+- **THE HOLD GATE FREEZES AT THE TURN, NOT AT THE MOUNT (2026-08-05).**
+  The gap is `min(before, after)` and `after` needs the NEXT word, which has
+  usually not arrived when a word first renders — so the parent commits nothing
+  yet, and a child that froze on its first render captured a pre-neighbourhood
+  value. Whether it won that race depended on render cadence, so any unrelated
+  change that altered how often the tree re-renders flipped it: MEASURED, the
+  held word came out 0.525em on one run and 0.000 on the next of the SAME
+  build. The user reported it as "'is' is so important so it should not
+  change".
+  `holdSettled` now tells the child when the parent's answer is final, and the
+  child stops accepting revisions once the playhead passes the word — the same
+  ahead-of-the-playhead invariant everything else here follows.
+  **IT IMPROVES THE ODDS, IT DOES NOT CLOSE THEM.** Measured: without the fix
+  1 of 2 runs wrong; with it **1 of 6**. A second source of nondeterminism
+  remains and has not been found. Do not claim this word is deterministic.
+- **"HARD TO FOLLOW" WAS TWO THINGS, AND NEITHER WAS THE ONE I WAS OPTIMISING
+  (2026-08-04).** The user reported the captions as hard to follow and, asked to
+  narrow it, named the colours jumping around and the motion/pace — not the
+  wording. Both were measured on the RENDER, not the event stream.
+  * **Colour flicker.** The speaker colour changed every **8.6 words** (median
+    run 7, **25% of runs ≤3 words**), inside sentences spoken by one person:
+    "Why"(green) "don't they"(purple) "answer they answer? Shift"(green). CWI
+    2.1 makes colour THE speaker signal, so each change asserts a turn that did
+    not happen. **This is not the same question as "is the colour right"** — the
+    45.9% → 29.2% correctness win earlier the same day left the flicker
+    untouched, because nothing measured stability. `scripts/speaker_probe.py`
+    now reports run lengths, words-per-colour-change and % runs ≤3.
+    **THE FIX IS AN INTERACTION AND NEITHER HALF WORKS ALONE — MEASURED.**
+    `speaker_min_run_words` 2 → 3 alone: no change (19 changes, 8.6 w/c). Re-
+    smoothing the hybrid's output alone: no change. **Both: 17 changes, 9.5
+    w/c, 22% short runs**, speakers unchanged at 8. The reason is that
+    `SortformerHybridSpeakerTracker.label_words` overrode the smoothed fallback
+    per word and returned unsmoothed, so the rule could never reach the output
+    however it was tuned; and at `run = 2` it could only ever rescue a run of
+    EXACTLY ONE, while four of the five short runs were 2–3 words flanked by
+    the same speaker ("or softer." as S4 between S1 and S1).
+    **RAISING IT IS SAFE AND THE EDGE GUARDS ARE WHY.** The rule skips the
+    first and last word of an utterance and fires only when both sides agree,
+    so `["S1","S1","S2","S2"]` — the genuine two-word turn
+    `test_speaker_tracker_votes_per_word_across_a_turn_change` pins — is
+    unchanged at 2, 3 and 4. **5 is too far**: settled speakers drop 8 → 7.
+    4 measured identical to 3.
+    The smoother also never `_record`ed, so `revision_history` kept the
+    pre-smoothing id and `drain_revisions` could un-smooth a fixed word; it now
+    overwrites that entry, and prints under `debug: true` (it was previously
+    the one decision in the system that left no trace).
+  * **Pace: there was essentially no read-ahead.** See the
+    `read_ahead_delay_s` entry in config.yaml. MEASURED at the shipped 1.75 s:
+    **121 ms delivered, a median of ONE unread word on screen.** 2.2.1 asks for
+    a whole line in white to read into. Restored to 2.5 s → **1146 ms, 4
+    words**. `min_read_ahead_ms` does NOT substitute: it keeps a word on screen
+    420 ms before it turns, which is not a QUEUE of unread words.
+    **AND `studio_probe.py` WAS LYING ABOUT IT.** It counted read-ahead words
+    by reading `getComputedStyle(word).color` on `.caption-word` — but the
+    colour turn moved down to `.caption-character` on 2026-08-01, so the parent
+    never carries the animated ink and the counter read **0 in every sample of
+    every run**, which looks exactly like "2.2.1 is not implemented". Fixed to
+    read the character. A counter that has never been seen to move is not
+    evidence.
+    The cost is honest and is the documented one-for-one: 0.75 s more lag, and
+    wrong-colour-at-turn rises 28.1% → 33.9% while neutral falls 20.5% → 11.1%
+    (more words get a Sortformer answer in time, and that lane is 62% right).
 - **SORTFORMER IS DOING ALL OF THE ON-TIME ATTRIBUTION, AND SWAPPING WEIGHTS
   INSIDE IT CHANGES NOTHING (measured 2026-08-04).** `preset` and `fp16` are
   now config (`live.diarization.sortformer`) so this is a one-line A/B; every

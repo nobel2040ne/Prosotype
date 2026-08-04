@@ -52,6 +52,24 @@ VOICES are represented with a heavier weight." That is about **who is speaking**
 Within one speaker, going high is *effort*. So the register term reads
 `pitch_register_hz`, the speaker's running median.
 
+**3b. What the lift actually detects is ISOLATION, not sustain.**
+The intent is "the speaker held this word". The signal is
+`min(gap_before, gap_after)` over **inter-onset** intervals, inside a band:
+`hold_min_s` 0.78 (below it, ordinary speech) → `hold_full_s` 0.88 (full lift),
+with `hold_max_s` 1.06 on the leading gap because a longer silence is a
+sentence break, which the film does not lift. Emphatic words are gated out
+entirely — a word that swells does not leave the line.
+
+**It cannot tell a drawn-out word from a word followed by a pause.** The
+recognizer's `end` runs to the next word's onset and attributes no silence to
+anything, so the interval after a word is its own duration *plus* any trailing
+silence, lumped. Both readings produce the same number. Measured, three words
+lift: `is` 0.525em, `god` 0.525em, `spoken` 0.105em.
+
+A true "sustain" signal would need the word's own **voiced** duration per
+character, which the prosody lane already computes — `_prominence`'s
+lengthening term, currently at `length_gain: 0.0`.
+
 **4. Everything is frozen at first sight.**
 Duration, axes, sweep, hold gap and turn moment are computed once per word and
 must survive remounts. Recomputing any of them under a running animation is the
@@ -79,7 +97,8 @@ Measured with `scripts/word_motion.py` on the bundled film (`--sample`, which
 |---|---|
 | `"louder"` | **1.83x**, weight **~890**, lift **0** |
 | `"softer"` | **0.82x**, lift **0** |
-| held `"is"` | lift **0.525em**, size **1.15x**, weight **400** |
+| held `"is"` | lift **0.525em**, size **1.15x**, weight **400** — the FIRST "is" ("as each word is spoken"); the second is not held, and comparing by word text reads the wrong one |
+| lifting words | `is` 0.525, `god` 0.525, `spoken` 0.105 — and the held word is **intermittent**, measured wrong in ~1 run of 6 |
 | whole film | median peak **1.15x** — the ordinary word carries the pop and nothing else |
 | | **0** words lighter than Regular, **0** bold samples on any lifted word |
 | adjacent-row ink gap | 9 px at rest, **1.0 px under motion — no headroom left** |

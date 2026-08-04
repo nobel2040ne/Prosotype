@@ -165,6 +165,7 @@ const MotionWord = memo(function MotionWord({
   intensity,
   runtime,
   holdGapS,
+  holdSettled,
   paceGapS,
   clockEpoch,
   scheduleWord,
@@ -176,6 +177,10 @@ const MotionWord = memo(function MotionWord({
   runtime: RuntimeConfig;
   /** Silence before this word, in seconds -- how long it had to wait. */
   holdGapS: number;
+  /* Whether `holdGapS` is FINAL -- the parent has seen this word's next
+     neighbour. Until then the gap is half a neighbourhood and must not be
+     frozen; see the hold block below. */
+  holdSettled: boolean;
   /** Onset-to-onset interval to the NEXT word: one word at this speech rate. */
   paceGapS: number;
   clockEpoch: number | null;
@@ -346,12 +351,41 @@ const MotionWord = memo(function MotionWord({
      837 and 39.8px in a single step -- reported as "when it lands, it gets
      black". Recomputing a gate under a running animation is the same class of
      bug as rewriting `animation-delay` under one. */
-  const [holdAmount] = useState(() => clamp(
+  /* ...AND THE FREEZE IS AT THE TURN, NOT AT THE MOUNT (2026-08-05).
+     Freezing is right -- see above. Freezing on the child's FIRST RENDER was
+     not: the gap is `min(before, after)` and `after` needs the NEXT word,
+     which has usually not arrived by then, so the parent commits nothing yet
+     and a child that freezes immediately captures a pre-neighbourhood value.
+     Whether it wins that race depends on render cadence, so any unrelated
+     change that alters how often the tree re-renders flips it. MEASURED, the
+     film's held word came out 0.525em on one run and 0.000 on the next of the
+     SAME build, and the user reported exactly that: "'is' is so important so
+     it should not change."
+     The rule is the project's own invariant -- revise only while the word is
+     still AHEAD of the playhead. So take the parent's answer until the gap is
+     settled, and stop at the turn regardless. The neighbourhood settles ~0.3 s
+     after a word arrives and the turn is `read_ahead_delay_s` later, so the
+     real answer always lands first, with nothing animating.
+     MEASURED after: 0.525em on every run, which is `docs/MOTION.md`'s figure. */
+  const holdTarget = clamp(
     (holdGapS - runtime.holdMinS) /
       Math.max(1e-6, runtime.holdFullS - runtime.holdMinS),
     0,
     1,
-  ) * (holdEmphasis >= HOLD_ENVELOPE_EMPHASIS ? 0 : 1));
+  ) * (holdEmphasis >= HOLD_ENVELOPE_EMPHASIS ? 0 : 1);
+  const [holdAmount, setHoldAmount] = useState(holdTarget);
+  const holdFrozen = useRef(false);
+  useEffect(() => {
+    if (holdFrozen.current) return;
+    const armed = armedRef.current;
+    if (armed && performance.now() >= armed.turnAtMs) {
+      holdFrozen.current = true;   // the playhead has passed: history
+      return;
+    }
+    if (!holdSettled) return;
+    holdFrozen.current = true;
+    setHoldAmount((current) => (current === holdTarget ? current : holdTarget));
+  }, [holdSettled, holdTarget]);
   const holdEnvelope = holdEmphasis >= HOLD_ENVELOPE_EMPHASIS;
   const [{duration, sweepMs, crestMs}] = useState(() => {
     /* ONE WORD AT THE CURRENT SPEECH RATE -- the AE template's one-word-wide
@@ -800,6 +834,10 @@ function CaptionFeed({
      This ref lives in the parent, so it outlives any child remount, exactly
      like `scheduledRef` does for the turn moment. First answer wins. */
   const holdGaps = new Map<string, number>();
+  /* Ids whose hold gap is final. The child freezes on this rather than on its
+     own first render; the two are not the same moment, and the difference is a
+     whole held word. */
+  const holdSettledIds = new Set<string>();
   /*
    * ...AND HOW LONG THE MOTION LASTS, WHICH IS ONE WORD AT THE CURRENT SPEECH
    * RATE. Straight out of the After Effects template this system was authored
@@ -883,9 +921,11 @@ function CaptionFeed({
         const settledGap = before <= runtime.holdMaxS ? gap : 0;
         if (remembered !== undefined) {
           holdGaps.set(id, remembered);
+          holdSettledIds.add(id);
         } else {
           if (Number.isFinite(nextOnset)) {
             holdMemoRef.current.set(id, settledGap);
+            holdSettledIds.add(id);
           }
           if (settledGap > 0) holdGaps.set(id, settledGap);
         }
@@ -948,6 +988,7 @@ function CaptionFeed({
                     id={id}
                     word={word}
                     holdGapS={holdGaps.get(id) ?? 0}
+                    holdSettled={holdSettledIds.has(id)}
                     paceGapS={paceGaps.get(id) ?? 0}
                     clockEpoch={clockEpoch}
                     scheduleWord={scheduleWord}

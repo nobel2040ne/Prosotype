@@ -240,6 +240,7 @@ def report(collected: dict, read_ahead_s: float, min_read_ahead_s: float) -> int
     turn_wrong = 0
     turn_neutral = 0
     turn_scored = 0
+    post_turn_recoloured = 0
 
     for word_id, events in history.items():
         attributed = [e for e in events if e.get("speaker")]
@@ -269,11 +270,41 @@ def report(collected: dict, read_ahead_s: float, min_read_ahead_s: float) -> int
             turn_neutral += 1
         elif seen != last["speaker"]:
             turn_wrong += 1
+        # ...and did it change again AFTER the viewer had already read it?
+        # The studio deliberately repaints a settled word on a late attribution
+        # correction -- only spelling is frozen behind the playhead -- so this
+        # is by design, but every occurrence is a caption changing colour under
+        # the reader's eye, which is a different cost from a patchy stage.
+        if seen is not None and any(
+            event["at"] > turn_at and event.get("speaker")
+            and event["speaker"] != seen
+            for event in events
+        ):
+            post_turn_recoloured += 1
 
     switches = sum(
         1 for a, b in zip(final_order, final_order[1:]) if a[1] != b[1]
     )
     speakers = collections.Counter(speaker for _, speaker, _ in final_order)
+
+    # HOW OFTEN DOES THE COLOUR CHANGE? This is the readability number, and it
+    # is not the same question as "is the colour right". A caption can be
+    # correct at every single turn and still be unreadable if the correct
+    # answer changes every few words: CWI 2.1 makes colour THE speaker signal,
+    # so each change asserts "somebody else is talking now", and a viewer
+    # cannot follow a stage that asserts that eight times a sentence.
+    # MEASURED before this existed: a change every 8.5 words, median run 7,
+    # and 29% of runs three words or shorter -- inside single sentences spoken
+    # by one person. Nobody says one word and stops, so short runs are the
+    # signature of the defect rather than of the material.
+    runs: list[int] = []
+    run_owner: str | None = None
+    for _, speaker, _ in final_order:
+        if runs and speaker == run_owner:
+            runs[-1] += 1
+        else:
+            runs.append(1)
+            run_owner = speaker
 
     print("=" * 62)
     print("FIRST PAINT vs SETTLED SPEAKER")
@@ -308,6 +339,29 @@ def report(collected: dict, read_ahead_s: float, min_read_ahead_s: float) -> int
         )
     else:
         print("  (no clock samples -- cannot place the playhead)")
+    print()
+    print("-" * 62)
+    print("STABILITY -- how often the colour changes (the readability number)")
+    print("-" * 62)
+    if runs:
+        short = sum(1 for run in runs if run <= 3)
+        ordered = sorted(runs)
+        print(f"  colour changes             {max(0, len(runs) - 1)}")
+        print(
+            f"  words per colour change    "
+            f"{len(final_order) / max(1, len(runs)):.1f}"
+        )
+        print(f"  median run                 {ordered[len(ordered) // 2]} words")
+        print(
+            f"  RUNS OF <=3 WORDS          {short}/{len(runs)}"
+            f" = {100.0 * short / len(runs):.0f}%"
+        )
+        print(f"  run lengths                {runs}")
+    if turn_scored:
+        print(
+            f"  recoloured AFTER its turn  {post_turn_recoloured}/{turn_scored}"
+            f" = {100.0 * post_turn_recoloured / turn_scored:.1f}%"
+        )
     print()
     print(f"  distinct settled speakers  {len(speakers)}")
     print(f"  speaker switches           {switches}")

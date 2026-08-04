@@ -2626,10 +2626,14 @@ class SpeakerTracker:
                 replace(public_result, revision_id=0),
                 key,
             ))
-        return self._smooth_isolated_switches(labels)
+        return self._smooth_isolated_switches(
+            labels, observation_keys=observation_keys,
+        )
 
     def _smooth_isolated_switches(
-        self, labels: list[SpeakerAttribution]
+        self,
+        labels: list[SpeakerAttribution],
+        observation_keys: list[str] | None = None,
     ) -> list[SpeakerAttribution]:
         """A LONE WORD MAY NOT CHANGE SPEAKER IN THE MIDDLE OF AN UTTERANCE.
 
@@ -2690,6 +2694,43 @@ class SpeakerTracker:
                 confidence=min(labels[index].confidence, donor.confidence),
                 switch_decision="smoothed-isolated-word",
             )
+            # ...AND MAKE IT STICK. `_record` (called before this, in
+            # `label_words`) already wrote the PRE-smoothing id into
+            # `revision_history`, and `_queue_stabilized_profile` later walks
+            # that same dict and re-emits what it finds through
+            # `drain_revisions` -- so a word fixed here could be un-fixed by a
+            # later correction event carrying the id this rule just removed.
+            # Overwrite the stored entry rather than calling `_record` again:
+            # recording would see a differing previous id, relabel the word
+            # `corrected` and inflate `metrics()["corrections"]`, which is a
+            # behavioural change no test asked for. The smoothed value still
+            # reaches the page through the returned `labels`.
+            if observation_keys is not None and index < len(observation_keys):
+                key = observation_keys[index]
+                if key is not None and key in self.revision_history:
+                    self.revision_history[key] = replace(
+                        self.revision_history[key],
+                        speaker_id=before,
+                        switch_decision="smoothed-isolated-word",
+                    )
+            # Say so. This rule rewrites a speaker AFTER attribution and
+            # deliberately does not `_record`, so until now it was the one
+            # decision in the system that left no trace in `debug: true`
+            # output -- invisible while being the first thing anyone blames
+            # for a wrong colour.
+            if self.debug:
+                print("[speaker] " + json.dumps({
+                    "observation": (
+                        observation_keys[index]
+                        if observation_keys is not None
+                        and index < len(observation_keys)
+                        else None
+                    ),
+                    "smoothed_from": labels[index].speaker_id,
+                    "smoothed_to": before,
+                    "run_words": right - left - 1,
+                    "min_run_words": run,
+                }, ensure_ascii=False))
         return smoothed
 
 
@@ -2988,7 +3029,25 @@ class SortformerHybridSpeakerTracker:
                 self._embedding_fallbacks += 1
                 result = fallback_result
             labels.append(result)
-        return labels
+        # SMOOTH AGAIN, BECAUSE THE LOOP ABOVE THREW THE SMOOTHING AWAY.
+        # `self.fallback.label_words` ends by running
+        # `_smooth_isolated_switches`, but every word that took a native slot
+        # decision here replaced that smoothed answer with a raw per-word
+        # argmax -- `select_sortformer_decision` has no temporal state at all,
+        # so consecutive words are free to land on different slots. The bypass
+        # is the `fallback_result.speaker_id is not None` guard above: whenever
+        # the embedding tracker returned neutral, control reaches
+        # `_from_sortformer(endpoint=True)` and stamps a lone `stable` label
+        # with no run-length check of any kind.
+        # MEASURED on the PR film, settled runs came out
+        # [38, 2, 7, 7, 13, 7, 15, 1, 14, 3, 2, 9, 15, 4, 5, 2, 10, 7, 4, 6]:
+        # a colour change every 8.6 words with 25% of runs three words or
+        # shorter, inside sentences spoken by one person. CWI 2.1 makes colour
+        # THE speaker signal, so each of those asserts a speaker change that
+        # did not happen.
+        return self.fallback._smooth_isolated_switches(
+            labels, observation_keys=observation_keys,
+        )
 
     def drain_revisions(self) -> list[tuple[str, SpeakerAttribution]]:
         return self.fallback.drain_revisions()
@@ -3044,6 +3103,16 @@ class StreamingCaptioner:
         self._word_slots: list[tuple[float, float, str]] = []
         self._final_word_events: dict[str, dict] = {}
         self._word_revisions: dict[str, dict] = {}
+        # Whether read-ahead words carry a provisional speaker at all. A flag
+        # rather than a constant so the lane can be A/B'd in one line: it is
+        # the newest and least-guarded attribution path, and it publishes a raw
+        # per-word Sortformer argmax, so it is the first suspect whenever
+        # colour STABILITY regresses even as correctness improves.
+        self._read_ahead_attribution = bool(
+            cfg.get("live", {})
+            .get("speaker_attribution", {})
+            .get("read_ahead_attribution", True)
+        )
 
     @property
     def audio(self) -> np.ndarray:
@@ -3362,7 +3431,7 @@ class StreamingCaptioner:
         """
 
         tracker = self.speaker_tracker
-        if tracker is None:
+        if tracker is None or not self._read_ahead_attribution:
             return None
         probe = getattr(tracker, "provisional_span", None)
         if probe is None:

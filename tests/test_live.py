@@ -977,6 +977,12 @@ def test_next_runtime_config_reuses_caption_scheduler_values():
     # what leaves recognized-but-uncoloured text on screen to read ahead into.
     # It has to exceed the recognizer's own latency (~1.1 s for the 1120 ms
     # accurate stream) or it buys no read-ahead at all.
+    # It is 1750 and RAISING IT IS NOT FREE, which is not obvious from here:
+    # 2500 delivers ~9x the read-ahead (121 ms -> 1146 ms, measured) and breaks
+    # the film's one held word, taking "is" from lift 0.525em to 0.105em while
+    # every other word measures identical. See `read_ahead_delay_s` in
+    # config.yaml -- the coupling is a bug in when the hold gate freezes, not a
+    # real trade-off.
     assert runtime["readAheadDelayMs"] == 1750
     # It must still clear the median time for a word's TEXT to arrive (~0.62 s
     # measured), or words land past their own onset and never animate.

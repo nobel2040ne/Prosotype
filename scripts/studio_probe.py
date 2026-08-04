@@ -64,7 +64,16 @@ DOM_PHASES = r"""
   const target = getComputedStyle(probe).color;
   probe.remove();
   for (const word of words) {
-    if (getComputedStyle(word).color === target) readAhead += 1;
+    /* READ THE CHARACTER, NOT THE WORD. The 2.2.2 colour turn moved down to
+       `.caption-character` on 2026-08-01 (the wipe crosses a word letter by
+       letter), so `.caption-word` no longer carries the animated colour at
+       all -- it reports whatever it inherits. Measuring the parent made this
+       counter read 0 read-ahead words in every sample of every run, which
+       looks exactly like "CWI 2.2.1 is not being delivered" and is instead
+       the probe looking at the wrong element. */
+    const glyphInk = word.querySelector('.caption-character')
+      || word.querySelector('.word-ink');
+    if (glyphInk && getComputedStyle(glyphInk).color === target) readAhead += 1;
     const glyph = word.querySelector('.word-glyph');
     if (!glyph) continue;
     const transform = getComputedStyle(glyph).transform;
