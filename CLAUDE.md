@@ -34,8 +34,10 @@ AUTOCWI_FAST=1 .venv/bin/python -m autocwi live --file x.wav --once  # headless 
 .venv/bin/python scripts/fetch_streaming_model.py --speaker-only # ONNX speaker + native Sortformer
 .venv/bin/python scripts/fetch_streaming_model.py --sortformer-only # rebuild/prepare Core ML path
 .venv/bin/python -m autocwi live --sample --diarizer embedding # fallback comparison
-.venv/bin/python scripts/fetch_fleurs.py --lang ko --count 300  # one-time eval-set download
+.venv/bin/python scripts/fetch_fleurs.py --lang ko --count 120  # one-time eval-set download
 .venv/bin/python scripts/benchmark.py --lang ko    # THE benchmark: text + word timing
+.venv/bin/python scripts/korean_sweep.py           # KO chunk x decoding A/B (accuracy vs read-ahead)
+.venv/bin/python scripts/fetch_streaming_model.py --korean-sweep # its chunk-16/64 exports
 .venv/bin/python scripts/benchmark.py --lang ko --stress      # + noise/reverb/1.15x
 .venv/bin/python scripts/benchmark.py --lang en --quiet-sweep # InputGain guard
 .venv/bin/python scripts/benchmark.py --audio assets/sample.mp4 --lang en # score-free
@@ -1651,14 +1653,35 @@ words-per-row constant—chooses its visual lines.
   hiding all its output caused avoidable decoder backlog. Use `--whisper MODEL`
   only for the legacy pause-segmented comparison path.
 - Korean uses `assets/streaming-zipformer-ko-174m/`, the 2026 174M causal
-  Zipformer chunk-16 int8 export (320 ms model chunk; KsponSpeech + AIHub,
-  ~6,500 h). Its leading-space tokens preserve 어절 boundaries and timed
+  Zipformer int8 export (KsponSpeech + AIHub, ~6,500 h). Its leading-space
+  tokens preserve 어절 boundaries and timed
   pieces. `verifier_enabled`, `draft_enabled`, and the English TIMIT
-  `onset_prefix` are false in the `ko` overlay. The older online model measured
-  11/76 character errors on the bundled Korean set; this model measured 0/76.
+  `onset_prefix` are false in the `ko` overlay.
   Do not pass Korean through English sidecars or overwrite it with the weaker
   2024 Korean endpoint model. Korean typography is
   `assets/NotoSansKR.ttf`, not the previous static system-font stack.
+  **IT IS THE chunk-32 EXPORT SINCE 2026-08-05, AND THE LEVER IS LATENCY, NOT
+  WEIGHTS.** The repo ships chunk-16/32/64 exports of the SAME checkpoint and
+  the decoding method is free, so `scripts/korean_sweep.py` runs that 6-cell
+  grid on 120 FLEURS ko clips. Two results, both against expectation:
+  * **chunk-64 wins on text and is disqualified on time.** 10.07% vs chunk-16's
+    10.80% normalized CER — but a word first reaches the screen at p90
+    **1552 ms**, and against `display.read_ahead_delay_s` 1.75 that leaves
+    **198 ms** before the playhead turns its colour, under
+    `min_read_ahead_ms` (420). CWI 2.2.1 read-ahead would simply be gone.
+    chunk-32 keeps **758 ms**, still 1.8x the floor.
+  * **`modified_beam_search` is WORSE here, though the model card's whole table
+    uses it.** +0.77 points at chunk-16, +0.43 at chunk-32; it only helps at
+    chunk-64. Greedy stays. Decoding is deterministic, so these are exact
+    numbers, not samples — but re-run the sweep rather than re-arguing them.
+  Shipped chunk-32: CER **10.80% -> 10.54%**, RTF **0.078 -> 0.055**, onset-gap
+  distribution unchanged (median 560 ms, p10 320 / p90 920), which is the check
+  that matters — a backend with better words and worse spans is a downgrade.
+  **MEASURE FIRST PAINT, NOT THE DURABLE WORD.** Scoring only `type: "word"`
+  events puts the lag a whole endpoint late (1152 ms vs 552 ms at chunk-16) and
+  would have disqualified every arm including the shipped one. The studio
+  colours from `cue`/`commit` too, so the read-ahead budget is the FIRST event
+  carrying a `word_id` and text.
 - Apple-Silicon live diarization uses
   `native/sortformer/.build/release/autocwi-sortformer` plus
   `assets/sortformer-coreml/`. The Swift package is pinned to FluidAudio
@@ -1693,7 +1716,7 @@ words-per-row constant—chooses its visual lines.
 
 - Live mode: pre-capture English/Korean selection + confidence-aware speaker
   attribution. English uses its three-stage ASR path; Korean uses the
-  authoritative 174M chunk-16 online Zipformer and finalizes directly at its
+  authoritative 174M chunk-32 online Zipformer and finalizes directly at its
   endpoint.
   Speaker observations now move through unknown/provisional/stable/corrected;
   gated enrollment, EMA centroids, ambiguity checks and switch hysteresis keep
@@ -1731,11 +1754,65 @@ words-per-row constant—chooses its visual lines.
   Recognizer choice is still measured, not assumed: the 2026-06-11 Nemotron 3.5
   A/B'd worse on English (3.25% vs 2.27%), so English stays on the 2026-04-25
   model. Re-run that A/B on FLEURS before swapping any checkpoint.
-- **MEASURED 2026-07-30: Korean is ~12.5% CER, not ~0%.** 44/351 chars on 8
-  FLEURS ko_kr clips; the ~0% came from one easy bundled clip. Much of it is
-  **number formatting** (it writes `2011년` as `이천십일년`) — a convention, not an
-  error, which will rig a provider A/B toward whichever backend matches FLEURS'
-  style. **Write a shared text normalizer before comparing providers.**
+- **THE NORMALIZER EXISTS NOW, AND THE 8-CLIP SLICE WAS LYING TWICE OVER
+  (2026-08-05).** The old entry here read "Korean is ~12.5% CER, 44/351 chars
+  on 8 FLEURS ko_kr clips, much of it number formatting — write a shared text
+  normalizer before comparing providers". Both halves are now measured, and
+  each moved the number in the OPPOSITE direction:
+  * `autocwi.scoring.canonical_korean` reads digits out (`2011년` ->
+    `이천십일년`, via Sino-Korean `sino_korean()`) and drops unspoken
+    punctuation, on reference AND hypothesis alike, so it can only remove a
+    formatting difference and never invent agreement about a phoneme. Tests
+    pin both directions. `scored_units(..., normalize=False)` keeps the raw
+    column so older records stay comparable, and `benchmark.py` prints both.
+  * **The 8 clips were unrepresentative — 120 is the eval set now.** On those
+    8, normalization took CER 12.54% -> **5.19%** (26 of 44 edits sat within
+    six characters of a digit, 59%). On 120 clips it is 13.23% -> **10.54%**:
+    the slice was number-heavy AND easy. Do not quote 5.19%, and do not fetch
+    fewer than ~120 clips — at 351 units one edit moved the rate 0.28 points.
+  So the honest Korean number is **10.54% CER normalized / 13.23% raw**, not
+  ~12.5% and certainly not ~0%.
+  **What is left is NOT number formatting.** The largest remaining category is
+  the FIRST word of a clip: measured on the 8-clip slice, 5 of 8 had an error
+  in their opening word (`다리 밑`, `염`, `합금은` dropped outright). It is the
+  model, not the pipeline — MEASURED, padding 1.5 s of leading silence and
+  disabling `InputGain` both changed nothing, separately and together. The
+  clips needing it have 1.0–1.3 s of leading silence already.
+  The obvious next lever is the Korean endpoint verifier, which is off because
+  a 2024 offline model "changed one phrase this stream had already recognized
+  correctly" — a judgement made on four bundled utterances and now re-testable
+  against 120 scored clips. Not attempted here: it adds a revision lane.
+- **THE KOREAN STRESS MATRIX HAD NEVER BEEN RUN, AND ONE OF ITS CONDITIONS WAS
+  MEASURING THE WRONG THING (2026-08-05).** First Korean `--stress` numbers:
+  clean **10.54%**, `room-noise-14db` **15.94%**, `quiet-device` **52.08%**,
+  `fast-1.15x` **50.06%**. Two of those need reading carefully.
+  * **`quiet-device` was ~0 dB SNR, not a quiet device.** It attenuated speech
+    22 dB over a **-52 dBFS** floor; MEASURED, FLEURS ko speech frames sit at
+    a p90 of -28..-31 dBFS, so they land at -50..-53 — at or BELOW the noise,
+    an effective SNR of **-1.4 to +1.8 dB**. No gain recovers that, because
+    gain lifts the noise equally: instrumented, `InputGain` correctly reached
+    **25.8 dB** and the score was still 73.65%. `conditions.py`'s own
+    `attenuated()` docstring names this exact trap and guards against it with a
+    -78 dBFS floor; `quiet_noise` simply had not been checked. The floor is
+    **-68 dBFS** now (measured 14.8 dB SNR), which is the level test the name
+    claims, and the score moved 73.65% -> **52.08%**.
+    **Re-measure English `--stress` — that total moves too.**
+    **THE REMAINDER IS A REAL LEVEL PROBLEM, AND THE MATCHED-SNR COMPARISON IS
+    WHAT PROVES IT.** `room-noise` and the fixed `quiet-device` now sit at the
+    SAME ~14-15 dB SNR, and score **15.94% vs 52.08%** — 3.3x worse from
+    absolute level alone (-50..-53 dBFS speech). Gain reaches the recognizer
+    without restoring accuracy, so a quiet Korean talker is a genuine booth
+    risk and `input_gain`'s target/headroom deserve a pass against the Korean
+    model specifically.
+  * **`fast-1.15x` at 50% is real, and partly an artifact of the transform.**
+    Not a scoring effect: on 0002 the output collapses from 39 characters to
+    18, and 0007 comes back as unrelated words. But `time_stretch` is a phase
+    vocoder, so the condition conflates tempo with phase smearing, and real
+    fast speech carries no such artifact. Treat it as a red flag to re-test
+    with genuinely fast recordings, not as a measured fast-talker number.
+  **chunk-32 beat chunk-16 under EVERY condition**, which is why the export
+  change is safe and not a clean-speech overfit: clean 10.80 -> 10.54,
+  quiet-device 75.17 -> 73.65, fast-1.15x 53.62 -> 50.06.
 - The benchmark scores **timing as well as text** — a backend with better words
   and worse spans is a downgrade here. It reports onset-gap distributions
   (FLEURS ko: median 520 ms, p10 320 / p90 920; conversational English

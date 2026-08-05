@@ -29,11 +29,20 @@ CORE_MODELS = (
 
 KOREAN_MODEL_ID = "kangkyu/icefall-asr-ko-streaming-zipformer-174m"
 KOREAN_MODEL_DIR = "streaming-zipformer-ko-174m"
+# chunk-32 is what `live.languages.ko.streaming_files` loads; chunk-16 and
+# chunk-64 are the other two exports of the same weights and are fetched so
+# `scripts/korean_sweep.py` can re-run the grid that chose it. Together they
+# are ~470 MB against ~160 MB for the shipped export alone.
 KOREAN_MODEL_FILES = (
     "tokens.txt",
-    "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-    "decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-    "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+    "encoder-epoch-99-avg-1-chunk-32-left-128.int8.onnx",
+    "decoder-epoch-99-avg-1-chunk-32-left-128.int8.onnx",
+    "joiner-epoch-99-avg-1-chunk-32-left-128.int8.onnx",
+)
+KOREAN_SWEEP_FILES = tuple(
+    f"{part}-epoch-99-avg-1-chunk-{chunk}-left-128.int8.onnx"
+    for chunk in (16, 64)
+    for part in ("encoder", "decoder", "joiner")
 )
 
 OFFLINE_VERIFIERS = (
@@ -191,9 +200,10 @@ def fetch_onset_model(assets: Path) -> None:
     print(f"wrote {dest}")
 
 
-def fetch_korean_model(assets: Path) -> None:
+def fetch_korean_model(assets: Path, sweep: bool = False) -> None:
     dest = assets / KOREAN_MODEL_DIR
-    if all((dest / name).is_file() for name in KOREAN_MODEL_FILES):
+    wanted = list(KOREAN_MODEL_FILES) + (list(KOREAN_SWEEP_FILES) if sweep else [])
+    if all((dest / name).is_file() for name in wanted):
         print(f"already present: {dest}")
         return
     try:
@@ -208,7 +218,7 @@ def fetch_korean_model(assets: Path) -> None:
     snapshot_download(
         repo_id=KOREAN_MODEL_ID,
         local_dir=dest,
-        allow_patterns=list(KOREAN_MODEL_FILES),
+        allow_patterns=wanted,
     )
     print(f"wrote {dest}")
 
@@ -235,6 +245,11 @@ def main() -> None:
         action="store_true",
         help="download only the Korean streaming recognizer",
     )
+    parser.add_argument(
+        "--korean-sweep",
+        action="store_true",
+        help="also fetch the chunk-16/64 exports scripts/korean_sweep.py A/Bs",
+    )
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     assets = root / "assets"
@@ -245,8 +260,8 @@ def main() -> None:
     if args.onset_only:
         fetch_onset_model(assets)
         return
-    if args.korean_only:
-        fetch_korean_model(assets)
+    if args.korean_only or args.korean_sweep:
+        fetch_korean_model(assets, sweep=args.korean_sweep)
         return
     fetch_speaker_models(assets)
     fetch_tarball_models(

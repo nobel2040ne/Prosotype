@@ -328,9 +328,62 @@ FLEURS (Conneau et al., CC BY 4.0) is the academic standard for multilingual ASR
 so scores are comparable to published numbers. `--stress` and `--quiet-sweep` are
 conditions applied to that set, not separate benchmarks.
 
-Current: **12.54% CER** on 8 FLEURS ko_kr clips (44/351 chars). A meaningful
-share is number formatting (`2011년` vs `이천십일년`), a convention rather than a
-recognition error — normalize before comparing providers.
+Current Korean: **10.54% CER normalized / 13.23% raw** on 120 FLEURS ko_kr clips
+(575/5453 chars), chunk-32 greedy.
+
+The benchmark prints both columns. The headline is normalized: digits are read
+out (`2011년` → `이천십일년`) and unspoken punctuation dropped, on reference and
+hypothesis alike, so a writing convention cannot decide a backend A/B. `raw` is
+the pre-2026-08-05 scoring, kept so older records stay comparable.
+
+Two superseded numbers, both from an 8-clip slice that was too small to trust —
+at 351 units one edit moved the rate 0.28 points:
+
+- "12.54% CER, 44/351" was the raw score on those 8 clips. On 120 clips the raw
+  score is 13.23%.
+- Normalizing those same 8 clips gives **5.19%**, which looks like a huge win and
+  is an artefact: that slice was unusually number-heavy. Do not quote it.
+
+`scripts/korean_sweep.py` is the export/decoding A/B behind the shipped chunk-32
+config; it scores read-ahead alongside CER, because an export that recognizes
+better but paints later can still break CWI 2.2.1.
+
+**`assets/sample-ko.wav` is `0016.wav` of this eval set** (verified by hash) —
+the bundled Korean demo clip is FLEURS ko_kr row 16 and is *not* held out. A
+good result on the demo clip is therefore not independent evidence about the
+recognizer, and anything tuned against this set is circular with respect to the
+demo. Record separate booth audio and pass it with `--refs` before treating a
+demo run as validation.
+
+### Korean stress matrix (first run, 2026-08-05)
+
+| condition | CER | note |
+|---|---|---|
+| clean | 10.54% | |
+| room-noise-14db | 15.94% | 14 dB SNR plus small-room echoes |
+| quiet-device | 52.08% | 14.8 dB SNR but 22 dB down; was 73.65% pre-fix |
+| fast-1.15x | 50.06% | see caveat below |
+
+`quiet-device`'s floor was **−52 dBFS until 2026-08-05**, which put attenuated
+speech at or below the noise (effective SNR **−1.4 to +1.8 dB**) and made the
+condition impossible rather than quiet. `InputGain` was verified working
+throughout — it reached 25.8 dB — and could not help, because gain lifts noise
+equally. The floor is **−68 dBFS** now (14.8 dB SNR) and the score moved
+73.65% → **52.08%**.
+
+**What is left is a real level problem, and the comparison that shows it is
+`room-noise` vs `quiet-device` at matched SNR.** Both now sit at ~14–15 dB SNR;
+room-noise scores 15.94% and quiet-device 52.08% — **3.3× worse from absolute
+level alone**, since quiet-device speech sits at −50..−53 dBFS. Gain reaches
+the recognizer but does not restore accuracy, so a quiet Korean talker is a
+genuine risk at the booth. This is the strongest argument for checking
+`InputGain`'s target/headroom against the Korean model specifically.
+
+`fast-1.15x` is a genuine collapse, not a scoring artifact — output drops from
+39 characters to 18 on one clip and returns unrelated words on another — but
+`librosa.effects.time_stretch` is a phase vocoder, so the condition mixes tempo
+with phase smearing that real fast speech does not have. Re-test with real
+fast recordings before quoting it as a fast-talker figure.
 
 Superseded 2026-07-30: `benchmark_streaming.py` and `benchmark_asr.py` were
 removed. The old "0 edits / 77 words" came from 3 clips of read narration that

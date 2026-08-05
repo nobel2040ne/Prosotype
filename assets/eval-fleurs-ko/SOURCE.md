@@ -2,8 +2,8 @@
 
 Source: Google FLEURS (`google/fleurs`), split `test`, config `ko_kr`.
 Licence: CC BY 4.0 -- https://creativecommons.org/licenses/by/4.0/
-Downloaded: 2026-07-30
-Rows: 8
+Downloaded: 2026-08-05
+Rows: 120
 
 FLEURS is read speech. It is a real, externally comparable benchmark and it
 fixes the "no Korean eval set at all" problem, but it is NOT booth audio: it has

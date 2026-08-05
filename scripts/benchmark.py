@@ -191,7 +191,8 @@ def main() -> None:
     for condition_index, (condition, transform) in enumerate(active):
         print(f"\n{'=' * 72}\n[{condition}]")
         results: dict[str, dict[str, Transcript]] = {name: {} for name in names}
-        totals = {name: {"edits": 0, "units": 0, "audio": 0.0, "wall": 0.0}
+        totals = {name: {"edits": 0, "units": 0, "audio": 0.0, "wall": 0.0,
+                         "raw_edits": 0, "raw_units": 0}
                   for name in names}
 
         for clip_index, (clip, reference) in enumerate(references.items()):
@@ -215,12 +216,23 @@ def main() -> None:
                     totals[name]["units"] += len(reference_units)
                     grand[name]["edits"] += edits
                     grand[name]["units"] += len(reference_units)
+                    # The raw column is the pre-normalization number, kept so a
+                    # regression against older records is still visible rather
+                    # than hidden behind a scoring change.
+                    raw_reference = scored_units(reference, args.lang,
+                                                 normalize=False)
+                    totals[name]["raw_edits"] += edit_distance(
+                        raw_reference,
+                        scored_units(transcript.text, args.lang,
+                                     normalize=False),
+                    )
+                    totals[name]["raw_units"] += len(raw_reference)
 
-        header = (f"{'backend':<14}{unit_name:>8}{'edits':>11}{'RTF':>8}"
-                  f"{'onset gaps':>31}" if scoring else
+        header = (f"{'backend':<14}{unit_name:>8}{'edits':>11}{'raw':>8}"
+                  f"{'RTF':>7}{'onset gaps':>31}" if scoring else
                   f"{'backend':<14}{'words':>8}{'RTF':>10}{'onset gaps':>38}")
         print(header)
-        print("-" * 72)
+        print("-" * 79)
         for name in names:
             total = totals[name]
             gaps = [gap for clip in results[name].values()
@@ -231,8 +243,11 @@ def main() -> None:
                 print(f"{name:<14}{words:>8}{rtf:>10.3f}{describe(gaps):>38}")
             elif total["units"]:
                 rate = 100 * total["edits"] / total["units"]
+                raw = (100 * total["raw_edits"] / total["raw_units"]
+                       if total["raw_units"] else 0.0)
                 print(f"{name:<14}{rate:7.2f}%{total['edits']:>8}/"
-                      f"{total['units']:<4}{rtf:>7.3f}  {describe(gaps):>29}")
+                      f"{total['units']:<4}{raw:6.2f}%{rtf:>7.3f}  "
+                      f"{describe(gaps):>29}")
             else:
                 print(f"{name:<14}{'no output':>8}")
 
@@ -274,11 +289,18 @@ def main() -> None:
         print(f"  WARNING: small -- one edit moves the rate "
               f"{100 / max(per_condition, 1):.2f} points. Fetch more with "
               f"scripts/fetch_fleurs.py --count 300")
-    if any(has_digits(text) for text in references.values()):
-        print("  NOTE: references contain digits. Number formatting (2011년 vs "
-              "이천십일년) is\n  counted as error and will favour whichever "
-              "backend matches FLEURS' style.\n  Normalize before comparing "
-              "providers.")
+    if args.lang == "ko":
+        print("  The headline CER is NORMALIZED: digits are read out "
+              "(2011년 -> 이천십일년) and\n  unspoken punctuation dropped, on "
+              "reference and hypothesis alike, so a writing\n  convention "
+              "cannot decide a backend A/B. `raw` is the un-normalized column "
+              "the\n  pre-2026-08-05 numbers were measured on. Native Korean "
+              "numerals (하나/둘/셋)\n  are not generated -- references spell "
+              "those out already.")
+    elif any(has_digits(text) for text in references.values()):
+        print("  NOTE: references contain digits. Number formatting is counted "
+              "as error and\n  will favour whichever backend matches the "
+              "reference's style.")
     print("  FLEURS is READ speech -- no spontaneous turn-taking, no room "
           "noise. It is the\n  comparable academic standard, not a booth "
           "simulation.")

@@ -219,10 +219,47 @@ The replacement is the 2026
 [174M Korean causal Zipformer](https://huggingface.co/kangkyu/icefall-asr-ko-streaming-zipformer-174m),
 trained on roughly 6,500 hours of KsponSpeech + AIHub. Its model card reports
 8.255% CER / 0.073 RTF for chunk-16 and 7.815% / 0.054 for chunk-32 on the same
-6,000-cut KsponSpeech evaluation. Local A/B found both chunks perfect on the
-bundled set; chunk-16 was selected because its first visible hypothesis arrived
-at 1.152 s of source audio versus 1.472 s for chunk-32. The configured chunk-16
-path measured 0/76 character edits and 0.083 RTF on this M1.
+6,000-cut KsponSpeech evaluation.
+
+**Chunk-32 has been the shipped export since 2026-08-05, reversing the original
+choice.** The first decision picked chunk-16 on latency alone: both chunks
+scored perfectly on the four bundled KSS utterances, so the only discriminator
+left was that chunk-16's first visible hypothesis arrived at 1.152 s of source
+audio against 1.472 s for chunk-32. Two things were wrong with that comparison.
+The bundled set was too small and too easy to separate the arms at all — it is
+the same "0/76" that also made the older stream look adequate — and latency was
+treated as a quantity to minimize rather than one to spend against a budget.
+
+`scripts/korean_sweep.py` re-ran it as a 6-cell grid (chunk 16/32/64 ×
+greedy/modified_beam_search) over 120 FLEURS ko clips, 5453 scored units,
+scoring normalized CER, RTF, and the moment each word first reaches the screen:
+
+| chunk | decoding | CER | RTF | first paint p90 | read-ahead left at p90 |
+|---|---|---|---|---|---|
+| 16 | greedy | 10.80% | 0.078 | 832 ms | 918 ms |
+| 16 | modified_beam | 11.57% | 0.096 | 832 ms | 918 ms |
+| **32** | **greedy** | **10.54%** | **0.055** | **992 ms** | **758 ms** |
+| 32 | modified_beam | 10.97% | 0.063 | 1032 ms | 718 ms |
+| 64 | greedy | 10.07% | 0.040 | 1552 ms | 198 ms |
+| 64 | modified_beam | 9.83% | 0.048 | 1592 ms | 158 ms |
+
+The read-ahead column is what makes this a CWI decision rather than an ASR one.
+A word must be legible before the playhead reaches it, and the playhead runs
+`display.read_ahead_delay_s` (1.75 s) behind the acoustic clock, so the slack
+is 1.75 s minus the paint lag. chunk-64 has the best text in the table and is
+**disqualified**: 198 ms is under `display.min_read_ahead_ms` (420), which is
+CWI 2.2.1 read-ahead disappearing. chunk-32 keeps 758 ms, still 1.8× the floor,
+and costs 200 ms of median paint lag for −0.26 CER points and 30% less CPU.
+
+Two traps worth keeping:
+
+- **Measure FIRST PAINT, not the durable word.** Scoring only `type: "word"`
+  events puts the lag a whole endpoint late — 1152 ms rather than 552 ms at
+  chunk-16 — and on that basis every arm including the shipped one looks too
+  slow. The studio colours from `cue`/`commit` as well.
+- **The model card's decoding method is not automatically right.** Its whole
+  table is `modified_beam_search`; measured here beam is *worse* at chunk-16
+  (+0.77) and chunk-32 (+0.43) and only pays off at chunk-64. Greedy stays.
 
 A live event trace on 2026-07-25 measured partial stability as well as final
 CER. The 174M decoder revised one current word slot at a time
@@ -235,7 +272,7 @@ first-paint motions—not visible words—to two.
 
 The current model remains the best local streaming choice found:
 
-- its official card reports 8.255% streaming CER at 320 ms for chunk-16;
+- its official card reports 7.815% streaming CER at 640 ms for chunk-32;
 - its 72M sibling is less accurate in the card's direct evaluation;
 - SenseVoiceSmall supports Korean, but sherpa-onnx lists the released Korean
   checkpoint under non-streaming ASR, while FunASR's named streaming Paraformer
@@ -259,6 +296,82 @@ The language boundary remains strict: selection is locked before model load;
 English Parakeet and TIMIT sidecars are disabled; `--sample` is resolved only
 after selection so `--sample --lang ko` uses `assets/sample-ko.wav` rather than
 silently feeding the English CWI video to a Korean recognizer.
+
+### Korean replacement survey (2026-08-05)
+
+A hub-wide sweep for a better Korean recognizer. **Nothing was swapped**, and
+the reason is the survey's main result: the incumbent 174M Zipformer is at or
+near the top of what exists for *local streaming Korean with word timings*.
+
+Reported Korean CER, from each model's own source. **These are different test
+sets and normalizations and are NOT directly comparable** — they are here to
+place the incumbent, not to rank challengers:
+
+| model | Korean CER | source set | params | streaming | word spans |
+|---|---|---|---|---|---|
+| **174M Zipformer (incumbent)** | **7.815%** | KsponSpeech | 174M | yes | yes |
+| Nemotron 3.5 ASR streaming 0.6B | 7.12% | NVIDIA internal | 600M | yes | via transducer |
+| SKT A.X-K2-ALM | 9.00 / 9.12 | KsponSpeech clean/other | ~22B | yes | not documented |
+| Whisper Large v3 | 16.6–18.0% | KsponSpeech (OpenKoASR) | 1.5B | no | no |
+| Qwen3-ASR 1.7B | worse than Whisper on ko | AIHub tel. (OpenKoASR) | 2B | both | separate aligner |
+
+The incumbent beats SK Telecom's 22B audio LM on that LM's own benchmark, and
+beats Whisper Large v3 by more than 2x, at 157 MB int8 on CPU. That is the
+finding: for this task the small specialist wins, and "swap in a bigger
+multilingual model" would be a regression.
+
+**The one genuine challenger is Nemotron 3.5 ASR streaming 0.6B, and it is
+BLOCKED, not rejected.** It is cache-aware streaming, covers Korean in its
+"transcription-ready" tier, and would collapse the English/Korean split onto
+one recognizer. Three things stop it today:
+
+- **sherpa-onnx support is unreleased.** Multilingual Nemotron 3.5 needs a
+  `prompt_index` encoder input (PR #3671). `1.13.4` is the newest version on
+  PyPI, it is what `requirements.txt` pins, and its
+  `OnlineRecognizer.from_transducer` has no `prompt_index` parameter —
+  verified locally. Adopting it now means building sherpa from master, which
+  also carries English ASR, the verifier, speaker embeddings and audio
+  tagging. Wait for a release.
+- **The published export is fp32 and ~2.4 GB** (`pantinor/…-onnx`, encoder
+  with external data). Community int8/MLX/LiteRT quantizations exist but none
+  is a sherpa-onnx `nemo_transducer` int8 build.
+- **Its Korean number is NVIDIA's own eval**, not FLEURS, so 7.12% vs the
+  incumbent's 10.54% here is not a comparison. Re-measure with
+  `scripts/benchmark.py --lang ko` before believing any of it.
+
+Ruled out for the STREAMING lane, all for the same structural reason — the
+binding constraint is per-word `start`/`end`, not text:
+
+- **Moonshine** — the streaming checkpoints (Tiny/Small/Medium) are
+  English-only; `moonshine-tiny-ko` is offline and tiny. Encoder-decoder, so
+  no reliable word onsets.
+- **Qwen3-ASR, VibeVoice-ASR, ARK-ASR, Fun-ASR-MLT-Nano** — the 2026 wave is
+  LLM-style seq2seq. Word timing needs a *separate* forced aligner
+  (`Qwen3-ForcedAligner-0.6B`), which is a second model on the critical path
+  and cannot run causally.
+- **SKT A.X-K2-ALM** — 22B on a frozen MoE LLM, research licence. Not
+  real-time on an M1 CPU at any quantization.
+- **The 2024 `sherpa-onnx-streaming-zipformer-korean-2024-06-16`** — already
+  measured worse here (14.47% CER on the bundled set) and superseded.
+
+**Where a swap IS available today: the Korean endpoint verifier lane, which is
+off.** `verifier_enabled: false` for Korean, and the offline model does not
+need word timings of its own — `EndpointVerifier` reconciles per word onto the
+streaming timeline. Our pinned sherpa 1.13.4 already exposes a dozen offline
+families, verified locally, several Korean-capable: `from_qwen3_asr` (1.13.4
+is the version that ADDED it; an int8 sherpa export exists at
+`thieunv/sherpa-onnx-qwen3-asr-0.6B-int8`), `from_sense_voice`,
+`from_funasr_nano`, `from_cohere_transcribe`, `from_whisper`,
+`from_omnilingual_asr_ctc`, plus plain `from_transducer` for the 2024 offline
+Korean Zipformer already tested here.
+
+That lane is worth trying because it targets the measured top remaining error:
+the FIRST word of an utterance, which an offline pass sees with full right
+context. The reason it is off — a 2024 model "changed one phrase this stream
+had already recognized correctly" — was a judgement made on four bundled
+utterances, and there are now 120 scored clips to re-test it against. Note the
+OpenKoASR caution before picking Qwen3: on Korean it ranked *below* Whisper
+Large v3, so Korean breadth in a model card is not Korean quality.
 
 ## Speech emotion / intention sidecar decision (2026-07-25)
 

@@ -41,7 +41,7 @@ mode — running it hidden wasted CPU without improving the visible captions.
 Endpoint corrections (insertions, deletions, replacements) are aligned back onto
 the streaming word timeline rather than re-rendering the sentence.
 
-**Korean** runs a single 174M causal Zipformer (320 ms chunks), trained on
+**Korean** runs a single 174M causal Zipformer (640 ms chunks), trained on
 ~6,500 hours of Korean speech. It finalizes directly at each phrase end. Its
 timed, leading-space tokens preserve Korean 어절 (word) boundaries. Korean does
 not use the English-only verifier or onset sidecar.

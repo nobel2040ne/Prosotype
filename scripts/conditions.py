@@ -36,11 +36,34 @@ def room_noise(audio: np.ndarray, rng: np.random.Generator) -> np.ndarray:
 
 
 def quiet_noise(audio: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Speech attenuated 22 dB over an absolute -52 dBFS device floor."""
+    """Speech attenuated 22 dB over an absolute -68 dBFS device floor.
+
+    This is a LEVEL test -- can the pipeline recover a quiet talker on a quiet
+    device -- which is `InputGain`'s job and is what the name has always
+    claimed.
+
+    **The floor was -52 dBFS until 2026-08-05 and that made it an SNR test at
+    roughly 0 dB, i.e. impossible by construction.** MEASURED on FLEURS ko:
+    speech frames sit at a p90 of -28 to -31 dBFS, so 22 dB down puts them at
+    -50 to -53 dBFS -- at or BELOW a -52 dBFS noise floor, an effective SNR of
+    **-1.4 to +1.8 dB**. Gain cannot rescue that, because it lifts the noise
+    equally: instrumented, `InputGain` correctly reached 25.8 dB and the
+    recognizer still scored **73.65% CER** where the same audio clean scores
+    10.54% and at a true 14 dB SNR (`room_noise`) scores 15.94%. That number
+    was read as "Korean collapses on a quiet mic" and it was an artifact of
+    this line.
+    `attenuated()` below already guarded against exactly this and says so; the
+    two conditions were simply written with different care. -68 dBFS keeps the
+    quietest speech ~15 dB clear of the floor, so the condition measures level
+    handling again rather than re-testing `room_noise`.
+
+    Re-measure English (`--lang en --stress`) after touching this: the stress
+    matrix totals on both languages move.
+    """
 
     quiet = audio * (10 ** (-22 / 20))
     noise = rng.standard_normal(len(audio)).astype(np.float32)
-    noise *= 10 ** (-52 / 20) / max(float(np.sqrt(np.mean(noise**2))), 1e-6)
+    noise *= 10 ** (-68 / 20) / max(float(np.sqrt(np.mean(noise**2))), 1e-6)
     return np.clip(quiet + noise, -1.0, 1.0).astype(np.float32)
 
 

@@ -1019,7 +1019,7 @@ live:
       label: Korean
       native_label: 한국어
       description: 6,500-hour Korean causal Zipformer
-      model_label: Korean Zipformer 174M · 320ms
+      model_label: Korean Zipformer 174M · 640ms
       streaming_model_dir: assets/streaming-zipformer-ko-174m
       # The 2026 174M stream is already the most accurate local recognizer in
       # the measured Korean A/B. The older 2024 stream scored 14.47% CER on the
@@ -1030,13 +1030,37 @@ live:
       # changed one phrase that this stream had already recognized correctly.
       # Do not let a weaker endpoint model overwrite the stronger live text.
       verifier_enabled: false
+      # MEASURED 2026-08-05 with `scripts/korean_sweep.py` on 120 FLEURS ko
+      # clips (5453 scored units, normalized CER -- see autocwi/scoring).
+      # The repo ships chunk-16/32/64 exports of the SAME weights, and the
+      # decoding method is free, so this is a 6-cell grid nobody had run:
+      #
+      #  chunk  decoding                CER     RTF   paint p90   read-ahead p90
+      #     16  greedy (was shipped) 10.80%   0.078      832 ms          918 ms
+      #     16  modified_beam        11.57%   0.096      832 ms          918 ms
+      #     32  greedy      <-- now  10.54%   0.055      992 ms          758 ms
+      #     32  modified_beam        10.97%   0.063     1032 ms          718 ms
+      #     64  greedy               10.07%   0.040     1552 ms          198 ms
+      #     64  modified_beam         9.83%   0.048     1592 ms          158 ms
+      #
+      # chunk-64 wins on text and is DISQUALIFIED on time: `paint p90` is when
+      # the worst-decile word first reaches the screen, and at 1.55 s against
+      # `display.read_ahead_delay_s` 1.75 it leaves 198 ms before the playhead
+      # turns that word's colour -- under `min_read_ahead_ms` (420), i.e. CWI
+      # 2.2.1 read-ahead is gone. chunk-32 keeps 758 ms, still 1.8x the floor.
+      #
+      # The model card's own table is all `modified_beam_search`, but MEASURED
+      # here beam is WORSE at chunk-16 (+0.77) and chunk-32 (+0.43) and only
+      # helps at chunk-64. Greedy stays. Do not re-litigate without re-running
+      # the sweep -- the decoding is deterministic, so these are exact, not
+      # sampled.
       decoding_method: greedy_search
       streaming_max_active_paths: 8
       streaming_files:
         tokens: tokens.txt
-        encoder: encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx
-        decoder: decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx
-        joiner: joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx
+        encoder: encoder-epoch-99-avg-1-chunk-32-left-128.int8.onnx
+        decoder: decoder-epoch-99-avg-1-chunk-32-left-128.int8.onnx
+        joiner: joiner-epoch-99-avg-1-chunk-32-left-128.int8.onnx
       # The TIMIT first-phone sidecar maps English phones to English letters.
       # Korean stays truly streaming through Zipformer's subword emissions,
       # without inventing Latin-prefix hints.

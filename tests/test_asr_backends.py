@@ -22,7 +22,11 @@ from asr_backends import (  # noqa: E402
 )
 from benchmark import align_words, onset_gaps  # noqa: E402
 
-from autocwi.scoring import normalized_words, scored_units  # noqa: E402
+from autocwi.scoring import (  # noqa: E402
+    normalized_words,
+    scored_units,
+    sino_korean,
+)
 
 
 # -- Speechmatics -----------------------------------------------------------
@@ -221,3 +225,48 @@ def test_korean_is_scored_by_character_even_when_mislabelled_as_english():
     assert scored_units(korean, "ko") == list("다리밑수직간격은")
     assert scored_units(korean, "en") == list("다리밑수직간격은")   # guarded
     assert scored_units("the cat sat", "en") == ["THE", "CAT", "SAT"]
+
+
+def test_sino_korean_drops_the_silent_leading_one():
+    """15 is 십오, never 일십오; 1940 is 천구백사십, never 일천구백사십.
+
+    The ones place keeps its digit, which is what makes 10_000 read 일만
+    without a special case.
+    """
+
+    assert sino_korean(15) == "십오"
+    assert sino_korean(1940) == "천구백사십"
+    assert sino_korean(2011) == "이천십일"
+    assert sino_korean(100) == "백"
+    assert sino_korean(10_000) == "일만"
+    assert sino_korean(0) == "영"
+    assert sino_korean(305) == "삼백오"
+
+
+def test_korean_scoring_ignores_number_formatting_and_punctuation():
+    """FLEURS writes `2011년`; every recognizer here says `이천십일년`.
+
+    Scoring those as substitutions measures a WRITING CONVENTION. MEASURED on
+    the 8-clip FLEURS ko slice, 26 of 44 edits sat within six characters of a
+    digit, which is enough to decide a checkpoint A/B on formatting alone.
+    """
+
+    reference = '"1940년 8월 15일 연합군은 남부를 침략했다.'
+    hypothesis = "천구백사십 년 팔월 십오일 연합군은 남부를 침략했다"
+
+    assert scored_units(reference, "ko") == scored_units(hypothesis, "ko")
+    # ...and the raw column still sees the difference, so a regression against
+    # the pre-normalization records stays visible instead of being hidden.
+    assert (scored_units(reference, "ko", normalize=False)
+            != scored_units(hypothesis, "ko", normalize=False))
+
+
+def test_korean_normalization_cannot_invent_phoneme_agreement():
+    """It may only remove formatting -- a real substitution must still score."""
+
+    # 드래군 -> 드래곤 is a genuine recognition error next to a digit-free span.
+    assert (scored_units("드래군 작전", "ko")
+            != scored_units("드래곤 작전", "ko"))
+    # A dropped leading word stays a deletion.
+    assert (scored_units("염소 사육은", "ko")
+            != scored_units("소 사육은", "ko"))

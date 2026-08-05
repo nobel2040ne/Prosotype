@@ -120,7 +120,16 @@ def test_korean_live_profile_uses_korean_models_only():
     assert live["lang"] == "ko"
     assert live["streaming_model_dir"].endswith("streaming-zipformer-ko-174m")
     assert live["streaming_files"]["encoder"].endswith(".int8.onnx")
-    assert "chunk-16" in live["streaming_files"]["encoder"]
+    # chunk-32 since 2026-08-05: same weights, 10.80% -> 10.54% normalized CER
+    # on 120 FLEURS ko clips at 0.078 -> 0.055 RTF, still leaving 758 ms of
+    # read-ahead at p90. chunk-64 scores better still (10.07%) and is
+    # DISQUALIFIED -- it leaves 198 ms, under `display.min_read_ahead_ms`.
+    # Re-run `scripts/korean_sweep.py` before changing this.
+    assert "chunk-32" in live["streaming_files"]["encoder"]
+    for part in ("encoder", "decoder", "joiner"):
+        # A mixed-chunk triple loads without error and decodes badly, so pin
+        # all three rather than just the encoder.
+        assert "chunk-32" in live["streaming_files"][part]
     assert live["draft_enabled"] is False
     assert live["verifier_enabled"] is False
     assert live["decoding_method"] == "greedy_search"
