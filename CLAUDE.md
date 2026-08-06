@@ -163,9 +163,10 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
 - **Stage is a stable caption stack, not a second live-text panel.**
   `selectStableCaptionStack()` flattens revisable speaker and utterance
   partitions into fixed-width rows of **as many words as the stage can carry**
-  (`planStageLayout`, bounded by `display.studio_stack_words_min`…
-  `studio_stack_words_per_block`) and retains **as many rows as the stage can
-  actually hold** without
+  (a measured em budget since 2026-08-06 — see the width-budget entry below;
+  `planStageLayout`'s `display.studio_stack_words_min`…
+  `studio_stack_words_per_block` is now only the ceiling) and retains **as many
+  rows as the stage can actually hold** without
   hiding recognized provisional words — including the read-ahead words the
   playhead has not reached, which are exactly what the viewer is meant to read
   early. Transcript keeps complete turns and speaker/utterance partitions.
@@ -256,6 +257,16 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   compass readout again); and the compass's `Hardware: Mono input`, which said
   what `Direction: Awaiting array` says one line above it. Measured at 1440×900
   the stage went 974×596 → **1072×729** and the caption type 37.4 → **47.1px**.
+  **AND THE STAGE'S BORDER BOX IS NOW THE WORKSPACE BOX (2026-08-06, also at
+  the user's request).** `.caption-stage` was a rounded card inset 14px/16px
+  inside `.workspace`, so the studio carried TWO framing systems: a full-bleed
+  hairline grid (the topbar's bottom rule, the rail's left rule, the window
+  edges) and a floating panel repeating that same boundary 16px inside it.
+  Flush, the stage's edges ARE those rules, so the frame is drawn once — which
+  is why the border and the `--r-lg` radius went with the padding rather than
+  surviving it. Measured at 1440×900 the stage went 1072×729 → **1104×757** and
+  the caption type 28.3 → **29.2px**; `--caption-width-cap` follows the
+  container in `cqw`, so it tracks automatically.
 - **TWO DESIGN SYSTEMS, AND THE BOUNDARY IS THE WORD.** (2026-07-30.) The
   studio CHROME follows the Apple design analysis skill; the CAPTIONS follow
   CWI, which outranks it. The dividing line is literal: anything inside
@@ -451,27 +462,145 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   turn. Note also that sharing one `observation_group` per utterance is
   mandatory for any repeated pass, because `_profile_is_stable` counts DISTINCT
   groups and `label_words` allocates one per call.
-- **THE STAGE ROWS FEED THE MOTION CLOCK. LAYOUT CHANGES ARE MOTION CHANGES
-  (2026-08-05).** Rows fill a median of **65%** of the line because they break
-  on a WORD COUNT while a row's width is set by its CHARACTERS, and the type
-  size comes from the worst case that count can produce. Chunking on width
-  instead fixes it — measured, median fill 65% -> 76%, max 95%, rows carrying
-  1–14 words, 0 overflow in 531 row-samples — and it was still REVERTED,
-  because the user reported "the motion has changed" and they were right:
-  * `live-studio.tsx` derives `paceGaps` by flattening the **stage rows**, and
-    `paceGapS` sets `--motion-duration`, i.e. how long every word's pop and
-    wave run. The rows are a partition of the word list and the retained window
-    holds however many words those rows happen to carry, so re-chunking moves
-    which words sit at the edges of that list.
+- **THE STAGE ROWS NO LONGER FEED THE MOTION CLOCK (fixed 2026-08-06).** Rows
+  used to fill a median of **65%** of the line because they break on a WORD
+  COUNT while a row's width is set by its CHARACTERS, and the type size comes
+  from the worst case that count can produce. Chunking on WIDTH fixes that, and
+  the first attempt was reverted on 2026-08-05 because the user reported "the
+  motion has changed" and they were right. Three causes were recorded; the
+  first was the real one and it is now repaired:
+  * **`paceGaps` and `holdGaps` read the WORD LIST, not the rows.**
+    `CaptionFeed` used to derive both by flattening its `paragraphs` prop —
+    which on Stage is the RETAINED ROWS — so a word at the edge of the retained
+    window had no neighbour to measure against, and which words sat at those
+    edges was a function of how the chunker had packed the rows. `paceGapS`
+    sets `--motion-duration` and the hold gate is `min(gap_before, gap_after)`,
+    so LAYOUT WAS AN INPUT TO THE MOTION CLOCK. It now takes a separate
+    `timingWords` prop: the whole ordered recording, independent of what the
+    stage is showing. The rows still decide what is DRAWN.
+    MEASURED, this is a repair and not just a decoupling — the build's own
+    run-to-run noise floor fell below pristine HEAD's on every channel:
+    weight-peak max |d| **434 -> 47**, peak-size max **0.797 -> 0.053**, and
+    words whose hold lift differed between two runs **1 -> 0**. Those outliers
+    were the flake, and they were layout reaching the clock.
   * Row ids are `stage:${firstWordId}`, so re-chunking re-keys rows, remounts
-    them and re-arms every word inside.
+    them and re-arms every word inside. Still true — which is why row
+    membership is frozen (below), not why width chunking was unsafe.
   * Bigger rows also change how often the Stage FLIP runs — a new row appears
-    less often but carries more text.
-  Fixing the first point is easy and is a genuine repair (pass the full
-  ordered word list for timing, not the rows). The other two are inherent to
-  changing row composition. **Anything that touches the chunker must be
-  fingerprinted with `scripts/word_motion.py` before and after**, not just
-  measured for fill.
+    less often but carries more text. Accepted.
+  **Anything that touches the chunker must still be fingerprinted with
+  `scripts/word_motion.py` before and after**, not just measured for fill, and
+  the fingerprint must be keyed by `word_id` — `word_motion.py` keys by
+  `(index, text)` and a layout change moves every index.
+- **THE WIDTH BUDGET, AS SHIPPED (2026-08-06).** `selectStableCaptionStack`
+  takes a `StageWidthBudget` and breaks a row when it is FULL in em rather than
+  when it has counted to N; `wordsPerCaption` survives as a ceiling. MEASURED
+  at 1440x900 on `--sample`, row fill **64% -> 78% median** (p90 81%, max 85%),
+  rows carrying 3–13 words, and the motion is inside the noise floor with every
+  acceptance number intact (`louder` 1.80x/884, `softer` 0.82, held `is`
+  0.525em at 1.15x/400).
+  Three things decide it and each was measured, not chosen:
+  * **`width_em = 0.4343 * chars + 0.4289`, fitted on a SETTLED stage.**
+    `.caption-word` is an inline-grid whose cell is `max(normal, crest)`, so a
+    word sampled mid-crest reads wide, and the first fit defended against that
+    by taking each word's NARROWEST observed width during playback. A minimum
+    over noisy samples is a biased-LOW estimator: measured, it under-read by
+    **+0.062em per word**, i.e. **+0.74em on a 12-word row**, which is a
+    systematic overrun concentrated in exactly the short-word rows the budget
+    packs hardest. A replayed capture settles every word behind the playhead,
+    so read the whole stage at rest at once and take no minimum at all.
+  * **`fill` is a RESERVE, and what it covers is the CREST.** Measured per
+    capture: fit residual ~1em on a 12-word row, and crest **median +1.19em,
+    max +4.92em** — which does not scale with word count (4.92em on an 11-word
+    row, 0.14em on a 15-word one; it is ONE loud word, so `spread*sqrt(n)` is
+    not the model). Post-formation GROWTH used to be the dominant term and is
+    now re-broken for instead (below). At 0.92 the reserve was 2.63em and a row
+    was cut past the stage edge on roughly one capture in three; at **0.82**
+    nothing is clipped and 0 rows even reach the feed's content box.
+    **0.82 IS A MOTION NUMBER, NOT A LAYOUT ONE.** 0.87 clips nothing either
+    and fills more (median 83% vs 78%) — but a fuller row sits closer to its
+    break, so more words re-break and more words are rebuilt, and the held "is"
+    measured **4 of 6 runs right at 0.87 against 6 of 6 at 0.82**. `WordMemo`
+    makes a rebuild value-identical; it does not make one free. Raising this
+    means re-running the six-capture check, not arguing about fill.
+  * **Measure clipping against the STAGE, not the feed.** `.caption-stage`
+    carries `overflow: hidden`; `.caption-feed`'s right padding is the gutter
+    that exists to absorb a row-final word's mid-pop overhang, so a row
+    spilling into it is the design working. Scoring against the feed's content
+    box reports rows "overflowing" that lose no text.
+  **A ROW RE-BREAKS WHILE ITS WORDS ARE STILL HYPOTHESES, AND THAT IS ONLY SAFE
+  BECAUSE OF `WordMemo` — THE TWO SHIP TOGETHER (2026-08-06).** A word that is
+  not `final` is read-ahead text nobody has read, so the ahead-of-the-playhead
+  invariant permits re-breaking it; gated on `final`, the split only ever moves
+  the TAIL down, so the row being read keeps its id and its first word. It also
+  retires a STALE break: while a word is unsettled the `starts` ratchet is
+  ignored and capacity alone decides, which is what removes the sliver rows.
+  Built without `WordMemo` first, it measured the held "is" right **3 of 6**
+  against 3 of 3 without re-breaking, and was reverted for a day. With
+  `WordMemo` it is **6 of 6**. Do not re-enable one without the other.
+- **A WORD THAT CHANGES ROW IS REBUILT, AND WHAT IT FORGETS IS THE BUG
+  (2026-08-06).** A row is a DOM element and a word is its CHILD, so React
+  reconciles words within one row only: `key={id}` preserves identity among
+  siblings and does nothing across parents. Moving a word to another row
+  therefore UNMOUNTS it and constructs a new one — new DOM node, and every
+  `useState`/`useRef` inside `MotionWord` re-derived from scratch. That is why
+  every attempt to re-flow rows here has changed the motion, and it is an
+  artifact of the tree shape, not a law:
+  * The rebuild ITSELF is invisible. A word only changes row while it is still
+    ahead of the playhead, so nothing has begun animating; `--turn-delay` is
+    re-derived against the same frozen absolute moment and the word paints the
+    same. The forgotten values were the entire casualty.
+  * Two were still child-local and both were live hazards. `duration` is
+    derived from `paceGapS`, which is **0 until the NEXT word arrives**, so a
+    word rebuilt after its neighbour landed re-derived a DIFFERENT motion
+    duration than the one it was already wearing. `holdAmount` re-ran the
+    settle race that `holdSettled` exists to win.
+  * `WordMemo` holds both in `CaptionFeed`, keyed by word id — the same pattern
+    `holdMemoRef` already used for the hold GAP, for exactly this reason. Held
+    in lazily-initialised STATE, not a ref, because the children read it during
+    render, which `react-hooks/refs` forbids for a ref (the same rule
+    `StageMemory` hit).
+  MEASURED: the held "is" 6 of 6 runs correct, and the build's own run-to-run
+  noise floor now beats PRISTINE HEAD's on every channel — peak-size max |d|
+  **0.797 → 0.128**, weight-peak max **434 → 80.5**, words differing in hold
+  lift **1 → 0**. So this also closed part of "a second source of
+  nondeterminism remains and has not been found": it was the rebuild.
+  Still do not claim the held word is deterministic — 6 runs is 6 runs.
+  **THE 2–3 WORD SLIVER ROWS ARE THE ANCHOR RATCHET, AND EVERY BREAK THAT MADE
+  THEM WAS CORRECT (measured 2026-08-06).** The user asked why a row carries
+  fewer than two words. Instrumenting the chunker's real decisions on
+  `--sample`: **17 anchors born, 17 of them on a genuinely full row, 0 on a row
+  that was not full** — and **3700 of 16145 row-opening decisions are RATCHET
+  RE-FIRES**, a word re-opening its row when that row is no longer full. The
+  arithmetic is not wrong; the rows go short AFTER the fact. Four candidates
+  were tested and three eliminated by measurement:
+  * NOT eviction — `rows.slice(-stackLimit)` chunks the whole history every
+    render, so a top row is never a fragment;
+  * NOT deletion — **0 of 19 rows ever lost a word** across a full capture;
+  * NOT the width test — reconstructed at the split, `'colors will distinguish'`
+    (10.41em) + `'characters'` (4.77em) = 15.18em against a 26.94em ceiling,
+    i.e. it SHOULD have fit; likewise `'in this army'` + `'to'` at 6.93em and
+    `'my godan'` + `'feel'` at 6.06em;
+  * NOT the budget drifting — `--row-budget-em` measured constant at 32.850 and
+    `--stack-words` at 9 across all 472 samples.
+  What is left is the interaction of two individually-correct rules: a break is
+  made when the row is full, and `memory.starts` is a RATCHET so a word that has
+  started a row keeps starting it, which is what stops already-read text from
+  re-flowing. When the recognizer later INSERTS words ahead of an existing
+  anchor (an endpoint respelling that adds text where the hypothesis had none),
+  those words land between two anchors that were each born correctly against
+  different text, and the leftover between them is a sliver no rule may merge
+  away. Note this also means the anchors are NOT born in word order.
+  It is a property of the anchoring rule (2026-08-05), not of the width budget
+  — but the budget makes it more visible, because a WORD COUNT break sits at the
+  same index however the text is respelled while a WIDTH break moves.
+  **FIXED the same day, once `WordMemo` made a rebuild safe:** while a word is
+  unsettled the `starts` ratchet is ignored and capacity alone decides, so a
+  break made against text that no longer exists is retired. MEASURED over a
+  full capture, permanent slivers **3–4 rows seen 200–380 samples each → one
+  2-word row seen 14 samples** while it was still filling, which is just the
+  newest row being partial. Two rows shed a tail word, which is the re-break
+  working.
 - **"is" OCCURS TWICE IN THE FILM AND ONLY THE FIRST IS HELD (2026-08-05).**
   "as each word **is** spoken" is the held one; "This **is** what it looks
   like" is not. A `word_motion.py` comparison keyed by word TEXT silently reads

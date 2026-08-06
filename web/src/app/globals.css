@@ -474,13 +474,22 @@ button {
    FAST", a title repeating the Stage tab, and word/speaker/signal counts the
    rail already reports) and the transport bar together cost ~135px of stage
    height for text that duplicated other text. */
+/* THE STAGE'S BORDER BOX IS THE WORKSPACE BOX (2026-08-06, at the user's
+   request). It used to be a rounded card inset 14px/16px inside the workspace,
+   which meant the studio carried TWO framing systems at once: a full-bleed
+   hairline grid (the topbar's bottom rule, the rail's left rule, the window
+   edges) and a floating panel that repeated the same boundary 16px inside it.
+   Flush, the stage's edges ARE those rules, so the frame is drawn once.
+   It is also stage: measured at 1440x900 the stage goes 1072x729 -> 1104x757,
+   and `--caption-width-cap` follows the container (`cqw`), so the caption type
+   grows with it -- the same reasoning that removed the nav rail, the workspace
+   header and the transport bar on 2026-07-30. */
 .workspace {
   grid-area: workspace;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  padding: 14px 16px;
   background: var(--workspace-bg);
 }
 
@@ -489,8 +498,8 @@ button {
   flex: 1 1 auto;
   min-height: 300px;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  /* No border and no radius: flush against the topbar rule, the rail rule and
+     the window, a border here would double every one of them. */
   background: var(--stage-bg);
   /* The caption size is bounded by this box in BOTH axes -- see `.caption-feed`.
      `cqw`/`cqh` are the only units that track it: the signal rail toggles, so no
@@ -2304,9 +2313,8 @@ button {
     border-left: 0;
     pointer-events: auto;
   }
-  .workspace {
-    padding: 12px 10px;
-  }
+  /* Flush here too -- see the desktop rule. On a phone the inset cost a larger
+     share of the stage than it did at 1440px. */
   .caption-feed {
     left: 3%;
     right: 3%;

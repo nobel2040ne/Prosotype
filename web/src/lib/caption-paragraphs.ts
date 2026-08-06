@@ -96,10 +96,80 @@ export interface StageMemory {
   placed: Set<string>;
   /** Acoustic time of the furthest word placed so far, in seconds. */
   newestPlaced: number;
+  /**
+   * Which row (by its anchor's word id) each placed word belongs to.
+   *
+   * MEMBERSHIP IS DECIDED ONCE, AND THAT IS WHAT MAKES A WIDTH BUDGET SAFE.
+   * Anchored row STARTS already stop an edit from re-chunking the rows below
+   * one. They do not stop a break from moving INSIDE a row, because the break
+   * test is re-evaluated on every render: with a word COUNT that is harmless
+   * (respelling does not change the count), but a WIDTH grows whenever a word
+   * is respelled, so the row would overrun, open a new anchor mid-row, and push
+   * its tail down -- re-keying every row below and remounting the words in
+   * them. Deciding membership at first placement removes the re-evaluation
+   * entirely: a lengthened word makes its own row wider, never shorter.
+   *
+   * RE-BREAKING WHILE A WORD IS STILL A HYPOTHESIS WAS BUILT, MEASURED AND
+   * REVERTED (2026-08-06). The argument for it is good: a word placed as a stub
+   * grows into its settled spelling, so a row that fit when frozen can overrun
+   * later -- measured on `--sample`, one row per capture, worst 6.33em past the
+   * line -- and a word that is not `final` is still read-ahead text nobody has
+   * read, so the ahead-of-the-playhead invariant permits revising it. Gated on
+   * `final`, splitting only ever moved the TAIL into a new row, so the row the
+   * viewer was reading kept its id and its first word. Clipping went to ZERO.
+   * It still cost the motion: the moved words remount, and the held word's
+   * `holdAmount` lives in child state, so a remount re-runs the race CLAUDE.md
+   * records as not fully closed. MEASURED over six runs, the film's one held
+   * word ("is" in "as each word is spoken") came out right 3 times and wrong 3
+   * -- 0.000em and 0.105em against its 0.525em -- where the same build without
+   * re-breaking was right 3 of 3. A 50% flake on an acceptance number is worse
+   * than a rare clipped row, so the reserve carries the growth instead.
+   * Retrying this means first lifting the hold state out of `MotionWord` so a
+   * remount cannot lose it -- which is motion work, not layout work.
+   */
+  rowOf: Map<string, string>;
+}
+
+/**
+ * How wide a row may get, for a chunker that has no DOM.
+ *
+ * MEASURED on the bundled film through the live studio: `width_em =
+ * 0.4343 * chars + 0.4289`, the intercept covering side bearings and the .30em
+ * inter-word margin. Residuals run +1.21/-0.97em about a median of +0.005em,
+ * which is why `fill` leaves slack rather than aiming at 1.0 --
+ * `.caption-words` is `nowrap`, so an over-long row is CUT, silently.
+ *
+ * FIT IT ON A SETTLED STAGE, NOT ON A MINIMUM OVER LIVE SAMPLES. `.caption-word`
+ * is an inline-grid whose cell is `max(normal, crest)`, so a word sampled
+ * mid-crest reads wide, and the first fit here defended against that by taking
+ * each word's NARROWEST observed width. A minimum over noisy samples is a
+ * biased-LOW estimator: measured, it under-read by a mean of +0.062em per word,
+ * which is +0.74em on a 12-word row -- a systematic overrun that grows with
+ * exactly the short-word rows the width budget packs hardest. A replayed
+ * capture settles every word behind the playhead, so the whole stage can be
+ * read at rest at once with no minimum-taking at all.
+ */
+export interface StageWidthBudget {
+  /** Usable row width in em -- `planStageLayout`'s `rowBudgetEm`. */
+  rowEm: number;
+  charEm: number;
+  wordEm: number;
+  /** Fraction of `rowEm` a row may fill, absorbing the fit's residual. */
+  fill: number;
 }
 
 export function createStageMemory(): StageMemory {
-  return {starts: new Set(), placed: new Set(), newestPlaced: Number.NEGATIVE_INFINITY};
+  return {
+    starts: new Set(),
+    placed: new Set(),
+    newestPlaced: Number.NEGATIVE_INFINITY,
+    rowOf: new Map(),
+  };
+}
+
+/** Estimated settled footprint of one word, in em, gap included. */
+export function wordWidthEm(text: string, budget: StageWidthBudget): number {
+  return Array.from(text ?? "").length * budget.charEm + budget.wordEm;
 }
 
 export function selectStableCaptionStack(
@@ -107,6 +177,9 @@ export function selectStableCaptionStack(
   stackLimit = 6,
   wordsPerCaption = 8,
   memory: StageMemory = createStageMemory(),
+  // Omitted -> pure word-count chunking, exactly as before. Only the studio,
+  // which knows the measured row width, opts into the width budget.
+  budget: StageWidthBudget | null = null,
 ): CaptionParagraph[] {
   const stageWords = paragraphs.flatMap((paragraph) => paragraph.words);
 
@@ -169,16 +242,58 @@ export function selectStableCaptionStack(
     }
   }
 
+  /*
+   * A ROW BREAKS WHEN IT IS FULL, NOT WHEN IT HAS COUNTED TO N.
+   *
+   * Rows used to close at `wordsPerCaption` words, but a row's width is set by
+   * its CHARACTERS -- so `planStageLayout` had to size the type for the WORST
+   * case that count can produce, and an ordinary row of short words stopped
+   * well short of the right edge. MEASURED at 1440x900, rows filled a median of
+   * 64% of the line (p10 34%), with 7 of 20 under 60%: every full row carried
+   * nine words and every empty one had closed for some other reason.
+   *
+   * With a budget, `wordsPerCaption` becomes a CEILING and the em budget --
+   * the same number the type was already sized against -- decides the break.
+   * The type size, `planStageLayout` and the rows-per-stage answer are all
+   * untouched; only composition changes.
+   *
+   * Membership is frozen at first placement (`memory.rowOf`), so this cannot
+   * re-flow text the viewer has read -- see that field's own note, including
+   * why re-breaking a row while its words are still hypotheses was measured
+   * and rejected.
+   */
   const rows: CaptionParagraph[] = [];
+  let rowEm = 0;
+  const ceiling = budget ? budget.rowEm * budget.fill : 0;
   for (const entry of placeable) {
     const utterance = Number(entry.word.utterance ?? 0);
     let row = rows.at(-1);
-    const startsRow = memory.starts.has(entry.id);
-    if (
-      !row ||
-      startsRow ||
-      (wordsPerCaption > 0 && row.words.length >= wordsPerCaption)
-    ) {
+    const anchor = memory.rowOf.get(entry.id);
+    const cost = budget ? wordWidthEm(entry.word.text ?? "", budget) : 0;
+    // A word whose spelling can still change can still be re-broken; a settled
+    // one keeps the row it was read in.
+    const settled = entry.word.final === true;
+    let opens: boolean;
+    if (!row) {
+      opens = true;
+    } else if (anchor !== undefined && settled) {
+      // Settled: it starts a row only if it is that row's anchor.
+      opens = anchor === entry.id;
+    } else {
+      /* While the spelling can still change, CAPACITY ALONE decides and the
+         `starts` ratchet is ignored. Holding a word to a break made earlier is
+         what leaves 2-word sliver rows: every break is correct when made, but
+         the recognizer then inserts words ahead of an existing anchor, and the
+         leftover between two anchors born against different text can never be
+         merged away. Re-testing an unread word retires the stale one. */
+      opens = (settled && memory.starts.has(entry.id)) ||
+        (wordsPerCaption > 0 && row.words.length >= wordsPerCaption) ||
+        (budget !== null && row.words.length > 0 && rowEm + cost > ceiling);
+    }
+    // `|| !row` is redundant at runtime (`opens` is already true when there is
+    // no row) and load-bearing for the compiler: it is what narrows `row` to
+    // defined after this block.
+    if (opens || !row) {
       row = {
         id: `stage:${entry.id}`,
         speaker: null,
@@ -187,9 +302,12 @@ export function selectStableCaptionStack(
         words: [],
       };
       rows.push(row);
+      rowEm = 0;
       memory.starts.add(entry.id);
     }
     row.words.push(entry);
+    rowEm += cost;
+    memory.rowOf.set(entry.id, row.words[0].id);
   }
 
   for (const row of rows) {

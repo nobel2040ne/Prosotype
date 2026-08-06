@@ -169,6 +169,19 @@ function unarmedCharacters(element: HTMLElement): HTMLElement[] {
   ).filter((span) => !span.style.getPropertyValue("--char-turn-delay"));
 }
 
+/**
+ * Per-word values that must survive a word being rebuilt in another row.
+ *
+ * Held by `CaptionFeed` in lazily-initialised STATE, not a ref: the children
+ * read it while rendering, which `react-hooks/refs` forbids for a ref.
+ */
+interface WordMemo {
+  /** The motion clock: frozen the first time the word was ever drawn. */
+  clock: Map<string, {duration: number; sweepMs: number; crestMs: number}>;
+  /** The resolved hold, once the gate has closed on it. */
+  hold: Map<string, number>;
+}
+
 const MotionWord = memo(function MotionWord({
   id,
   word,
@@ -180,12 +193,28 @@ const MotionWord = memo(function MotionWord({
   paceGapS,
   clockEpoch,
   scheduleWord,
+  memo,
 }: {
   id: string;
   word: CaptionWord;
   color: string;
   intensity: number;
   runtime: RuntimeConfig;
+  /*
+   * WHAT THIS WORD FROZE AT FIRST SIGHT, KEPT OUTSIDE THE WORD (2026-08-06).
+   * A row is a DOM element and a word is its CHILD, so React reconciles words
+   * within one row only: a word that moves to another row is UNMOUNTED and
+   * rebuilt, and everything held in its own state is thrown away and re-derived.
+   * That is not a hypothetical -- `duration` is derived from `paceGapS`, which
+   * is 0 until the NEXT word arrives, so a word rebuilt after its neighbour
+   * landed re-derived a different motion duration than the one it was drawn
+   * with, and `holdAmount` re-ran the settle race the hold gate exists to win.
+   * A word only ever changes row while it is still AHEAD of the playhead, so
+   * the rebuild itself is invisible -- nothing has begun animating. The frozen
+   * values were the whole casualty, so they live in the parent, keyed by word
+   * id, exactly as the hold GAP already did.
+   */
+  memo: WordMemo;
   /** Silence before this word, in seconds -- how long it had to wait. */
   holdGapS: number;
   /* Whether `holdGapS` is FINAL -- the parent has seen this word's next
@@ -386,21 +415,36 @@ const MotionWord = memo(function MotionWord({
     0,
     1,
   ) * (holdEmphasis >= HOLD_ENVELOPE_EMPHASIS ? 0 : 1);
-  const [holdAmount, setHoldAmount] = useState(holdTarget);
-  const holdFrozen = useRef(false);
+  /* ...AND ONCE IT IS FROZEN IT IS REMEMBERED OUTSIDE THIS COMPONENT, so a
+     word rebuilt in another row resumes the answer it was drawn with instead
+     of re-running the race above. See `memo`. */
+  const [holdAmount, setHoldAmount] = useState(
+    () => memo.hold.get(id) ?? holdTarget,
+  );
+  const holdFrozen = useRef(memo.hold.has(id));
   useEffect(() => {
     if (holdFrozen.current) return;
     const armed = armedRef.current;
     if (armed && performance.now() >= armed.turnAtMs) {
-      holdFrozen.current = true;   // the playhead has passed: history
+      // The playhead has passed: history. Keep what it actually wore.
+      holdFrozen.current = true;
+      memo.hold.set(id, holdAmount);
       return;
     }
     if (!holdSettled) return;
     holdFrozen.current = true;
+    memo.hold.set(id, holdTarget);
     setHoldAmount((current) => (current === holdTarget ? current : holdTarget));
-  }, [holdSettled, holdTarget]);
+  }, [holdSettled, holdTarget, holdAmount, id, memo]);
   const holdEnvelope = holdEmphasis >= HOLD_ENVELOPE_EMPHASIS;
   const [{duration, sweepMs, crestMs}] = useState(() => {
+    /* FROZEN THE FIRST TIME THIS WORD WAS EVER DRAWN, not the first time this
+       COMPONENT was, which are different moments once a word can change row.
+       `duration` reads `paceGapS`, and that is 0 until the NEXT word arrives --
+       so a word rebuilt in a new row after its neighbour landed would re-derive
+       a different motion duration than the one it is already wearing. */
+    const remembered = memo.clock.get(id);
+    if (remembered) return remembered;
     /* ONE WORD AT THE CURRENT SPEECH RATE -- the AE template's one-word-wide
        range selector, and nothing about this word's own size. Frozen here with
        everything else, so a verifier respelling can never re-time a running
@@ -412,7 +456,7 @@ const MotionWord = memo(function MotionWord({
     // Finish the wipe before the word is done being said, and never let a
     // very long word crawl: the sweep is speech-paced, not decorative.
     const sweep = clamp(spokenMs * 0.72, 0, runtime.wordMotionMaxMs);
-    return {
+    const clock = {
       duration: naturalMs,
       sweepMs: sweep,
       // The crest is the SLOW clock -- emphasis, not speech rate.
@@ -420,6 +464,8 @@ const MotionWord = memo(function MotionWord({
         sweep, crestWindowMs(push, runtime), push, runtime.wordMotionMaxMs,
       ),
     };
+    memo.clock.set(id, clock);
+    return clock;
   });
   const style: CSSVars = {
     "--speaker-color": color,
@@ -724,6 +770,7 @@ function VoiceCompass({
 
 function CaptionFeed({
   paragraphs,
+  timingWords,
   speakerColors,
   intensity,
   runtime,
@@ -734,6 +781,22 @@ function CaptionFeed({
   reducedMotion,
 }: {
   paragraphs: CaptionParagraph[];
+  /*
+   * THE MOTION CLOCK READS THE WORD LIST, NOT THE ROWS (2026-08-06).
+   * `holdGaps` and `paceGaps` both need a word's NEIGHBOURS -- the hold gate is
+   * `min(gap_before, gap_after)` and the pace is the interval to the next
+   * onset. Taking them from `paragraphs` meant taking them from the RETAINED
+   * STAGE ROWS, so a word at the edge of the retained window had no neighbour
+   * to measure against, and which words sat at those edges was a function of
+   * how the chunker had packed the rows. Layout was therefore an input to the
+   * motion clock: MEASURED, moving the row break from a word count to a width
+   * budget took the held "is" from 1-in-6 runs wrong to 2-in-3, because the
+   * word's neighbourhood became available on a different render.
+   * This is the ordered word list the recording defines, independent of what
+   * the stage is currently showing, which is what both quantities were always
+   * about. The rows still decide what is DRAWN; they no longer decide timing.
+   */
+  timingWords: CaptionParagraph["words"];
   speakerColors: SpeakerColorMap;
   intensity: number;
   runtime: RuntimeConfig;
@@ -749,6 +812,12 @@ function CaptionFeed({
 }) {
   /** Hold gap per word id, frozen at first sight; survives child remounts. */
   const holdMemoRef = useRef(new Map<string, number>());
+  /* Everything else a word freezes at first sight, for the same reason -- see
+     `WordMemo`. State, not a ref: `MotionWord` reads it while rendering. */
+  const [wordMemo] = useState<WordMemo>(() => ({
+    clock: new Map(),
+    hold: new Map(),
+  }));
   const rowNodes = useRef(new Map<string, HTMLElement>());
   const previousPositions = useRef<CaptionStackPosition[]>([]);
   const stackInitialized = useRef(false);
@@ -907,7 +976,7 @@ function CaptionFeed({
   {
     let previousOnset: number | null = null;
     let previousUtterance: number | null = null;
-    const flat = paragraphs.flatMap((paragraph) => paragraph.words);
+    const flat = timingWords;
     for (let index = 0; index < flat.length; index += 1) {
       const {id, word} = flat[index];
       /* A SENTENCE BREAK IS NOT A HELD WORD. Measured on the film's first 18s
@@ -1042,6 +1111,7 @@ function CaptionFeed({
                     paceGapS={paceGaps.get(id) ?? 0}
                     clockEpoch={clockEpoch}
                     scheduleWord={scheduleWord}
+                    memo={wordMemo}
                     color={speakerColor(word.speaker, speakerColors)}
                     intensity={intensity}
                     runtime={runtime}
@@ -1486,6 +1556,13 @@ export function LiveStudio() {
     ),
     [model.words, model.order, runtime.paragraphWordLimit],
   );
+  /* The ordered word list the motion clock measures neighbours against -- see
+     `CaptionFeed`'s `timingWords`. It is the whole recording, not the retained
+     stage window, so no layout decision can reach the hold gate or the pace. */
+  const timingWords = useMemo(
+    () => paragraphs.flatMap((paragraph) => paragraph.words),
+    [paragraphs],
+  );
   const glyphBaselineEm = useGlyphBaseline(session.language);
   const stageLayout = useStageLayout(
     stageRef,
@@ -1499,8 +1576,43 @@ export function LiveStudio() {
     ? selectStableCaptionStack(
       paragraphs,
       stageLayout.rows,
-      stageLayout.wordsPerRow,
+      /* The count is now a CEILING, not the break rule -- the em budget below
+         decides. `planStageLayout` sizes the type for the worst case
+         `wordsPerRow` words can produce, so a row of short words has room for
+         more of them; without raising this, the count would still close every
+         row first and the budget could never fill one. Doubling it bounds a
+         pathological row (all one-letter words) without binding in practice. */
+      stageLayout.wordsPerRow * 2,
       stageMemory,
+      {
+        rowEm: stageLayout.rowBudgetEm,
+        // Measured through the live studio; see `StageWidthBudget`.
+        charEm: 0.4343,
+        wordEm: 0.4289,
+        /* WHAT `fill` HAS TO COVER, MEASURED (2026-08-06), because a row that
+           overruns is CLIPPED and not wrapped. Three terms, and only the first
+           is the fit:
+             - fit residual, now UNBIASED (median +0.005em/word) but spread
+               -0.43..+0.44em per word, so ~1em over a 12-word row;
+             - the CREST: a word swelling to 1.83x widens its own in-flow cell,
+               measured median +1.19em and max +4.92em per row. It does not
+               scale with the word count (4.92em on an 11-word row, 0.14em on a
+               15-word one) -- it is one loud word -- so a flat reserve is the
+               honest model and `spread * sqrt(n)` is not;
+             - growth after the row was formed, which the row now RE-BREAKS for
+               while its words are still hypotheses, so the reserve no longer
+               has to carry it. It only carries growth after a word goes
+               `final`, which is rare.
+           At 0.92 the reserve was 2.63em against a measured worst case near
+           10em, and a row was cut past the stage edge on roughly one capture in
+           three. It is 0.82 rather than a tighter number for a MOTION reason,
+           not a layout one: 0.87 also clipped nothing (median fill 83% vs 78%),
+           but a fuller row sits closer to its break, so more words re-break,
+           so more words are rebuilt -- and the held "is" measured 4 of 6 runs
+           right at 0.87 against 6 of 6 at 0.82. `WordMemo` makes a rebuild
+           value-identical; it does not make one free. */
+        fill: 0.82,
+      },
     )
     : paragraphs;
   /* CWI 2.4.4/2.4.5: sound labels yield to speech. The PR film shows
@@ -1690,6 +1802,7 @@ export function LiveStudio() {
           )}
           <CaptionFeed
             paragraphs={stageParagraphs}
+            timingWords={timingWords}
             speakerColors={speakerColors}
             intensity={settings.motionIntensity}
             runtime={runtime}

@@ -8,6 +8,13 @@ import {
 } from "./caption-paragraphs.ts";
 import type {CaptionWord} from "./caption-store.ts";
 
+/*
+ * `final: true` because these fixtures stand for text the viewer HAS READ --
+ * which is what the row-stability tests below are about. The stage may still
+ * re-break a row whose words are unsettled (they are read-ahead text nobody
+ * has read yet); `final` is the moment that stops, and in the live pipeline it
+ * precedes the playhead reaching a word by roughly a second.
+ */
 function sentence(
   count: number,
   speaker = "S1",
@@ -27,6 +34,7 @@ function sentence(
       end: index * 0.2 + 0.18,
       speaker,
       speaker_status: "stable",
+      final: true,
     };
   }
   return {words, order};
@@ -438,4 +446,128 @@ test("a fresh stack still chunks by capacity", () => {
     buildCaptionParagraphs(input.words, input.order, 0), 0, 3, createStageMemory(),
   );
   assert.deepEqual(rows.map((r) => r.words.length), [3, 3, 1]);
+});
+
+/** Words with controlled TEXT, so the width budget can be exercised directly. */
+function texts(list: string[], {speaker = "S1", final = true} = {}) {
+  const words: Record<string, CaptionWord> = {};
+  const order: string[] = [];
+  list.forEach((text, index) => {
+    const id = `u0:w${index}`;
+    order.push(id);
+    words[id] = {
+      word_id: id,
+      text,
+      start: index * 0.2,
+      end: index * 0.2 + 0.18,
+      speaker,
+      speaker_status: "stable",
+      final,
+    };
+  });
+  return {words, order};
+}
+
+const BUDGET = {rowEm: 20, charEm: 0.432, wordEm: 0.378, fill: 1};
+
+test("a row breaks when it is FULL, not when it has counted to N", () => {
+  // Rows used to close at `wordsPerCaption` however wide the words were, so
+  // the type had to be sized for the worst case that count could produce and
+  // an ordinary row stopped well short of the edge (measured: median 64% full).
+  const tiny = texts(Array(40).fill("a"));
+  const wide = texts(Array(40).fill("consideration"));
+  const short = selectStableCaptionStack(
+    buildCaptionParagraphs(tiny.words, tiny.order),
+    99, 50, createStageMemory(), BUDGET,
+  );
+  const long = selectStableCaptionStack(
+    buildCaptionParagraphs(wide.words, wide.order),
+    99, 50, createStageMemory(), BUDGET,
+  );
+  // 1-char words cost .81em, 13-char words 6.0em, against a 20em row.
+  assert.equal(short[0].words.length, 24, "short words fill the line");
+  assert.equal(long[0].words.length, 3, "long ones cannot");
+  // ...and neither is the word ceiling, which is what used to decide both.
+  assert.ok(short[0].words.length < 50 && long[0].words.length < 50);
+});
+
+const WORDS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"];
+
+test("a SETTLED row's membership is frozen, so a respelling cannot re-flow it", () => {
+  // THIS IS WHAT MAKES A WIDTH BUDGET SAFE. Anchored row starts already stop an
+  // edit re-chunking the rows BELOW one; without frozen membership the break
+  // inside a row still moves when the verifier lengthens a word, which re-keys
+  // every row after it and remounts their words -- the motion change that sank
+  // the previous attempt at this.
+  const memory = createStageMemory();
+  const first = texts(WORDS);
+  const before = selectStableCaptionStack(
+    buildCaptionParagraphs(first.words, first.order),
+    99, 50, memory, BUDGET,
+  );
+  const shape = before.map(({words}) => words.map(({id}) => id));
+
+  // A word already on screen is respelled longer, after it went final.
+  const second = texts(WORDS);
+  second.words["u0:w1"].text = "beta-considerably-longer-now";
+  const after = selectStableCaptionStack(
+    buildCaptionParagraphs(second.words, second.order),
+    99, 50, memory, BUDGET,
+  );
+
+  assert.deepEqual(after.map(({words}) => words.map(({id}) => id)), shape);
+  assert.deepEqual(after.map(({id}) => id), before.map(({id}) => id));
+});
+
+test("a row re-breaks while its words are still hypotheses", () => {
+  // A live word is placed while it is still a stub and grows into its settled
+  // spelling, so a row that fit when it was formed can overrun later -- and
+  // freezing membership at first PLACEMENT freezes it against widths that are
+  // not real yet. Measured on `--sample`, a row that fit at 28.5em settled at
+  // 37.5em on a 32.8em line and was silently cut. Unsettled words are
+  // read-ahead text nobody has read, so the stage may still re-break them.
+  const memory = createStageMemory();
+  const stubs = texts(["alpha", "beta", "gam", "del"], {final: false});
+  const before = selectStableCaptionStack(
+    buildCaptionParagraphs(stubs.words, stubs.order),
+    99, 50, memory, BUDGET,
+  );
+  assert.equal(before.length, 1, "the stubs fit on one row");
+
+  const grown = texts(["alpha", "beta", "gamma-much-longer", "delta-much-longer"],
+    {final: false});
+  const after = selectStableCaptionStack(
+    buildCaptionParagraphs(grown.words, grown.order),
+    99, 50, memory, BUDGET,
+  );
+  assert.ok(after.length > 1, "and are re-broken once they no longer do");
+  // The row already on screen keeps its identity and its first word: only the
+  // tail moves down, so nothing the viewer has read is re-keyed.
+  assert.equal(after[0].id, before[0].id);
+  assert.equal(after[0].words[0].id, before[0].words[0].id);
+});
+
+test("a stale break is retired once the text that caused it changes", () => {
+  // THIS IS WHAT REMOVES THE 2-WORD SLIVER ROWS. Every break is correct when
+  // it is made, but the recognizer then rewrites the text around it, and a
+  // permanent `starts` ratchet pins a boundary to text that no longer exists.
+  // Measured on `--sample`: 17 anchors born, all 17 on a genuinely full row,
+  // yet 3700 of 16145 row-opening decisions were the ratchet re-firing on a row
+  // that was no longer full -- which is where 'my godan' and 'in this army'
+  // came from. An unsettled word is re-tested on capacity alone.
+  const memory = createStageMemory();
+  const long = texts(["alpha", "beta", "gamma-much-longer", "delta-much-longer"],
+    {final: false});
+  const split = selectStableCaptionStack(
+    buildCaptionParagraphs(long.words, long.order),
+    99, 50, memory, BUDGET,
+  );
+  assert.ok(split.length > 1, "the long spellings break the row");
+
+  const short = texts(["alpha", "beta", "gam", "del"], {final: false});
+  const healed = selectStableCaptionStack(
+    buildCaptionParagraphs(short.words, short.order),
+    99, 50, memory, BUDGET,
+  );
+  assert.equal(healed.length, 1, "and the break goes when they shorten again");
 });
