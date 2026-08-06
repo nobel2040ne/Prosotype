@@ -309,7 +309,9 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     what made the UI more readable.
 - **The light stage is a toggle-gated, MEASURED deviation from the PDF.**
   (Added 2026-07-30 from a reference the user supplied.) `Settings → Light stage`
-  defaults ON and writes `data-theme` onto `document.documentElement`; every
+  **defaults OFF since 2026-08-07 — the compliant dark stage is what ships**
+  (see the contrast measurement at the end of this entry) — and writes
+  `data-theme` onto `document.documentElement`; every
   studio surface is a token, and `--tint` inverts all 14 hairline/inset/grid
   tints at once. **It has NO captions box at all** — `--caption-box` and
   `--caption-box-shadow` are `transparent`/`none`, type sits directly on
@@ -332,6 +334,29 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
   Turning the toggle off must restore the exact CI values and the black box.
   `autocwi cc` and the legacy diagnostics page are NOT themed: `cc` is the
   design-system reference renderer and §2.4.1 applies to it literally.
+  **WHY IT NO LONGER DEFAULTS ON (2026-08-07).** The user reported the captions
+  as hard to read. MEASURED mid-playback on `--sample` — not on a finished
+  stage, which replays every word settled and neutral and is not what a viewer
+  sees — every speaker colour on the light stage rendered between **4.81:1 and
+  4.86:1**. That is `palette_light` working exactly as designed and it is also
+  the defect: each hue is darkened until it JUST clears 4.5:1 on white, so they
+  all arrive at the same VALUE, and a page of captions is one wall of mid-grey
+  in which a speaker change does not announce itself. Hue alone is a weak
+  signal at 25px, and 2/3 of this clip is one speaker.
+  On the black box the same palette spans **4.47:1 to 15.55:1** (yellow
+  4.81 → **15.55**, cyan 4.82 → 13.38, green 4.86 → 12.26, orange 4.82 → 7.43)
+  and the turns are unmistakable. So the deviation cost more than the entry
+  above credited: it did not merely trade §2.4.1 away, it flattened §2.1's
+  signal.
+  **CI RED IS THE ONE COLOUR THAT GOT WORSE: 4.84:1 → 4.47:1**, i.e. it now
+  sits just UNDER AA, and it was 8% of words on this clip. It is the one hue
+  `palette_light` left unchanged because it already passed on white. Not fixed
+  — flagged. Do not "fix" it by lightening toward the CI spec without
+  re-measuring both stages.
+  Note the theme also changes LAYOUT, so a theme swap is a row-composition
+  change: dark adds .22em of row padding, and measured, the caption type goes
+  29.2 → **25.6px** with 59 → 70 characters per line. Re-run the six-capture
+  motion check after any theme default change, for that reason alone.
 - **Language is a pre-capture model decision.** With no `--lang`, the Next
   studio POSTs exactly one `en`/`ko` choice before Python loads ASR or iterates
   the mic/file source. `LiveLanguageSession` then locks it for the capture.

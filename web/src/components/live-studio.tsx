@@ -1516,7 +1516,17 @@ export function LiveStudio() {
     motionIntensity: 1,
     reducedMotion: false,
     highContrast: false,
-    lightStage: true,
+    /* OFF BY DEFAULT SINCE 2026-08-07, ON THE MEASUREMENT (user: "just dark
+       mode"). The light stage has no captions box, so `palette_light` darkens
+       every CI hue until it just clears 4.5:1 on white -- and the result is
+       that they ALL land there. Measured mid-playback on `--sample`, every
+       speaker colour rendered between 4.81:1 and 4.86:1: the hues differ but
+       their VALUES do not, so at a glance the stage is one wall of mid-grey and
+       a speaker change does not announce itself. On 2.4.1's black box the same
+       palette runs 4.47:1 to 15.55:1 (yellow 4.81 -> 15.55, cyan 4.82 -> 13.38,
+       green 4.86 -> 12.26) and the turns are unmistakable, which is the whole
+       job of CWI 2.1. The toggle keeps the light stage one click away. */
+    lightStage: false,
   });
   const [view, setView] = useState<ViewMode>("stage");
   const [railOpen, setRailOpen] = useState(true);
