@@ -21,6 +21,7 @@ one of them exists because an ad-hoc metric gave a confidently wrong answer.
 | `scripts/word_motion.py --trace rows.json` | one row per word: peak, floor, weight, motion width, lift | `max/min` over a word's samples cannot tell GROWTH from SHRINKAGE; font-size alone misses the 2.2.3 pop, which is a transform |
 | `scripts/ink_collision.py` | do adjacent rows' INK touch | line-box arithmetic says rows overlap constantly and is useless; only pixels answer it |
 | `scripts/baseline_probe.py` | does a swelling word stay on its line | `.word-ink`'s rect excludes the child transform; `.word-glyph`'s bottom is pinned by `bottom: 0`. Run `--broken` first -- a check never seen to fail is not evidence |
+| `scripts/caption_color_probe.py` | does the WHOLE word end up in one colour | `studio_probe.py` reads a word's FIRST character, so a word whose last character never turned scores as fully coloured. That is exactly the defect it missed -- 23 of 137 words half in read-ahead grey. Also `--broken` |
 
 **Screenshot before concluding anything about layout or typography.** Three
 numeric probes reported "confounded but probably fine" on a glyph-anchoring
@@ -127,6 +128,27 @@ invariants, not the exact numbers:
 | `domUnarmed` | 0 — an unscheduled word would stay read-ahead forever |
 | DOM white words vs `aheadWords` | agree within ~2; a gap means the page is not showing what the schedule believes |
 | `lateWords` | a burst on attach, then flat. Steadily climbing means the delay is shorter than the recognizer's delivery latency |
+
+### Does every character of a word wear the speaker's colour?
+
+```bash
+.venv/bin/python -m autocwi live --sample --lang en --no-open &
+.venv/bin/python scripts/caption_color_probe.py            # must PASS
+.venv/bin/python scripts/caption_color_probe.py --broken   # must FAIL
+```
+
+CWI 2.1 makes colour THE speaker signal, so a word drawn in two colours makes
+two claims about who spoke it. The turn is a WIPE, so mid-word boundaries are
+correct *while the boundary is crossing* — the verdict is the LAST sample, when
+nothing can still be moving, plus how many consecutive samples any one word
+stayed mixed (1 is a wipe; more is a word that stopped mid-turn).
+
+It caught a word growing after it was armed: `--char-turn-delay` is written per
+character, and characters appended by the endpoint verifier
+(`animation` → `animation,`) never got one, so they held the stylesheet's
+600000ms default and stayed in read-ahead ink. **23 of 137 settled words**, each
+for the remaining 28–63 s of the capture. `--broken` strips each word's last
+delay to reproduce it.
 
 ### Does a swelling word stay on its baseline?
 

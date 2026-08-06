@@ -45,6 +45,8 @@ AUTOCWI_FAST=1 .venv/bin/python -m autocwi live --file x.wav --once  # headless 
   --backends local,speechmatics,soniox   # provider A/B (UPLOADS audio; needs keys)
 .venv/bin/python scripts/studio_probe.py --samples 40  # read-ahead + motion (CDP)
 .venv/bin/python scripts/speaker_probe.py         # CWI 2.1: is the FIRST colour right?
+.venv/bin/python scripts/caption_color_probe.py   # ...and does the WHOLE word wear it?
+.venv/bin/python scripts/caption_color_probe.py --broken  # prove that check can fail
 .venv/bin/python scripts/baseline_probe.py            # does a swelling word stay on its line?
 .venv/bin/python scripts/baseline_probe.py --broken   # ...and prove that check can fail
 .venv/bin/python -m autocwi live --list-devices   # pick a mic if the default is wrong
@@ -777,6 +779,29 @@ The venv is `.venv/` (Python 3.11). Always use `.venv/bin/python`, not system py
     the same reason the word's is: live words grow as a hypothesis extends, and
     a span appended later would otherwise turn late. Verified: 39 sampled
     frames showed a mid-word boundary (`SOMething → SOMEThing → SOMETHIng`).
+    **AND THE WORD IS ARMED ONCE, BUT SO IS EACH SPAN — THE SENTENCE ABOVE WAS
+    THE INTENT AND THE CODE DID NOT DO IT (fixed 2026-08-06).** The arming
+    effect returned early on `data-armed`, i.e. for the whole WORD, so a
+    character appended after the first arm — endpoint punctuation
+    (`animation` → `animation,`), a respelling that lengthens — never got a
+    `--char-turn-delay`, kept the stylesheet's 600000ms default, and sat in
+    `word-color-turn`'s `backwards` fill (READ-AHEAD INK) for ten minutes.
+    MEASURED on `--sample`: **23 of 137 settled words ended the capture two-
+    coloured**, each mixed for the remaining 28–63 s, the stray colour
+    `#6e6e73` = `read_ahead.color_light`. The user reported it as "some words
+    contain the speaker's color and black color", and it is a false claim about
+    who spoke, which is the one thing 2.1 exists to prevent. Now a span that
+    already carries a delay is left strictly alone (rewriting it would shift a
+    running wipe) and only new spans are written, against the same frozen
+    absolute moment. AFTER: settled two-coloured words **23 → 0**, and every
+    mixed word is mixed in exactly ONE 1 s sample, which is the wipe crossing
+    it. `perWord` freezes at the ARM for the same reason: appending to the
+    denominator would hand a late character an EARLIER delay than one already
+    running and the boundary would travel backwards.
+    **`studio_probe.py` CANNOT SEE THIS** — it asks whether a word's FIRST
+    character is still read-ahead ink, and here the first character turned and
+    the last never did. `scripts/caption_color_probe.py` is the check (with
+    `--broken`, which strips each word's last delay and must go red).
     **ONLY THE COLOUR MOVES DOWN TO THE CHARACTERS. `voice-phase` STAYS ON
     `.caption-word` (2026-08-02).** An edit moved the phase down with the
     colour, and every voice channel died at once while the page still LOOKED

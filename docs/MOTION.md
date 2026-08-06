@@ -76,6 +76,16 @@ must survive remounts. Recomputing any of them under a running animation is the
 bug this project re-commits most: it has caused a shifted `animation-delay`, a
 crest that un-gated mid-flight, and a hold that became a coin flip.
 
+**4b. Frozen per word, but armed per CHARACTER.** The wipe crosses a word letter
+by letter, so each `.caption-character` carries its own `--char-turn-delay`, and
+a word GROWS after it is armed — the endpoint verifier appends punctuation, a
+respelling lengthens it. Every span must be armed, including the ones that
+arrive late; a span that never is stays in read-ahead ink for ten minutes, so
+the word ends up half in the speaker's colour and half in the read-ahead grey
+(measured: 23 of 137 words, fixed 2026-08-06). Arm each span exactly once —
+never re-write one that is already running — and check it with
+`scripts/caption_color_probe.py`.
+
 ## Timing
 
 * Captions present from a clock **1.75 s behind** the acoustic one. That delay

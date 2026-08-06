@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   acousticTimeMs,
+  charTurnDelayMs,
   crestDurationMs,
   crestWindowMs,
   naturalMotionDurationMs,
@@ -133,4 +134,41 @@ test("the crest is the SLOW clock and the pop is the FAST one", () => {
   // The pop ceiling and the crest ceiling are independent knobs; the crest's
   // is re-derived from whichever envelope is in use, so pin only the ordering.
   assert.ok(settings.wordMotionPopMaxMs < settings.wordMotionMaxMs);
+});
+
+test("the wipe crosses a word letter by letter, and a late letter appends", () => {
+  // 8 letters across a 720ms sweep, turning 1000ms from now.
+  const at = (index: number, perWord = 8) =>
+    charTurnDelayMs(1000, index, perWord, 720);
+
+  // The first letter turns with the word; the last is nearly a sweep later.
+  assert.equal(at(0), 1000);
+  assert.equal(at(7), 1000 + Math.round(7 / 8 * 720));
+  // Monotone: the boundary only ever moves forward through the word.
+  for (let i = 1; i < 8; i += 1) assert.ok(at(i) > at(i - 1), `letter ${i}`);
+
+  // A WORD THAT GREW AFTER IT ARMED. "animation" -> "animation," appends a
+  // letter at index 9 against a frozen span of 9; it may not turn before the
+  // letter in front of it, and it may not restart the wipe.
+  assert.ok(charTurnDelayMs(1000, 9, 9, 720) >= charTurnDelayMs(1000, 8, 9, 720));
+  assert.equal(charTurnDelayMs(1000, 9, 9, 720), 1720);   // clamped to the end
+  assert.equal(charTurnDelayMs(1000, 40, 9, 720), 1720);  // and stays there
+
+  // Freezing the span is what keeps that true. Dividing by the CURRENT length
+  // instead ("Some" 4 -> "Something" 9) hands the new letter 4 an EARLIER
+  // moment than letter 3 already has, and the boundary travels backwards.
+  const armed3 = charTurnDelayMs(1000, 3, 4, 720);
+  assert.ok(charTurnDelayMs(1000, 4, 9, 720) < armed3, "the trap this avoids");
+  assert.ok(charTurnDelayMs(1000, 4, 4, 720) >= armed3, "frozen span is safe");
+
+  // A word delivered after its own onset gets a negative delay throughout, so
+  // every letter is already finished and paints settled -- history, no branch.
+  assert.ok(charTurnDelayMs(-4000, 0, 6, 720) < 0);
+  assert.ok(charTurnDelayMs(-4000, 5, 6, 720) < 0);
+
+  // Degenerate inputs cannot produce NaN into a CSS `animation-delay`, which
+  // would silently drop the declaration and leave the letter in read-ahead ink.
+  assert.equal(charTurnDelayMs(1000, 0, 0, 720), 1000);   // first letter, always
+  assert.equal(charTurnDelayMs(1000, 1, 0, 720), 1720);   // span floors at 1
+  assert.ok(Number.isFinite(charTurnDelayMs(NaN, NaN, NaN, NaN)));
 });

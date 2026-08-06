@@ -217,3 +217,29 @@ export function crestDurationMs(
     Math.max(finite(naturalMs), ceiling),
   );
 }
+
+/**
+ * WHEN A SINGLE LETTER TURNS, relative to the moment the playhead reaches its
+ * word. The 2.2.2 turn is a WIPE, not a switch -- the PR film puts the colour
+ * boundary inside a word constantly ("weigh|ts", "instantly kn|ow") -- so each
+ * character is offset across the word's spoken sweep.
+ *
+ * `perWord` is the letter count the wipe was LAID OUT ACROSS, frozen when the
+ * word armed, and it is deliberately not the current length. Live words grow
+ * after they are armed: the endpoint verifier appends punctuation, a respelling
+ * lengthens the word. Dividing by the CURRENT length would move every existing
+ * letter's place in the wipe, so a character arriving late could be handed an
+ * earlier moment than one already running and the boundary would travel
+ * backwards through text the viewer is reading. Past the frozen count the wipe
+ * is over, so a late letter turns with the last one.
+ */
+export function charTurnDelayMs(
+  turnDelayMs: number,
+  index: number,
+  perWord: number,
+  sweepMs: number,
+): number {
+  const span = Math.max(1, finite(perWord));
+  const at = Math.min(1, Math.max(0, finite(index)) / span);
+  return Math.round(finite(turnDelayMs) + at * Math.max(0, finite(sweepMs)));
+}

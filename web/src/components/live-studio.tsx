@@ -52,6 +52,7 @@ import {
 } from "@/lib/caption-motion";
 import {
   acousticTimeMs,
+  charTurnDelayMs,
   crestDurationMs,
   crestWindowMs,
   HOLD_ENVELOPE_EMPHASIS,
@@ -158,6 +159,16 @@ function useElapsed(startedAt: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+/* The character spans of a word that have never been given a turn moment.
+   They are exactly the ones the stylesheet is still holding at its 600s
+   default, i.e. painting in read-ahead ink; a span that already carries a
+   delay is running and must not be touched. */
+function unarmedCharacters(element: HTMLElement): HTMLElement[] {
+  return Array.from(
+    element.querySelectorAll<HTMLElement>(".caption-character, .character-sizer"),
+  ).filter((span) => !span.style.getPropertyValue("--char-turn-delay"));
+}
+
 const MotionWord = memo(function MotionWord({
   id,
   word,
@@ -192,6 +203,8 @@ const MotionWord = memo(function MotionWord({
 }) {
   const wordRef = useRef<HTMLSpanElement>(null);
   const armedRef = useRef<{turnAtMs: number; epoch: number} | null>(null);
+  // How many letters the colour wipe was laid out across when this word armed.
+  const charSpanRef = useRef<number | null>(null);
   const motionWord = word;
   const loudness = clamp(number(motionWord.loudness, 0.5), 0, 1);
   const deliveryConfidence = clamp(
@@ -513,12 +526,27 @@ const MotionWord = memo(function MotionWord({
     if (clockEpoch !== null && armedRef.current.epoch !== clockEpoch) {
       element.dataset.armed = "stale";
       element.style.setProperty("--turn-delay", "-600000ms");
+      // A character appended AFTER the restart settles with the word it belongs
+      // to. Without this it keeps the stylesheet's 600s default and paints in
+      // read-ahead ink beside its own already-coloured word -- see the loop
+      // below, which is where that defect actually lived.
+      for (const span of unarmedCharacters(element)) {
+        span.style.setProperty("--char-turn-delay", "-600000ms");
+      }
       return;
     }
-    if (element.dataset.armed === "true") return;
+    const rearming = element.dataset.armed !== "true";
     element.dataset.armed = "true";
     const turnDelay = armedRef.current.turnAtMs - performance.now();
-    element.style.setProperty("--turn-delay", `${Math.round(turnDelay)}ms`);
+    // The word's own delay is written ONCE: rewriting `animation-delay` shifts
+    // a running animation, which is the hazard `data-armed` exists to prevent.
+    if (rearming) {
+      element.style.setProperty("--turn-delay", `${Math.round(turnDelay)}ms`);
+      // The wipe is laid out across the letters the word had WHEN IT WAS ARMED,
+      // and that denominator is then frozen with the sweep. See the loop below.
+      charSpanRef.current = Math.max(1, characters.length);
+    }
+    const perWord = charSpanRef.current ?? Math.max(1, characters.length);
 
     /*
      * THE COLOUR TURN IS A WIPE THROUGH THE WORD, NOT A SWITCH.
@@ -538,24 +566,46 @@ const MotionWord = memo(function MotionWord({
      * a span appended later would otherwise turn late. Re-deriving each span's
      * delay against the frozen absolute moment keeps the sweep correct through
      * appends and remounts alike.
+     *
+     * AND THE ARMED WORD MUST STILL ADOPT NEW CHARACTERS (fixed 2026-08-06).
+     * The comment above was the intent; the code did not do it. `data-armed`
+     * returned early for the WHOLE word, so a span appended after the first arm
+     * -- endpoint punctuation ("animation" -> "animation,"), a respelling that
+     * lengthens ("godan", "rescue") -- kept the stylesheet's `600000ms` default
+     * and sat in the `backwards` fill, i.e. READ-AHEAD INK, for ten minutes.
+     * MEASURED on `--sample`: 23 of 137 settled words ended the capture two-
+     * coloured, every one of them with an unwritten span, the stray colour
+     * `#6e6e73` (`read_ahead.color_light`) against the speaker's hue. Reported
+     * as "some words contain the speaker's color and black color", and it is a
+     * false claim about who spoke -- the one thing CWI 2.1 exists to prevent.
+     * So the word is armed once and each SPAN is armed once: a span that
+     * already carries a delay is left strictly alone (rewriting it would shift
+     * a running wipe), and only the new ones are written. `turnDelay` is
+     * recomputed here against the same frozen absolute moment, which is correct
+     * for a span whose animation origin is this commit -- the same reasoning
+     * the remount path uses.
      */
-    const spans = element.querySelectorAll<HTMLElement>(
-      ".caption-character, .character-sizer",
-    );
-    const perWord = Math.max(1, characters.length);
-    // `sweepMs` is frozen at mount alongside the crest window, so the rise
-    // and the wipe are computed from the same number.
-    for (const span of spans) {
+    // `perWord` is FROZEN AT THE ARM, not read from the current length:
+    // appending to the denominator moves every existing letter's position in
+    // the wipe, so a word that grew would hand a late character an EARLIER
+    // delay than one already running ("Some" -> "Something": char 3 at .75
+    // sweep, new char 4 at .44) and the boundary would visibly travel
+    // backwards. Past the frozen length the wipe is over, so the tail turns
+    // with its last letter. `sweepMs` freezes at mount alongside the crest
+    // window, so the rise and the wipe are computed from the same number.
+    for (const span of unarmedCharacters(element)) {
       const index = Number(span.dataset.charIndex ?? 0);
       span.style.setProperty(
         "--char-turn-delay",
-        `${Math.round(turnDelay + (index / perWord) * sweepMs)}ms`,
+        `${charTurnDelayMs(turnDelay, index, perWord, sweepMs)}ms`,
       );
     }
     // `duration` is deliberately absent: like `crestMs` and `sweepMs` it is
     // frozen at mount, and re-running this effect would rewrite
     // `animation-delay` on a RUNNING animation, which shifts it -- the exact
     // hazard `data-armed` exists to prevent.
+    // `characters.length` IS load-bearing: it is what brings the effect back
+    // when a word grows, and every new span is armed on that pass.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clockEpoch, crestMs, id, scheduleWord, sweepMs, word, characters.length]);
 
