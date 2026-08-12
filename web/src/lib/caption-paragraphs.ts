@@ -1,4 +1,9 @@
 import type {CaptionWord} from "./caption-store.ts";
+// One classifier, in `hangul.ts` beside the syllable structure that needs
+// it. Re-exported so existing importers of this module keep working.
+import {isWideChar} from "./hangul.ts";
+
+export {isWideChar};
 
 export interface CaptionParagraph {
   id: string;
@@ -152,10 +157,37 @@ export interface StageMemory {
 export interface StageWidthBudget {
   /** Usable row width in em -- `planStageLayout`'s `rowBudgetEm`. */
   rowEm: number;
+  /** Per-character width for NARROW scripts. Fitted on Latin; see above. */
   charEm: number;
   wordEm: number;
   /** Fraction of `rowEm` a row may fill, absorbing the fit's residual. */
   fill: number;
+  /**
+   * Per-character width for East Asian WIDE scripts, measured off the live
+   * face. Omit to fall back to `charEm`, which is the pre-2026-08-10 behaviour.
+   *
+   * WHY THIS EXISTS. `charEm` was fitted on the English PR film and then
+   * applied to every script, so a Hangul syllable was budgeted at 0.4343em
+   * against a real advance of **0.9200em** -- uniform, min = max, because
+   * Hangul is a fixed-width script. The chunker therefore packed about twice
+   * as many Korean words into a row as fit, and `.caption-words` is `nowrap`,
+   * so the overrun was CUT with no error and no visual warning.
+   *
+   * The code still carried the fossil of the version that got this right:
+   * `--per-word-em` was referenced in three comments, one of them naming
+   * `[data-language="ko"]`, and defined nowhere. The 2026-08-06 width-budget
+   * rewrite replaced a per-language budget with one English constant.
+   *
+   * MEASURE IT, DO NOT TABULATE IT. The font's own `hmtx` cannot supply this:
+   * frequency-weighted over the PR film transcript Latin advances read
+   * 0.4934em against the shipped 0.4343em, a 0.88 ratio absorbed by the
+   * slope/intercept fit and the live variable-font axes, and there is no
+   * reason that ratio transfers to a different face. `useGlyphBaseline` hit
+   * exactly this and its lesson is recorded -- a hardcoded number is silently
+   * wrong for Korean, and two probes agreeing across two faces is the bug
+   * signal, not a confirmation.
+   */
+  wideCharEm?: number;
 }
 
 export function createStageMemory(): StageMemory {
@@ -167,9 +199,37 @@ export function createStageMemory(): StageMemory {
   };
 }
 
-/** Estimated settled footprint of one word, in em, gap included. */
+/**
+ * Estimated settled footprint of one word, in em, gap included.
+ *
+ * `Array.from` rather than `split("")`: a Hangul syllable block or any
+ * astral-plane character must stay ONE unit, which is also what makes the
+ * per-character width meaningful.
+ *
+ * MOTION-NEUTRALITY IS A PROPERTY OF THIS FUNCTION, and there is a test on it.
+ * With no wide characters present the arithmetic is `n * charEm + wordEm`,
+ * bit-identical to the pre-2026-08-10 version whether or not `wideCharEm` is
+ * supplied. That matters because a word that changes row is unmounted and
+ * REBUILT, and row-break frequency is what flipped the held "is" between 4 of 6
+ * and 6 of 6 runs at fill 0.87 against 0.82 -- while every motion acceptance
+ * figure is measured on the ENGLISH film. Identical Latin widths mean identical
+ * break decisions, so English motion cannot move.
+ */
 export function wordWidthEm(text: string, budget: StageWidthBudget): number {
-  return Array.from(text ?? "").length * budget.charEm + budget.wordEm;
+  let narrow = 0;
+  let wide = 0;
+  for (const character of Array.from(text ?? "")) {
+    if (isWideChar(character.codePointAt(0) ?? 0)) wide += 1;
+    else narrow += 1;
+  }
+  // COUNT, THEN MULTIPLY -- do not accumulate per character. Float addition is
+  // not associative, so summing `charEm` n times can differ in the last bits
+  // from `n * charEm`, and that alone would be enough to move an English row
+  // break. With no wide characters this reduces to `narrow * charEm + 0 +
+  // wordEm`; adding an exact 0 is exact, so the result is the same float the
+  // single-constant version returned.
+  const wideEm = budget.wideCharEm ?? budget.charEm;
+  return narrow * budget.charEm + wide * wideEm + budget.wordEm;
 }
 
 export function selectStableCaptionStack(
@@ -357,7 +417,22 @@ export function planCaptionStackMotion(
     previous.length === current.length &&
     previous.every(({id}, index) => id === current[index]?.id)
   ) {
-    return [];
+    /* SAME PARAGRAPHS, DIFFERENT PLACES. This used to return nothing, and it
+       is why the stack jumped: a paragraph GROWS as words are appended to it,
+       and in the rolling layout that pushes every paragraph above it upward
+       with no membership change at all to notice. The id list is identical, so
+       every guard below passes it over.
+       A pure shift is safe to plan here -- nothing entered, nothing left, so
+       there is no entry transition to confuse it with, and a row whose top did
+       not actually move produces no motion. */
+    return current.flatMap(({id, top}) => {
+      const previousTop = previous.find((row) => row.id === id)?.top;
+      if (previousTop === undefined) return [];
+      const deltaY = previousTop - top;
+      return Math.abs(deltaY) >= 0.5
+        ? [{id, kind: "shift" as const, deltaY}]
+        : [];
+    });
   }
 
   const previousIds = new Set(previous.map(({id}) => id));
@@ -393,7 +468,11 @@ export function planCaptionStackMotion(
       continue;
     }
     const deltaY = previousTop - top;
-    if (deltaY >= 0.5) {
+    /* EITHER DIRECTION. The stack only ever glided upward, so this took
+       `deltaY >= 0.5`; the rolling layout is bottom-anchored and a growing
+       paragraph pushes its neighbours the other way. A one-sided test left
+       exactly those moves un-animated, which is the jump this fixes. */
+    if (Math.abs(deltaY) >= 0.5) {
       motions.push({id, kind: "shift", deltaY});
     }
   }

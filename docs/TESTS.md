@@ -35,6 +35,117 @@ Two more traps, both of which cost a full round each:
 * Keying a word by `(DOM index, text)` conflates repeats -- the stage scrolls,
   so one index holds different words over time, and "is" appears twice in the
   bundled film.
+* **Compare by OCCURRENCE (position), never by word text.** "is" occurs twice in
+  the film -- "as each word **is** spoken" is the held one, "This **is** what it
+  looks like" is not -- so a text-keyed comparison silently reads whichever comes
+  last. That produced a confident, wrong diagnosis that the held word had
+  regressed, a wrong attribution to `read_ahead_delay_s`, and a re-calibration of
+  `hold_min_s`/`hold_full_s` that actually broke it. Measured correctly, three
+  words lift and the set is identical before and after: `is` 0.525em, `god`
+  0.525em, `spoken` 0.105em.
+
+### Reading a number that is wrong
+
+Every one of these produced a confident, wrong conclusion that was acted on.
+
+* **Check the STATISTIC before concluding a signal is absent.** Scoring each word
+  by the RMS or median over its whole span averages in its stops, its unvoiced
+  consonants and the gaps between phones, which are near-silent however the
+  speaker is talking. That buried a real 12.2 dB difference between the film's
+  "louder" and "softer" and produced a whole wrong theory -- that the film's
+  intonation was authored from *meaning* and could not be recovered from its
+  audio. Scored on each word's loud frames (`_span_db`, p90 of 30 ms frames) the
+  same audio says the opposite. When a channel looks dead, check the data and the
+  statistic before rewriting the renderer.
+* **A counter that has never been seen to move is not evidence.**
+  `studio_probe.py` counted read-ahead words from `getComputedStyle(word).color`
+  on `.caption-word`, but the colour turn moved down to `.caption-character`, so
+  it read **0 in every sample of every run** -- indistinguishable from "2.2.1 is
+  not implemented". Run every probe's `--broken` control first.
+* **A silently CONSTANT column looks exactly like an unimplemented effect.**
+  Twice the derived specs carried one loudness (0.5) or one pitch (165 Hz) for
+  every word, so the size and weight envelopes could not fire and the renderer
+  appeared not to implement them.
+  `test_derived_reference_specs_replay_the_recordings` now asserts >= 3 distinct
+  values per column.
+* **A JS syntax error takes the whole page down silently.** Twice a bad edit left
+  an unbalanced brace and the only symptom was a probe reporting "built is not
+  defined". Inject an `onerror` handler before the cfg script; it reports the
+  message and line directly.
+* **Verify overlap by measuring the real rendered gap** between adjacent words
+  (`getBoundingClientRect`) across the whole timeline -- the worst gap must stay
+  positive. Eyeballing a screenshot missed it.
+
+### Measuring the film itself
+
+**Measure it as a continuous curve. Do not track clusters.** Per-glyph and
+per-cluster tracking on the film has failed four times, always the same way: a
+swelling word re-flows the line, so the track breaks at exactly the moment worth
+measuring. The fourth attempt failed its own validation -- "louder", visibly ~2x
+and holding, came back as **1.05x** in 6- and 7-frame fragments, because tracking
+began after the word had already grown and "rest" then equalled "peak". Numbers
+from a tracker that has not been shown to reproduce a word you can see with your
+own eyes are worthless.
+
+What works needs no frame-to-frame correspondence at all: **per frame, the ink
+height of the TALLEST caption cluster over the MEDIAN cluster's.** Only one word
+is emphasised at a time, so that ratio *is* the current word's swell, sampled
+every frame. It validates on both words that can be checked by eye. The same
+trick answers the lift question with ink BOTTOMS instead of heights.
+
+**Strip the film's authoring guides by HUE** (cyan rules, yellow playhead), never
+by density -- removing "rows/columns that are mostly lit" also punches gaps
+through the caption, and banding on those gaps TRUNCATES every tall word at the
+band edge, which made t=12.0 (where "sizes," is visibly ~1.9x its neighbours)
+measure as uniform 1.0. Validate any change to that code against t=12.0 before
+trusting an aggregate.
+
+**Comparing our motion to the film: measure each word against itself.**
+`--sample` *is* the PR film, so the two can be scored on one statistic -- but only
+one. Never compare one word's ink height to another's: "types" runs
+ascender-to-descender, "sizes," is x-height plus a comma, and the ratio between
+them is mostly glyph shape. Worse, the studio side is naturally measured off
+ELEMENT boxes, which are glyph-independent, so the two sides are not measuring the
+same quantity. Divide each word's peak by its OWN resting height. **Equal cluster
+count does not make the i-th cluster the same word** -- require every cluster to
+stay near its own previous x-centre, width and height, and break the track when it
+does not. On the studio side read `font-size x the .word-glyph transform`, since
+`.word-ink`'s own rect does not contain the pop.
+
+### The three film-comparison scripts (2026-08-12)
+
+The advice above was written before these existed and they now implement it.
+Use them rather than a fresh ad-hoc measurement; each earned its shape by being
+wrong first, and `docs/MOTION.md` lists nine specific ways.
+
+| script | answers |
+|---|---|
+| `scripts/motion_diff.py` | does a word's size envelope match the film's — shape, peak height, peak timing, half-width, and the per-word peak distribution, each against the film's own bootstrap interval |
+| `scripts/word_by_word.py` | does *this* word move like *that* word. `--sample` is the film's audio, so both sides say the same words at the same moments and can be aligned by text |
+| `scripts/weight_diff.py` | does weight animate, measured as stroke thickness over glyph height and calibrated against this project's own Roboto Flex |
+
+```bash
+.venv/bin/python scripts/motion_diff.py --film --out /tmp/film.json
+.venv/bin/python -m autocwi live --sample --lang en --no-open &   # NOT --loop
+.venv/bin/python scripts/motion_trace.py --out /tmp/rows.json --seconds 38
+.venv/bin/python scripts/motion_diff.py --ours /tmp/rows.json --out /tmp/ours.json
+.venv/bin/python scripts/motion_diff.py --compare /tmp/film.json /tmp/ours.json
+.venv/bin/python scripts/word_by_word.py --rows /tmp/rows.json
+```
+
+**Three rules that cost a day between them.**
+
+1. **Watch `live --sample` before believing any of these numbers.** A per-word
+   envelope is normalised by each word's own rest and aligned on its own turn, so
+   it divides out type size, density, how many words move at once and the rhythm
+   of the line. Every enhanced statistic sat inside the film's confidence
+   interval while the stage plainly read wrong.
+2. **Put BOTH motion systems beside the reference.** Legacy was never once
+   compared to the film — every measurement was enhanced-versus-film — and legacy
+   turned out to be the closer of the two.
+3. **Never capture with `--loop`.** A restart changes the epoch, so words repaint
+   in read-ahead ink and settle without motion, which measures as a perfectly
+   flat envelope that looks like a result.
 
 ## Running
 
@@ -42,7 +153,7 @@ Two more traps, both of which cost a full round each:
 python3.11 -m venv .venv                       # one time
 .venv/bin/pip install -r requirements.txt
 
-.venv/bin/python -m pytest                     # 161 tests, offline, ~seconds
+.venv/bin/python -m pytest                     # 164 tests, offline, ~seconds
 npm --prefix web install                       # one time
 npm --prefix web run check                     # lint + 49 TS tests + static build
 ```

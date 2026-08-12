@@ -71,9 +71,24 @@ DOM_PHASES = r"""
        counter read 0 read-ahead words in every sample of every run, which
        looks exactly like "CWI 2.2.1 is not being delivered" and is instead
        the probe looking at the wrong element. */
-    const glyphInk = word.querySelector('.caption-character')
-      || word.querySelector('.word-ink');
-    if (glyphInk && getComputedStyle(glyphInk).color === target) readAhead += 1;
+    /* AND ON WIDE SCRIPT THE CHARACTER IS THE WRONG ELEMENT AGAIN (2026-08-11).
+       Korean turns by sweeping a clipped overlay over a base ink layer that
+       stays read-ahead white FOR LIFE, so every `.caption-character` in the
+       base reads as read-ahead and this counter pinned at the full word count
+       -- measured, a flat 84 of 84 while the schedule said 0 words were past
+       the playhead. Same failure as reading `.caption-word` before 2026-08-01:
+       a counter stuck at one value is not evidence.
+       On that path the equivalent question is how much of the word the sweep
+       has covered: `--wipe` at 0% is a word entirely in read-ahead ink. */
+    const turned = word.querySelector('.word-ink-turned');
+    if (turned) {
+      const wipe = parseFloat(getComputedStyle(turned).getPropertyValue('--wipe'));
+      if (Number.isFinite(wipe) && wipe < 0.5) readAhead += 1;
+    } else {
+      const glyphInk = word.querySelector('.caption-character')
+        || word.querySelector('.word-ink');
+      if (glyphInk && getComputedStyle(glyphInk).color === target) readAhead += 1;
+    }
     const glyph = word.querySelector('.word-glyph');
     if (!glyph) continue;
     const transform = getComputedStyle(glyph).transform;

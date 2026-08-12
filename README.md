@@ -13,14 +13,14 @@ recorded video is kept as the reference generator for the caption data contract.
 Everything runs **locally and offline**. No cloud inference, no telemetry. The
 only network access is one-time downloads of model weights and fonts.
 
-> New here? Start with **[CONTRIBUTING.md — first day](CONTRIBUTING.md#your-first-day)** for a
+> New here? Start with **[CONTRIBUTING.md](CONTRIBUTING.md#setup)** for a
 > step-by-step first run, and **[ARCHITECTURE.md — glossary](ARCHITECTURE.md#glossary)** for the
 > terminology.
 
 ## What it does
 
 The renderer follows the **CWI Design System V1.0**
-([PDF](docs/cwi-design-system-v1.0.pdf)) across its three pillars:
+([PDF](docs/reference/cwi-design-system-v1.0.pdf)) across its three pillars:
 
 - **Attribution** — each speaker gets a distinct color (yellow, green, blue,
   pink, red, orange, in wheel order).
@@ -54,7 +54,7 @@ Then run the bundled demo — no microphone needed:
 ```
 
 Full setup notes (download sizes, offline extras, gated model tokens) are in
-**[CONTRIBUTING.md — first day](CONTRIBUTING.md#your-first-day)**.
+**[CONTRIBUTING.md](CONTRIBUTING.md#setup)**.
 
 ## Common commands
 
@@ -102,15 +102,15 @@ A fuller breakdown of every module is in
 
 | Document | What's in it |
 |---|---|
-| [CONTRIBUTING.md — first day](CONTRIBUTING.md#your-first-day) | Day-one setup and first run |
+| [CONTRIBUTING.md](CONTRIBUTING.md#setup) | Setup, first run, conventions and the ground rules |
 | [ARCHITECTURE.md — glossary](ARCHITECTURE.md#glossary) | Definitions of every domain term |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, modules, and the data contract |
 | [docs/LIVE.md](docs/LIVE.md) | How live mode works in depth |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, conventions, ground rules, PR flow |
-| [docs/TESTS.md](docs/TESTS.md) | Test layout and how to run/regenerate them |
 | [docs/RESEARCH.md — sources](docs/RESEARCH.md#sources) | The primary source materials |
 | [docs/MOTION.md](docs/MOTION.md) | **The motion contract** — five channels, the rules, the acceptance figures |
-| [docs/DESIGN.md](docs/DESIGN.md) | PDF values by section, plus superseded interpretation (read MOTION.md first) |
+| [docs/motion.html](docs/motion.html) | The motion contract as a page you can watch |
+| [docs/HARDWARE.md](docs/HARDWARE.md) | The mic array + Pi + motor node: bring-up and booth runbook |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | Research grounding for design decisions |
 | [web/README.md](web/README.md) | The studio frontend |
 

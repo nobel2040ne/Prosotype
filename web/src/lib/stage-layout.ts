@@ -25,7 +25,7 @@
  *
  * NOT `words * perWordEm`. The per-word cost RISES as rows get shorter, because
  * a short row cannot average a long word away. Measured by sliding a window over
- * the recognizer's real word order on assets/sample.mp4, the widest English row
+ * the recognizer's real word order on docs/reference/pr-film.mp4, the widest English row
  * costs 2.93em per word at six words but **3.61em** at three -- so a constant
  * derived from six-word rows under-budgets a three-word row by 19%, which is
  * exactly how the first attempt at this produced rows that overflowed the stage.

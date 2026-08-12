@@ -25,6 +25,11 @@ CORE_MODELS = (
      "streaming-nemotron-en-160ms"),
     ("sherpa-onnx-nemotron-speech-streaming-en-0.6b-1120ms-int8-2026-04-25",
      "streaming-nemotron-en-1120ms"),
+    # Bilingual capture: 40 language-locales in one model, language chosen per
+    # STREAM via `set_option("language", "auto")`. Needs sherpa-onnx with
+    # PR #3671 -- see requirements.txt.
+    ("sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-1120ms-int8-2026-06-11",
+     "streaming-nemotron35-multi-1120ms"),
 )
 
 KOREAN_MODEL_ID = "kangkyu/icefall-asr-ko-streaming-zipformer-174m"

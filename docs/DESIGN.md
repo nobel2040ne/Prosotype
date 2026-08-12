@@ -276,7 +276,7 @@ and the reference the live renderer is measured against:
 > pitch −0.54: all circular). What these captures CAN answer is what the motion
 > DOES — `motion.scale/lift/dwght` are real pixel measurements and the word
 > timings are read off the frames. The only source where motion AND audio are
-> both real is `assets/sample.mp4`, which is the PR film and what `--sample`
+> both real is `docs/reference/pr-film.mp4`, which is the PR film and what `--sample`
 > streams.
 
 The user's captures of the official site settle three things the PDF notes and

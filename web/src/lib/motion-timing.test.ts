@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  VOICE_PHASE_RISE_FRACTION,
   acousticTimeMs,
   charTurnDelayMs,
   crestDurationMs,
   crestWindowMs,
   naturalMotionDurationMs,
-  VOICE_PHASE_RISE_FRACTION,
   type MotionDurationSettings,
 } from "./motion-timing.ts";
 
@@ -172,3 +172,9 @@ test("the wipe crosses a word letter by letter, and a late letter appends", () =
   assert.equal(charTurnDelayMs(1000, 1, 0, 720), 1720);   // span floors at 1
   assert.ok(Number.isFinite(charTurnDelayMs(NaN, NaN, NaN, NaN)));
 });
+
+// --- the enhanced clock's anticipation ----------------------------------
+
+
+
+

@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* The project's own face, loaded from `assets/`. Run this page from the repo
+   root (`python3 -m http.server` then open /docs/motion.html) or open it
+   directly -- either way the relative path resolves. If the font is missing,
+   `scripts/fetch_font.py` puts it there; the weight demo needs the real `wght`
+   axis and a system fallback will fake it. */
+@font-face {
+  font-family: "Roboto Flex";
+  src: url("../assets/RobotoFlex.ttf") format("truetype-variations");
+  font-weight: 100 1000;
+  font-stretch: 25% 151%;
+  font-display: block;
+}
+</style>
+</head>
+<body>
+<title>CWI caption motion — the rules, running</title>
+
+<style>
+/* ── The stage's own world. CWI 2.4.1 sets captions in a black box, so this
+   page commits to that ground in both themes rather than inverting into a
+   document. Every colour below is painted explicitly. ─────────────────── */
+:root {
+  --ground:    #0B0B0C;
+  --surface:   #141416;
+  --surface-2: #1B1B1E;
+  --rule:      #2A2A2E;
+  --ink:       #F4F4F2;   /* settled caption ink */
+  --ahead:     #8C8C90;   /* read-ahead ink — CWI's `unknown` state */
+  --muted:     #6E6E74;
+  --y:  #E5E517;          /* CI Main Yellow   — speaker 01 */
+  --b:  #17E5E5;          /* CI Main Blue     — speaker 03 */
+  --g:  #17E517;          /* CI Main Green    — speaker 02 */
+  --r:  #E51717;          /* CI Main Red      — reverted / never do this */
+  --measure: 66ch;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Roboto Flex", system-ui, sans-serif;
+  font-variation-settings: "opsz" 14, "wght" 400, "wdth" 100;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1140px; margin: 0 auto; padding: 0 28px 120px; }
+
+/* ── Masthead ─────────────────────────────────────────────────────────── */
+.mast { padding: 88px 0 40px; border-bottom: 1px solid var(--rule); }
+.eyebrow {
+  font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--muted); font-variation-settings: "wght" 600, "wdth" 100;
+  margin: 0 0 20px;
+}
+h1 {
+  margin: 0; font-size: clamp(34px, 5.6vw, 62px); line-height: 1.02;
+  letter-spacing: -.028em; text-wrap: balance;
+  font-variation-settings: "opsz" 60, "wght" 620, "wdth" 96;
+}
+h1 em { font-style: normal; color: var(--y); }
+.standfirst {
+  margin: 22px 0 0; max-width: var(--measure);
+  font-size: 17px; color: var(--ahead);
+}
+.standfirst strong { color: var(--ink); font-variation-settings: "wght" 600; }
+
+/* ── Sections ─────────────────────────────────────────────────────────── */
+section { padding: 64px 0 0; }
+h2 {
+  margin: 0 0 6px; font-size: 13px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--y);
+  font-variation-settings: "wght" 650;
+}
+.section-note { margin: 0 0 30px; color: var(--muted); font-size: 14px; max-width: var(--measure); }
+
+/* ── A bench: live demo left, spec right ──────────────────────────────── */
+.bench {
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 0; border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--surface); margin-bottom: 16px; overflow: hidden;
+}
+@media (max-width: 860px) { .bench { grid-template-columns: 1fr; } }
+
+.demo {
+  padding: 34px 28px; display: flex; flex-direction: column;
+  gap: 18px; justify-content: center; min-height: 168px;
+  background: var(--ground); border-right: 1px solid var(--rule);
+}
+@media (max-width: 860px) { .demo { border-right: 0; border-bottom: 1px solid var(--rule); } }
+
+.spec { padding: 26px 26px; display: flex; flex-direction: column; gap: 14px; }
+.spec h3 {
+  margin: 0; font-size: 19px; letter-spacing: -.01em;
+  font-variation-settings: "opsz" 24, "wght" 600;
+}
+.spec h3 .num {
+  color: var(--muted); font-variation-settings: "wght" 500;
+  margin-right: 10px; font-variant-numeric: tabular-nums;
+}
+.spec p { margin: 0; font-size: 14.5px; color: var(--ahead); }
+.spec p strong { color: var(--ink); font-variation-settings: "wght" 600; }
+
+dl.facts {
+  margin: 4px 0 0; display: grid; grid-template-columns: auto 1fr;
+  gap: 7px 18px; font-size: 13px; align-items: baseline;
+}
+dl.facts dt {
+  color: var(--muted); letter-spacing: .07em; text-transform: uppercase;
+  font-size: 10.5px; font-variation-settings: "wght" 600;
+}
+dl.facts dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+code, .mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px; color: var(--b); background: var(--surface-2);
+  padding: 1px 5px; border-radius: 2px;
+}
+
+.replay {
+  align-self: flex-start; background: transparent; color: var(--ahead);
+  border: 1px solid var(--rule); border-radius: 2px; padding: 6px 13px;
+  font: inherit; font-size: 11.5px; letter-spacing: .09em;
+  text-transform: uppercase; cursor: pointer;
+}
+.replay:hover { color: var(--ink); border-color: var(--ahead); }
+.replay:focus-visible { outline: 2px solid var(--y); outline-offset: 2px; }
+
+/* ── The caption line itself ──────────────────────────────────────────── */
+.line {
+  font-size: clamp(26px, 3.4vw, 40px); line-height: 1.3;
+  letter-spacing: -.012em; display: flex; flex-wrap: wrap;
+  /* Wider than the stage's own gutter: at 1.15x the pop, neighbouring
+     words touch, which is correct on stage (nothing pushes) but reads as
+     a typo in a reference page. */
+  align-items: baseline; gap: 0 .46em;
+}
+.w { display: inline-block; white-space: nowrap; color: var(--ahead); }
+.w .c { display: inline-block; }
+
+/* Channel 1 — the colour turn, wiped per character */
+@keyframes turn { from { color: var(--ahead); } }
+.play .t1 .c { animation: turn 1ms linear both; animation-delay: var(--d); }
+.t1 .c { color: var(--y); }
+
+/* Channel 2 — the 2.2.3 pop: constant 15% on every word, from the baseline */
+@keyframes pop {
+  0%, 100% { transform: scale(1); }
+  42%      { transform: scale(1.15); }
+}
+.w.t2 { transform-origin: 50% 100%; }
+.play .t2 { animation: pop 620ms cubic-bezier(.42,0,.22,1) both; animation-delay: var(--d); }
+
+/* Channel 3 — the crest: a font-size ridden by loudness */
+@property --phase { syntax: "<number>"; inherits: true; initial-value: 0; }
+@keyframes phase { 0%,100% { --phase: 0; } 50% { --phase: 1; } }
+.t3 { font-size: calc(1em * (1 + var(--phase) * (var(--scale) - 1))); }
+.play .t3 { animation: phase 900ms linear both; animation-delay: var(--d); }
+
+/* Channel 4 — weight, a property of the VOICE not the word */
+.t4 { font-variation-settings: "opsz" 40, "wght" calc(400 + var(--phase) * (var(--wt) - 400)), "wdth" 100; }
+.play .t4 { animation: phase 900ms linear both; animation-delay: var(--d); }
+
+/* Channel 5 — the lift: a word that waited rises and lands as it turns */
+@keyframes lift {
+  0%   { transform: translateY(0); }
+  22%  { transform: translateY(-.525em); }
+  78%  { transform: translateY(-.525em); }
+  100% { transform: translateY(0); }
+}
+.play .t5 { animation: lift 1500ms cubic-bezier(.33,0,.2,1) both; }
+
+/* The character wave — texture under channel 1, not a channel.
+   A LIFT plus a small per-letter angle, and the letters of a SYLLABLE share
+   one delay: the film lifts "but|ton", not b-u-t-t-o-n. */
+@keyframes wave {
+  0%, 100% { transform: translateY(0) rotate(0deg) scale(1, 1); }
+  38%  { transform: translateY(-.13em) rotate(var(--tilt, 0deg)) scale(1, 1.035); }
+  72%  { transform: translateY(.029em) rotate(calc(var(--tilt, 0deg) * -.28)) scale(1, .988); }
+}
+.play .tw .c { animation: wave 240ms cubic-bezier(.34,0,.28,1) both; animation-delay: var(--d); }
+
+@media (prefers-reduced-motion: reduce) {
+  .play .t1 .c, .play .t2, .play .t3, .play .t4, .play .t5, .play .tw .c {
+    animation-duration: 1ms !important;
+  }
+}
+
+/* ── Rule cards ───────────────────────────────────────────────────────── */
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 14px; }
+.rule {
+  border: 1px solid var(--rule); border-radius: 3px; padding: 20px 20px 22px;
+  background: var(--surface); display: flex; flex-direction: column; gap: 9px;
+}
+.rule.no { border-left: 2px solid var(--r); }
+.rule.yes { border-left: 2px solid var(--g); }
+.rule h4 {
+  margin: 0; font-size: 15px; letter-spacing: -.005em;
+  font-variation-settings: "wght" 620;
+}
+.rule p { margin: 0; font-size: 13.5px; color: var(--ahead); }
+.rule .why { color: var(--muted); font-size: 12.5px; }
+
+/* ── Data table ───────────────────────────────────────────────────────── */
+.scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 560px; }
+th, td { padding: 11px 16px; text-align: left; border-bottom: 1px solid var(--rule); }
+th {
+  font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--muted); font-variation-settings: "wght" 600;
+  background: var(--surface-2);
+}
+td { color: var(--ahead); font-variant-numeric: tabular-nums; }
+td:first-child { color: var(--ink); }
+tr:last-child td { border-bottom: 0; }
+td.hit { color: var(--g); }
+td.miss { color: var(--r); }
+
+footer {
+  margin-top: 72px; padding-top: 26px; border-top: 1px solid var(--rule);
+  color: var(--muted); font-size: 12.5px; max-width: var(--measure);
+}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">auto-CWI · docs/MOTION.md, running</p>
+  <h1>Five channels, one <em>animation-delay</em>, and the rules that aren't in the table.</h1>
+  <p class="standfirst">
+    Every demo below is the real mechanism, not a picture of it — the same custom
+    properties, keyframes and per-character delays the caption stage uses.
+    <strong>Press replay on any bench to run it again.</strong>
+  </p>
+</header>
+
+<section>
+  <h2>The five channels</h2>
+  <p class="section-note">
+    Each has one owner and one input. They do not share state, and three pairs are
+    explicitly independent.
+  </p>
+
+  <div class="bench">
+    <div class="demo">
+      <div class="line" id="d1">
+        <span class="w t1"><span class="c" style="--d:0ms">a</span><span class="c" style="--d:34ms">s</span></span>
+        <span class="w t1"><span class="c" style="--d:150ms">e</span><span class="c" style="--d:184ms">a</span><span class="c" style="--d:218ms">c</span><span class="c" style="--d:252ms">h</span></span>
+        <span class="w t1"><span class="c" style="--d:400ms">w</span><span class="c" style="--d:434ms">o</span><span class="c" style="--d:468ms">r</span><span class="c" style="--d:502ms">d</span></span>
+        <span class="w t1"><span class="c" style="--d:650ms">i</span><span class="c" style="--d:684ms">s</span></span>
+        <span class="w t1"><span class="c" style="--d:800ms">s</span><span class="c" style="--d:834ms">p</span><span class="c" style="--d:868ms">o</span><span class="c" style="--d:902ms">k</span><span class="c" style="--d:936ms">e</span><span class="c" style="--d:970ms">n</span></span>
+      </div>
+      <button class="replay" data-target="d1">Replay</button>
+    </div>
+    <div class="spec">
+      <h3><span class="num">01</span>Colour turn</h3>
+      <p>
+        The word arrives in read-ahead ink and flips to its speaker colour at the
+        exact spoken onset — <strong>wiped across its characters</strong>, not
+        switched. The keyframe has no <code>to</code>, so it animates toward the
+        element's own computed colour and a late speaker correction lands as a
+        direct write.
+      </p>
+      <dl class="facts">
+        <dt>Spec</dt><dd>CWI 2.2.2</dd>
+        <dt>Driven by</dt><dd>the word's onset, wiped across its spoken span</dd>
+        <dt>Rest → reach</dt><dd>read-ahead ink → speaker colour</dd>
+        <dt>Lives on</dt><dd><code>.caption-character</code></dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div class="demo">
+      <div class="line" id="d2">
+        <span class="w t2" style="--d:0ms;color:var(--y)">every</span>
+        <span class="w t2" style="--d:260ms;color:var(--y)">word</span>
+        <span class="w t2" style="--d:520ms;color:var(--y)">pops</span>
+        <span class="w t2" style="--d:780ms;color:var(--y)">the</span>
+        <span class="w t2" style="--d:1040ms;color:var(--y)">same</span>
+      </div>
+      <button class="replay" data-target="d2">Replay</button>
+    </div>
+    <div class="spec">
+      <h3><span class="num">02</span>Synchronisation pop</h3>
+      <p>
+        A constant 15% on <strong>every</strong> word, driven by nothing. It grows
+        from the baseline and does not hop — no <code>translateY</code>, no
+        box-bottom pivot. That has been got wrong four times.
+      </p>
+      <dl class="facts">
+        <dt>Spec</dt><dd>CWI 2.2.3</dd>
+        <dt>Driven by</dt><dd>nothing — constant</dd>
+        <dt>Rest → reach</dt><dd>1.00 → 1.15</dd>
+        <dt>Lives on</dt><dd><code>.word-glyph</code></dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div class="demo">
+      <div class="line" id="d3">
+        <span class="w t3" style="--scale:.78;--d:0ms;color:var(--y)">softer</span>
+        <span class="w t3" style="--scale:1;--d:260ms;color:var(--y)">or</span>
+        <span class="w t3" style="--scale:1.62;--d:520ms;color:var(--y)">louder</span>
+      </div>
+      <button class="replay" data-target="d3">Replay</button>
+    </div>
+    <div class="spec">
+      <h3><span class="num">03</span>Crest — size</h3>
+      <p>
+        Loudness becomes a <strong>font-size</strong>, not a transform, so the
+        letterforms are really set at that size. A band around the median holds
+        ordinary words at exactly 1.00 — without it, 48% of all words drifted
+        smaller and nothing read as emphasis.
+      </p>
+      <dl class="facts">
+        <dt>Spec</dt><dd>CWI 2.3.5–6</dd>
+        <dt>Driven by</dt><dd><code>loudness</code></dd>
+        <dt>Rest → reach</dt><dd>1.00 → 0.72 … 1.62</dd>
+        <dt>Lives on</dt><dd><code>.word-ink</code></dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div class="demo">
+      <div class="line" id="d4">
+        <span class="w t4" style="--wt:340;--d:0ms;color:var(--b)">a high voice</span>
+        <span class="w t4" style="--wt:900;--d:420ms;color:var(--b)">a low one</span>
+      </div>
+      <button class="replay" data-target="d4">Replay</button>
+    </div>
+    <div class="spec">
+      <h3><span class="num">04</span>Weight</h3>
+      <p>
+        Weight is a property of the <strong>voice</strong>, not the word. Read per
+        word, 2.3.9 draws high pitch light — and a shout's F0 doubles, so the
+        angriest voice would render as the thinnest text. The register term reads
+        the speaker's running median F0 instead.
+      </p>
+      <dl class="facts">
+        <dt>Spec</dt><dd>CWI 2.3.8–9</dd>
+        <dt>Driven by</dt><dd>the speaker's median F0, plus prominence</dd>
+        <dt>Rest → reach</dt><dd>400 → 340 … 900</dd>
+        <dt>Lives on</dt><dd><code>font-weight: calc(…)</code></dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div class="demo">
+      <div class="line" id="d5">
+        <span class="w" style="color:var(--y)">as each word</span>
+        <span class="w t5" style="color:var(--y)">is</span>
+        <span class="w" style="color:var(--y)">spoken</span>
+      </div>
+      <button class="replay" data-target="d5">Replay</button>
+    </div>
+    <div class="spec">
+      <h3><span class="num">05</span>Hold and lift</h3>
+      <p>
+        A word the speaker held rises off the line and <strong>lands as it
+        turns</strong>. What it detects is isolation, not sustain: the silence
+        either side, measured over inter-onset intervals. Size and lift are
+        mutually exclusive — a word that swells does not leave the line.
+      </p>
+      <dl class="facts">
+        <dt>Driven by</dt><dd>silence around the word</dd>
+        <dt>Rest → reach</dt><dd>0 → 0.525em</dd>
+        <dt>Gate</dt><dd>0.78 s → 0.88 s, both sides</dd>
+        <dt>Lives on</dt><dd><code>.word-ink</code></dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div class="demo">
+      <div class="line" id="dw">
+        <span class="w tw" style="color:var(--y)"><span class="c" style="--d:0ms;--tilt:1.35deg">a</span><span class="c" style="--d:96ms;--tilt:-0.9deg">n</span><span class="c" style="--d:96ms;--tilt:0.28deg">i</span><span class="c" style="--d:192ms;--tilt:1.2deg">m</span><span class="c" style="--d:192ms;--tilt:-1.31deg">a</span><span class="c" style="--d:288ms;--tilt:0.44deg">t</span><span class="c" style="--d:288ms;--tilt:1.06deg">i</span><span class="c" style="--d:288ms;--tilt:-1.29deg">o</span><span class="c" style="--d:288ms;--tilt:0.61deg">n</span></span>
+      </div>
+      <button class="replay" data-target="dw">Replay</button>
+    </div>
+    <div class="spec">
+      <h3><span class="num">—</span>The character wave, in syllables</h3>
+      <p>
+        Not a sixth channel: <strong>texture under the colour turn</strong>, and
+        it moves <strong>a syllable at a time</strong> — read off the film,
+        <em>seen</em> lifts as <em>se</em>&nbsp;+&nbsp;<em>en</em>,
+        <em>button</em> as <em>but</em>&nbsp;+&nbsp;<em>ton</em>. Inside a group
+        each letter sits at a slightly different angle, which is what makes it
+        read as hand-set rather than as a block.
+      </p>
+      <p>
+        Amplitude still scales with how far each letter departs from its own
+        word's size, so a loud word holds its letters together while an
+        ordinary-volume word lets the lift carry them. The colour keeps
+        travelling one letter at a time underneath — two clocks, not one.
+      </p>
+      <dl class="facts">
+        <dt>Group</dt><dd>syllable (<code>syllables.ts</code>)</dd>
+        <dt>Span</dt><dd>240 ms per group</dd>
+        <dt>Gate</dt><dd><code>--char-wave</code></dd>
+        <dt>Clocks</dt><dd><code>--char-wave-delay</code> / <code>--char-turn-delay</code></dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>The playhead</h2>
+  <p class="section-note">
+    What makes this a CWI renderer rather than a subtitle track: 2.2.1 needs the
+    line on screen <em>before</em> it is spoken, and a live recogniser cannot
+    produce text early.
+  </p>
+  <div class="rules">
+    <div class="rule yes">
+      <h4>Captions present from a clock behind the acoustic one</h4>
+      <p>1.75 s behind. The delay is the lag, one for one — nothing is predicted.</p>
+      <p class="why">Colouring only up to <code>now − delay</code> leaves real, recognised, still-uncoloured text ahead of the colour.</p>
+    </div>
+    <div class="rule yes">
+      <h4>Read-ahead is a per-word floor, not a time delay</h4>
+      <p>420 ms minimum lead before a word may turn.</p>
+      <p class="why">The recogniser releases words in bursts, so a delay moves the mean lead and leaves its spread alone: at 1.75 s, 42% of words still turned within 100 ms of appearing. The floor takes that to 0%.</p>
+    </div>
+    <div class="rule no">
+      <h4>Do not gate the turn on speaker attribution</h4>
+      <p>Text arrives at a median 0.62 s; durable attribution at 4.48 s.</p>
+      <p class="why">The turn happens on time in whatever colour is known, or it does not happen on time at all.</p>
+    </div>
+    <div class="rule no">
+      <h4>Word events are not a clock source</h4>
+      <p>They are replayed to every new connection, and an old timestamp reads as a restart.</p>
+      <p class="why">Words under an older epoch must settle, never be re-derived — re-deriving puts them in the future and turns a whole stage of read captions white again.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Rules that aren't visible in the table</h2>
+  <div class="rules">
+    <div class="rule no">
+      <h4>The word grows from its baseline. It does not move.</h4>
+      <p>No <code>translateY</code>, no box-bottom pivot.</p>
+      <p class="why">Wrong four times.</p>
+    </div>
+    <div class="rule yes">
+      <h4>Everything is frozen at first sight</h4>
+      <p>Duration, axes, sweep, hold gap and turn moment are computed once per word and survive remounts.</p>
+      <p class="why">Recomputing any of them under a running animation is the bug this project re-commits most.</p>
+    </div>
+    <div class="rule yes">
+      <h4>Size and lift are mutually exclusive, and both gates are binary</h4>
+      <p>A word that swells does not leave the line; a word that lifts shows no crest and no weight.</p>
+      <p class="why">Every word carries the 2.2.3 pop, so a proportional gate taxes a word for a cue it never asked for.</p>
+    </div>
+    <div class="rule yes">
+      <h4>Two clocks, never collapsed</h4>
+      <p><code>--motion-duration</code> rides the speech rate; <code>--crest-duration</code> rides emphasis.</p>
+      <p class="why">Collapsing them made emphatic words 4.7× too fast in one direction and ordinary words 4.8× too slow in the other.</p>
+    </div>
+    <div class="rule no">
+      <h4>Never make the reveal a typewriter</h4>
+      <p>Progressive appearance destroys the read-ahead 2.2.1 exists for.</p>
+      <p class="why">The line must be there to read before it is spoken.</p>
+    </div>
+    <div class="rule yes">
+      <h4>Reduced motion keeps the colour turn</h4>
+      <p>It drops only the geometry — pin the phase rather than cancelling the animation.</p>
+      <p class="why">Cancelling the word's animation also cancels the turn, which is the one cue that carries meaning.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Measured against the PR film</h2>
+  <p class="section-note">
+    <code>--sample</code> streams the film's own audio, so both sides say the same
+    words at the same moments. Visible width is the part of the envelope above
+    half height — the part a viewer actually reads.
+  </p>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Statistic</th><th>Film</th><th>Ours</th><th>Verdict</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Visible width, p10</td><td>125 ms</td><td>143 / 142 / 104 ms</td><td class="hit">matches</td></tr>
+        <tr><td>Visible width, p50</td><td>208 ms</td><td>237 / 234 / 235 ms</td><td class="hit">within one film frame</td></tr>
+        <tr><td>Visible width, p90</td><td>333 ms</td><td>288 / 335 / 337 ms</td><td class="hit">matches</td></tr>
+        <tr><td>Peak, p50</td><td>1.171×</td><td>1.270 / 1.272 / 1.272×</td><td class="miss">ours runs high</td></tr>
+        <tr><td>Peak, p90</td><td>1.634×</td><td>1.514 / 1.521 / 1.536×</td><td class="miss">ours runs low</td></tr>
+        <tr><td>Glyph step, character wave</td><td>42 ms (1 frame)</td><td>≈35 ms</td><td class="hit">close</td></tr>
+        <tr><td>Glyphs elevated at once</td><td>4</td><td>≈7</td><td class="miss">ours smears</td></tr>
+        <tr><td>Which word gets emphasised</td><td colspan="2">correlation −0.018</td><td class="miss">unrelated</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="section-note" style="margin-top:22px">
+    The last row is a ceiling, not a defect to fix. The film's own word sizes
+    correlate −0.277 with its own soundtrack — they are a transcriber's judgement,
+    so no acoustic rule can reproduce them. Shape, timing and amplitude match;
+    <em>which word</em> cannot.
+  </p>
+</section>
+
+<footer>
+  Live demos use the same properties as the caption stage: an
+  <code>@property</code>-registered phase, per-character
+  <code>animation-delay</code>, and Roboto Flex's real <code>wght</code> axis.
+  Figures are from <span class="mono">scripts/motion_diff.py</span>,
+  <span class="mono">word_by_word.py</span> and
+  <span class="mono">weight_diff.py</span>; the rules are
+  <span class="mono">docs/MOTION.md</span>. Legacy is the shipped clock.
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var benches = document.querySelectorAll(".demo");
+
+  function run(demo) {
+    var line = demo.querySelector(".line");
+    line.classList.remove("play");
+    void line.offsetWidth;          // restart the animations
+    line.classList.add("play");
+  }
+
+  document.querySelectorAll(".replay").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      run(btn.closest(".demo"));
+    });
+  });
+
+  // Play each bench once when it first scrolls into view, so the page
+  // demonstrates itself without every channel firing at once on load.
+  if ("IntersectionObserver" in window) {
+    var seen = new WeakSet();
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && !seen.has(e.target)) {
+          seen.add(e.target);
+          setTimeout(function () { run(e.target); }, 160);
+        }
+      });
+    }, { threshold: 0.55 });
+    benches.forEach(function (b) { io.observe(b); });
+  } else {
+    benches.forEach(run);
+  }
+})();
+</script>
+
+</body>
+</html>

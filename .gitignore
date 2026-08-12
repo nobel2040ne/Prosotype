@@ -23,6 +23,11 @@ web/out/
 # `scripts/fetch_streaming_model.py --speaker-only`.
 assets/streaming-nemotron-en-160ms/
 assets/streaming-nemotron-en-1120ms/
+# The multilingual profile. THIS ONE WAS MISSING and its 627 MB encoder went
+# into a commit, which GitHub rejects outright at its 100 MB file limit -- the
+# push fails at the pre-receive hook, not at the file. Every other model
+# directory was already here; this is the same rule, not a new one.
+assets/streaming-nemotron35-multi-1120ms/
 assets/streaming-zipformer-ko/
 assets/streaming-zipformer-ko-174m/
 assets/parakeet-unified-en-offline/
@@ -40,6 +45,9 @@ assets/eval-fleurs-*/test_wavs/
 
 # Audio-tagging model weights, fetched by scripts/fetch_streaming_model.py.
 assets/audio-tagging-en/*.onnx
+# Vendor demo clips that ship inside a model download. Nothing in this repo
+# reads them, and they are the model's own test fixtures rather than ours.
+assets/*/test_wavs/
 
 # Roboto Flex, fetched by scripts/fetch_font.py. The design system names it
 # (2.3.1) but the file itself is a download, not something we author.
@@ -55,7 +63,8 @@ out/
 #   assets/reference_specs/*.json   derived reference specs (checked in; the
 #                                   offline suite loads them and never decodes
 #                                   a video)
-#   assets/sample.mp4               bundled clip a test resolves and loads
+#   docs/reference/pr-film.mp4      the PR film: reference material AND the
+#                                  clip `--sample` streams. One copy, not two.
 #   tests/fixtures/*.json           golden grid captured from the page's own JS
 #   docs/reference/*.txt            transcripts, read off the frames by hand
 #   docs/*.mov                      the three reference recordings — the only
@@ -64,3 +73,15 @@ out/
 #   docs/Caption-With-Intention_Design-System_V1.0.pdf   the authority for the
 #                                   whole motion system (also downloadable from
 #                                   captionwithintention.org)
+
+# ── Working notes, not documentation ──────────────────────────────────────
+# These four are written for an AI assistant reading the repo, not for a
+# person reading the project. They are a rulebook and a ledger: imperatives,
+# measurement history, and a record of what was tried and reverted. Keeping
+# them out of the repo is not hiding anything -- everything a reader needs is
+# in docs/, and everything a CONTRIBUTOR needs is in CONTRIBUTING.md. They
+# stay on disk and keep working locally.
+CLAUDE.md
+docs/DECISIONS.md
+docs/DESIGN.md
+docs/TESTS.md

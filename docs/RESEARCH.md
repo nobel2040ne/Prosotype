@@ -77,6 +77,15 @@ boundary**: this project is English-first by measurement (the multilingual
 checkpoint scored worse), and CuCap is the evidence that a future Korean
 version needs its own preference pass, not a translation of this one.
 
+**MEASURED 2026-08-10** after a report that Korean captions do not feel
+expressive: the motion system renders Korean equivalently to English on every
+channel (median peak 1.14x vs 1.16x, 29% vs 29% of words above 1.20x, max weight
+893 vs 858, three lifting words). The gap is the MATERIAL -- `sample-ko.wav` is
+13.3 s of neutral read FLEURS narration, so the mapping fires on incidental
+syllable energy rather than on emphasis anyone performed. CuCap's own finding
+lands the same way: emotion visualization was universally favoured, and it was
+*prosody* preference that diverged. See [KOREAN.md](KOREAN.md).
+
 **WaveFont** (Cyberworlds '20) and **Visualizing Speech Styles in Captions**
 (IJHCS '24) — voice-driven type and automatic elongation/emphasis/pause
 visualization. **Already covered**: variable-font prosody mapping; syllable
@@ -128,381 +137,27 @@ lipreading/gesture stays visible. **Out of scope** (display hardware), but it
 motivates our overflow retention: readers glance away and back, so lines must
 persist longer than speech.
 
-## Live diarization model decision (updated 2026-07-25)
+## Model decisions, in one line each
 
-The live default is now a **hybrid**, not one model pretending to solve two
-different problems:
+Three model choices were made by benchmark rather than by reputation. The
+comparisons, the numbers and the rejected candidates are in the decision log;
+what they settled:
 
-1. [`nvidia/diar_streaming_sortformer_4spk-v2.1`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
-   supplies continuous, arrival-ordered speaker activity with the official
-   1.04 s low-latency context and four native slots.
-2. Endpoint pyannote segmentation plus a full-turn speaker embedding verifies
-   the durable S1/S2 identity, recovers quiet speech that Sortformer omitted,
-   and continues beyond four total identities.
+- **Live diarization is hybrid.** Streaming Sortformer where it is available,
+  an ONNX speaker-embedding path everywhere else, and a failed native startup
+  degrades to the embedding lane without aborting captions.
+- **Korean streaming stays on the local Zipformer.** 10.54% CER normalised on
+  120 FLEURS clips. The lever is latency, not weights: a larger chunk wins on
+  text and is disqualified on time, because it leaves less than the read-ahead
+  floor before the colour turn.
+- **Speech emotion/intention is research-only.** Before adding a model,
+  benchmark Korean macro F1 on KEMDy20 plus booth audio, local RTF, and its
+  licence. Freeze a smoothed estimate onto future words only — never use an
+  utterance-end result to reweight words already on screen.
 
-Installing NeMo directly was rejected for this application environment: the
-current official stack targets Python 3.12/PyTorch 2.7, while Prosotype is pinned
-to Python 3.11/PyTorch 2.5 and uses local CPU/Core ML inference. Instead, a
-small Swift helper pinned to
-[FluidAudio](https://github.com/FluidInference/FluidAudio) 0.15.5 owns the
-palettized Core ML model and streams timeline snapshots to Python. This keeps
-the ASR process free of NeMo's dependency/runtime cost.
-
-Measured on the target Apple Silicon machine after model preparation:
-
-- the 34.5 s English dialogue processed in 4.01 s (8.6× real time);
-- the 13.3 s Korean sample processed in 1.50 s (8.9× real time);
-- cached model load was 0.14 s (the one-time download/Core ML preparation is
-  performed by the setup script).
-
-The first integration pass exposed an important distinction between raw DER and
-caption behavior. Sortformer's English timeline found the main two actors, but
-also emitted a short third slot for a quiet “Uh, yeah” and a faint overlapping
-track inside one turn. Projecting by overlap duration alone created visible
-speaker flicker. The shipped projection therefore weights overlap by model
-activity, uses endpoint embeddings as the identity verifier, maps reliable
-Sortformer slots into the durable S1… namespace, and lets a weak embedding merge
-a transient extra slot back to an existing speaker. The real English
-`live --sample --lang en` acceptance then produced only S1/S2 and the expected
-alternating dialogue turns.
-
-Live microphone testing later exposed the remaining count failure: an
-unverified Sortformer slot was allowed to become S3/S4 immediately, while a
-single noisy endpoint span could enroll S3…S6 by duration alone. The deployed
-policy now keeps only S1/S2 immediate. Higher native slots fall back to
-non-learning identity classification, and a third-or-later embedding identity
-must recur in a second clean endpoint observation before becoming public.
-Pending words are then revised to the confirmed identity. This preserves
-multi-person support while preventing one-off tracks from presenting two
-people as five.
-
-Identity encoder choice is language-specific and measured:
-
-- **English:** 3D-Speaker ERes2Net remains best on the bundled film. Meaningful
-  same-speaker turn pairs measured approximately 0.30–0.57, cross-speaker pairs
-  0.04–0.25, with a 0.046 worst-case clean margin and about 66 ms mean
-  inference. TitaNet Small/Large and multilingual CAM++ separated this sample
-  less reliably.
-- **Korean:** multilingual 3D-Speaker CAM++ is the fallback. On two held-out
-  FLEURS Korean voices it preserved essentially the same clean same-vs-cross
-  margin as ERes2Net (about 0.418) while running about 32 ms instead of 90 ms
-  for the measured spans, approximately 2.8× faster. The real single-speaker
-  Korean sample kept all 14 word IDs on S1 and now finalizes them at the ASR
-  endpoint even though Korean intentionally has no weaker offline text
-  verifier.
-
-This is not evidence that Sortformer is language-neutral. NVIDIA notes that the
-checkpoint was trained primarily on English, and it directly supports only four
-speaker slots. Korean therefore retains CAM++ endpoint verification, and every
-unsupported platform or failed native startup automatically uses the ONNX
-embedding path. `--diarizer embedding` is the controlled A/B, not a dead legacy
-branch.
-
-For offline media, `pyannote/speaker-diarization-community-1` is the clear
-upgrade from the configured 3.1 pipeline: its model card reports improved
-speaker assignment/counting, exclusive diarization for ASR alignment, and
-lower DER on most listed benchmarks. It is tied to the pyannote 4.x model
-collection and gated weights, while this environment remains pinned to
-pyannote.audio 3.3.2, so that upgrade should be isolated from the latency-critical
-live environment rather than silently changing its dependencies.
-
-## Korean streaming ASR decision (updated 2026-07-25)
-
-The first backend was the official 2024
-[sherpa-onnx Korean streaming Zipformer](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/zipformer-transducer-models.html#sherpa-onnx-streaming-zipformer-korean-2024-06-16-korean).
-It established the correct architecture—a true online transducer with timed
-leading-space pieces—but its recognition was not good enough. On the four
-bundled KSS utterances it produced 11 character edits out of 76 (14.47% CER)
-at 0.068 RTF.
-
-The replacement is the 2026
-[174M Korean causal Zipformer](https://huggingface.co/kangkyu/icefall-asr-ko-streaming-zipformer-174m),
-trained on roughly 6,500 hours of KsponSpeech + AIHub. Its model card reports
-8.255% CER / 0.073 RTF for chunk-16 and 7.815% / 0.054 for chunk-32 on the same
-6,000-cut KsponSpeech evaluation.
-
-**Chunk-32 has been the shipped export since 2026-08-05, reversing the original
-choice.** The first decision picked chunk-16 on latency alone: both chunks
-scored perfectly on the four bundled KSS utterances, so the only discriminator
-left was that chunk-16's first visible hypothesis arrived at 1.152 s of source
-audio against 1.472 s for chunk-32. Two things were wrong with that comparison.
-The bundled set was too small and too easy to separate the arms at all — it is
-the same "0/76" that also made the older stream look adequate — and latency was
-treated as a quantity to minimize rather than one to spend against a budget.
-
-`scripts/korean_sweep.py` re-ran it as a 6-cell grid (chunk 16/32/64 ×
-greedy/modified_beam_search) over 120 FLEURS ko clips, 5453 scored units,
-scoring normalized CER, RTF, and the moment each word first reaches the screen:
-
-| chunk | decoding | CER | RTF | first paint p90 | read-ahead left at p90 |
-|---|---|---|---|---|---|
-| 16 | greedy | 10.80% | 0.078 | 832 ms | 918 ms |
-| 16 | modified_beam | 11.57% | 0.096 | 832 ms | 918 ms |
-| **32** | **greedy** | **10.54%** | **0.055** | **992 ms** | **758 ms** |
-| 32 | modified_beam | 10.97% | 0.063 | 1032 ms | 718 ms |
-| 64 | greedy | 10.07% | 0.040 | 1552 ms | 198 ms |
-| 64 | modified_beam | 9.83% | 0.048 | 1592 ms | 158 ms |
-
-The read-ahead column is what makes this a CWI decision rather than an ASR one.
-A word must be legible before the playhead reaches it, and the playhead runs
-`display.read_ahead_delay_s` (1.75 s) behind the acoustic clock, so the slack
-is 1.75 s minus the paint lag. chunk-64 has the best text in the table and is
-**disqualified**: 198 ms is under `display.min_read_ahead_ms` (420), which is
-CWI 2.2.1 read-ahead disappearing. chunk-32 keeps 758 ms, still 1.8× the floor,
-and costs 200 ms of median paint lag for −0.26 CER points and 30% less CPU.
-
-Two traps worth keeping:
-
-- **Measure FIRST PAINT, not the durable word.** Scoring only `type: "word"`
-  events puts the lag a whole endpoint late — 1152 ms rather than 552 ms at
-  chunk-16 — and on that basis every arm including the shipped one looks too
-  slow. The studio colours from `cue`/`commit` as well.
-- **The model card's decoding method is not automatically right.** Its whole
-  table is `modified_beam_search`; measured here beam is *worse* at chunk-16
-  (+0.77) and chunk-32 (+0.43) and only pays off at chunk-64. Greedy stays.
-
-A live event trace on 2026-07-25 measured partial stability as well as final
-CER. The 174M decoder revised one current word slot at a time
-(`아` → `아프리카` → `아프리카의`,
-`야생` → `야생동물` → `야생동물들을`) and only once exposed two tentative
-words at the tail. Earlier words were already durable commits. This is useful
-progressive Hangul, not historical-caption churn; the presentation layer now
-keeps the current accurate hypothesis visible while bounding simultaneous
-first-paint motions—not visible words—to two.
-
-The current model remains the best local streaming choice found:
-
-- its official card reports 7.815% streaming CER at 640 ms for chunk-32;
-- its 72M sibling is less accurate in the card's direct evaluation;
-- SenseVoiceSmall supports Korean, but sherpa-onnx lists the released Korean
-  checkpoint under non-streaming ASR, while FunASR's named streaming Paraformer
-  checkpoint covers Chinese/English;
-- Qwen3-ASR and Whisper are larger offline challengers, and the 174M card's
-  same-set comparison reports lower Korean CER than both.
-
-Do not swap models from a final-transcript demo. A challenger must beat the
-174M path on first-word source latency, maximum mutable-tail length, committed
-prefix rollback count, Korean CER, and CPU RTF on the same recordings.
-
-An official 2024 offline Korean Zipformer was also tested as an endpoint
-corrector. It reduced the old stream to 1/76 edits at only 0.013 RTF, and
-exposed a sherpa formatting bug: `result.text` removed all Korean spaces even
-though `result.tokens` retained exact leading-space boundaries. The generic
-verifier now reconstructs those boundaries and normalization is Unicode-aware.
-It is not enabled for Korean, because it changed one phrase that the stronger
-174M live stream had already recognized correctly.
-
-The language boundary remains strict: selection is locked before model load;
-English Parakeet and TIMIT sidecars are disabled; `--sample` is resolved only
-after selection so `--sample --lang ko` uses `assets/sample-ko.wav` rather than
-silently feeding the English CWI video to a Korean recognizer.
-
-### Korean replacement survey (2026-08-05)
-
-A hub-wide sweep for a better Korean recognizer. **Nothing was swapped**, and
-the reason is the survey's main result: the incumbent 174M Zipformer is at or
-near the top of what exists for *local streaming Korean with word timings*.
-
-Reported Korean CER, from each model's own source. **These are different test
-sets and normalizations and are NOT directly comparable** — they are here to
-place the incumbent, not to rank challengers:
-
-| model | Korean CER | source set | params | streaming | word spans |
-|---|---|---|---|---|---|
-| **174M Zipformer (incumbent)** | **7.815%** | KsponSpeech | 174M | yes | yes |
-| Nemotron 3.5 ASR streaming 0.6B | 7.12% | NVIDIA internal | 600M | yes | via transducer |
-| SKT A.X-K2-ALM | 9.00 / 9.12 | KsponSpeech clean/other | ~22B | yes | not documented |
-| Whisper Large v3 | 16.6–18.0% | KsponSpeech (OpenKoASR) | 1.5B | no | no |
-| Qwen3-ASR 1.7B | worse than Whisper on ko | AIHub tel. (OpenKoASR) | 2B | both | separate aligner |
-
-The incumbent beats SK Telecom's 22B audio LM on that LM's own benchmark, and
-beats Whisper Large v3 by more than 2x, at 157 MB int8 on CPU. That is the
-finding: for this task the small specialist wins, and "swap in a bigger
-multilingual model" would be a regression.
-
-**The one genuine challenger is Nemotron 3.5 ASR streaming 0.6B, and it is
-BLOCKED, not rejected.** It is cache-aware streaming, covers Korean in its
-"transcription-ready" tier, and would collapse the English/Korean split onto
-one recognizer. Three things stop it today:
-
-- **sherpa-onnx support is unreleased.** Multilingual Nemotron 3.5 needs a
-  `prompt_index` encoder input (PR #3671). `1.13.4` is the newest version on
-  PyPI, it is what `requirements.txt` pins, and its
-  `OnlineRecognizer.from_transducer` has no `prompt_index` parameter —
-  verified locally. Adopting it now means building sherpa from master, which
-  also carries English ASR, the verifier, speaker embeddings and audio
-  tagging. Wait for a release.
-- **The published export is fp32 and ~2.4 GB** (`pantinor/…-onnx`, encoder
-  with external data). Community int8/MLX/LiteRT quantizations exist but none
-  is a sherpa-onnx `nemo_transducer` int8 build.
-- **Its Korean number is NVIDIA's own eval**, not FLEURS, so 7.12% vs the
-  incumbent's 10.54% here is not a comparison. Re-measure with
-  `scripts/benchmark.py --lang ko` before believing any of it.
-
-Ruled out for the STREAMING lane, all for the same structural reason — the
-binding constraint is per-word `start`/`end`, not text:
-
-- **Moonshine** — the streaming checkpoints (Tiny/Small/Medium) are
-  English-only; `moonshine-tiny-ko` is offline and tiny. Encoder-decoder, so
-  no reliable word onsets.
-- **Qwen3-ASR, VibeVoice-ASR, ARK-ASR, Fun-ASR-MLT-Nano** — the 2026 wave is
-  LLM-style seq2seq. Word timing needs a *separate* forced aligner
-  (`Qwen3-ForcedAligner-0.6B`), which is a second model on the critical path
-  and cannot run causally.
-- **SKT A.X-K2-ALM** — 22B on a frozen MoE LLM, research licence. Not
-  real-time on an M1 CPU at any quantization.
-- **The 2024 `sherpa-onnx-streaming-zipformer-korean-2024-06-16`** — already
-  measured worse here (14.47% CER on the bundled set) and superseded.
-
-**Where a swap IS available today: the Korean endpoint verifier lane, which is
-off.** `verifier_enabled: false` for Korean, and the offline model does not
-need word timings of its own — `EndpointVerifier` reconciles per word onto the
-streaming timeline. Our pinned sherpa 1.13.4 already exposes a dozen offline
-families, verified locally, several Korean-capable: `from_qwen3_asr` (1.13.4
-is the version that ADDED it; an int8 sherpa export exists at
-`thieunv/sherpa-onnx-qwen3-asr-0.6B-int8`), `from_sense_voice`,
-`from_funasr_nano`, `from_cohere_transcribe`, `from_whisper`,
-`from_omnilingual_asr_ctc`, plus plain `from_transducer` for the 2024 offline
-Korean Zipformer already tested here.
-
-That lane is worth trying because it targets the measured top remaining error:
-the FIRST word of an utterance, which an offline pass sees with full right
-context. The reason it is off — a 2024 model "changed one phrase this stream
-had already recognized correctly" — was a judgement made on four bundled
-utterances, and there are now 120 scored clips to re-test it against. Note the
-OpenKoASR caution before picking Qwen3: on Korean it ranked *below* Whisper
-Large v3, so Korean breadth in a model card is not Korean quality.
-
-## Speech emotion / intention sidecar decision (2026-07-25)
-
-“Intention” needs two separate meanings here. Acoustic affect—angry, sad,
-happy, fearful, surprised—is audible and can shape future caption motion.
-Semantic intent—question, request, warning, sarcasm—depends on recognized text
-and conversation context. A single late utterance label must not be allowed to
-rewrite either one onto words the viewer has already read.
-
-The first local prototype candidate is
-[SenseVoiceSmall](https://github.com/QwenAudio/SenseVoice). Its released
-checkpoint accepts Korean as well as Mandarin, Cantonese, English, and
-Japanese, and emits seven emotion tags together with ASR/audio-event output.
-Its non-autoregressive architecture and current CPU/edge runtimes make it the
-most practical sidecar to measure in this application. It is not yet a product
-dependency: the official speech-emotion comparison is reported on Chinese and
-English test sets, not Korean, and its checkpoint uses the separate
-[FunASR model license](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE).
-Korean recognition support is not evidence of Korean emotion accuracy.
-The official
-[sherpa-onnx SenseVoice recipe](https://k2-fsa.github.io/sherpa/onnx/sense-voice/pretrained.html)
-is attractive because this repository already ships that runtime: its int8
-model is 228 MB and exposes an `emotion` result. It is still utterance-level,
-non-streaming inference simulated behind VAD, so it cannot truthfully drive the
-beginning of the word that supplied its own label.
-
-The benchmark challenger is
-[emotion2vec+ base](https://huggingface.co/emotion2vec/emotion2vec_plus_base).
-It is approximately 90M parameters and exposes nine categories, including
-angry and neutral. The underlying
-[ACL 2024 emotion2vec paper](https://aclanthology.org/2024.findings-acl.931/)
-reports gains across ten speech-emotion languages, and the model can emit
-frame-level features at 50 Hz. However, the published checkpoint card does not
-show a Korean confusion matrix or true streaming latency, and its weight
-license is also a model-specific agreement. It is a useful A/B model, not a
-reason to replace the current acoustic motion rules.
-
-The dimensional
-[audEERING wav2vec2 emotion model](https://huggingface.co/audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim)
-is attractive because arousal/dominance/valence map more naturally to
-continuous typography than a hard “angry” label. It is rejected for shipping:
-it was fine-tuned on English MSP-Podcast, is roughly 200M parameters, and is
-CC BY-NC-SA research-only. It remains a useful offline comparison.
-
-[EmoBox](https://arxiv.org/abs/2406.07162) reinforces the evaluation warning:
-its unified benchmark spans 32 datasets and 14 languages precisely because
-cross-corpus speech-emotion results do not transfer cleanly. A model may not be
-called “Korean-capable” here merely because Korean ASR tokens are supported.
-
-[Voice Activity Projection](https://arxiv.org/abs/2205.09812) and its
-[real-time](https://arxiv.org/abs/2401.04868) and
-[multilingual](https://arxiv.org/abs/2403.06487) variants are candidates for a
-different intention channel: floor holding, turn completion, and likely
-backchannels. They predict conversational timing, not emotion, so they should
-eventually guide the compass/turn boundary rather than emotion-label a word.
-
-Korean evaluation should use ETRI's
-[KEMDy20](https://epretx.etri.re.kr/dataFileList?id=318&lang=ko) dyadic
-conversation corpus, subject to its data agreement, plus a small booth-domain
-set recorded with the actual microphone. Report macro F1/confusion—especially
-angry versus neutral/happy—not just overall accuracy, because the class
-distribution is imbalanced.
-
-The only acceptable live integration is:
-
-1. Run a sidecar on a rolling 1.5–2.5 s raw-audio window with a 320–500 ms hop.
-2. Smooth probabilities with hysteresis; an isolated frame cannot flip intent.
-3. Freeze the estimate onto a word only before that word's first visible paint.
-4. Let arousal alter the *distance/hold* of a future word's existing CWI
-   envelope. Do not shake letters or shorten the calm 520–720 ms motion into
-   an “angry” twitch. Keep pitch→weight and loudness→size interpretable.
-5. Never retroactively animate, resize, or reweight a visible word. A late
-   estimate may update a diagnostic panel, not historical caption geometry.
-
-### Applied now: delivery dynamics, not emotion claims
-
-No speech-emotion model is loaded by the runtime today. Instead, the live path
-measures language-independent, directly observable delivery dimensions:
-
-- `delivery_force`: captured level relative to the live acoustic range;
-- `delivery_attack`: early word energy relative to its preceding context;
-- `delivery_contour`: first-to-last voiced F0 change, in bounded semitones;
-- `delivery_flow`: voiced continuity/periodicity;
-- `delivery_texture`: a restrained aperiodicity/brightness mixture;
-- `delivery_confidence`: whether the word span contains enough evidence.
-
-Those continuous values choose a primary diagnostic profile—`rising`,
-`falling`, `sustained`, `forceful`, `gentle`, `textured`, or `steady`—but the UI
-never presents that profile as the speaker's inner emotion. Each expressive
-profile owns a different zero-to-rest path: rising develops its crest late,
-falling crests early and resolves downward, sustained holds, forceful travels
-farther from a measured attack, gentle eases through a smaller arc, and
-textured uses its own timing without shaking letters (its halo was removed;
-the caption carries no shadow).
-
-The first implementation reused the 64 ms real-time orb pitch samples for word
-contour and accepted only two voiced samples with a ±0.25 threshold. Octave
-jumps saturated ordinary words and marked 86.4% of English / 92.9% of Korean
-sample words expressive. Durable contour now uses a Praat 10 ms track with at
-least five voiced frames, 30% coverage, a 1.6× median octave filter, seven
-semitones to full scale, and a ±0.45 profile deadband. `steady` words retain
-only 30% of the additional expressive presentation gain. The fixed live
-synchronization cue is separate: every active word still receives at least a
-10% scale pop and 0.20 em rise. A separate presentation-only family selector
-uses trustworthy sub-threshold continuous dimensions to vary timing without
-changing that conservative diagnostic label.
-
-The per-word result is written to `delivery_cache` on the first event for its
-time slot and is never remeasured for verification. The ~64 ms `level` lane
-separately sends rolling force/attack/contour/flow/texture to the Voice Compass,
-so the voice has an immediate visual presence before ASR emits a word. All word paths end at identity transform, weight 400, width 100, and zero
-halo.
-
-Paced 2026-07-25 product acceptance used both standard samples in real Chrome.
-English produced 59 unique styled words with 22.0% expressive; Korean produced
-14 with 28.6% expressive. Repeated SSE records changed zero frozen delivery
-signatures in either language. At EOF both browsers reported zero active or
-pending motions and zero settled words with residual geometry/font effects.
-A direct browser path probe exercised all six expressive families plus the
-steady fallback and observed distinct glyph plus weight/width curves. After
-restoring reference-scale
-travel, a representative rising word reached 15.9% scale and 4.712 px lift;
-the largest vertical frame step stayed at 0.482 px and the word returned to
-identity/400/100%. Across paced product samples, English targets ranged
-10–25.7% scale and 0.201–0.250 em lift; Korean ranged 10–16.3% and
-0.200–0.229 em.
-
-SenseVoiceSmall remains the first categorical sidecar challenger, not a motion
-dependency. It may be added only as an opt-in diagnostic after Korean
-macro-F1/confusion, local RTF, license, and rolling-window stability are
-measured. A late categorical result may never animate historical words.
+See [KOREAN-ASR.md](KOREAN-ASR.md) for the Korean recognition comparison in
+full, since that one is still an open recommendation rather than a closed
+decision.
 
 ## Haptics (the planned hardware module)
 
@@ -526,9 +181,26 @@ threshold, per-user tunable). The rule for the future module: **actuate on
 flags, never on every word.**
 
 **SoundHapticVR** (ASSETS '24) / **SoundWeaver** (CHI '25) — spatial haptic
-mapping and salience-driven fusion of multiple audio-AI outputs. **Deferred**;
-SoundWeaver's principle (choose what matters *now*, don't show everything) is
-the same philosophy as our salience flags and stable display mode.
+mapping and salience-driven fusion of multiple audio-AI outputs. **Adopted
+2026-08-10, in a salience-gated form** (was *Deferred* — real hardware reversed
+it: a ReSpeaker XVF3800 mic array supplies direction of arrival, and a ring of
+coin motors on a Pi Zero 2 W can express it).
+
+The gating is the whole design, and it is what reconciles spatial mapping with
+*Tactile Emotions* above. Driving motors from raw DoA is continuous vibration —
+precisely what that paper measured as distracting. So **direction rides on a
+word, not on the audio**: a durable word carries `direction_deg` (the bearing
+measured over its span) alongside its existing salience flags, and the motors
+fire only on `speaker_change`/`emphasis`. What the wearer feels is *"someone
+new, and they are over there"* — one event, with a direction — rather than an
+ambient field. SoundWeaver's principle (choose what matters *now*, don't show
+everything) is unchanged and is exactly why the flags gate the cue.
+
+Two consequences recorded in code rather than left to the caller:
+`bearing_weights` cross-fades between the two nearest motors so four read as a
+continuous direction; and **one motor cannot encode direction at all**, so a
+single-motor build pulses the whole ring and claims nothing about where. See
+[HARDWARE.md](HARDWARE.md).
 
 **Rich Captions** (ASSETS '24) — one caption file with extra attributes, many
 renderings. **Already covered**: that is precisely the CaptionSpec/SSE
@@ -545,9 +217,14 @@ haptics) choose their own mapping.
    non-colour marker instead of a forced palette assignment.
 4. Everything visual remains config-tunable as the customization mechanism
    (Caption Royale, CuCap).
-5. Direction has a clean weak-prior hook but stays inactive without actual
-   multi-microphone input.
-6. Deferred items are recorded here so they are decisions, not omissions.
+5. Direction has a clean weak-prior hook. It stayed inactive until a real mic
+   array existed; with the XVF3800 attached it populates `direction_deg` on the
+   level event and on durable words, and it is still **omitted, never
+   defaulted**, when nothing is measuring a bearing.
+6. Spatial haptics: a motor ring addressed by that bearing, gated on the
+   salience flags rather than driven continuously (SoundHapticVR, SoundWeaver,
+   reconciled with Tactile Emotions).
+7. Deferred items are recorded here so they are decisions, not omissions.
 
 ---
 
@@ -563,7 +240,7 @@ outright in the PDF.
 
 ### 1. The design system (the authority)
 
-**`cwi-design-system-v1.0.pdf`** — *Caption with Intention, Design System and
+**`reference/cwi-design-system-v1.0.pdf`** — *Caption with Intention, Design System and
 Caption Guidelines, V1.0 (2025.1)*, 54 pages, by the Chicago Hearing Society.
 Also at
 <https://download.captionwithintention.org/Caption-With-Intention_Design-System_V1.0.pdf>.
@@ -573,11 +250,11 @@ the full synchronization cue (+15% type size, 25% elevation, per word, at the
 color turn), and §2.3 gives every type value. Read it directly to settle any
 question about intent.
 
-**`DESIGN.md`** — the values extracted from the PDF, section by
+**`docs/MOTION.md`** — the motion values in force, section by
 section, with what we implement, where we deviate, and why. Use this to find a
 number fast; use the PDF to settle an argument.
 
-**`Caption with Intention – Quickstart Guide.pdf`** — the two-page After Effects
+**`reference/cwi-quickstart-guide.pdf`** — the two-page After Effects
 template workflow. Its key architectural rule: the `[START]`/`[END]` markers own
 the animation window independently of the layer's lifetime. The live renderer
 follows the same separation, with a one-time first-paint motion clock and an
@@ -635,18 +312,18 @@ the **shape** of the motion, but superseded by the PDF for amplitudes.
 
 ### Related working notes
 
-- **[TESTS.md](TESTS.md)** — what the test suite covers and how to regenerate the
+- **[../CONTRIBUTING.md](../CONTRIBUTING.md)** — what the test suite covers and how to regenerate the
   golden prosody grid.
 - **[RESEARCH.md](RESEARCH.md)** — prior DHH-captioning research
   mapped onto the design decisions here, plus the grounding for the haptic
   salience flags and the diarization and delivery-dynamics decisions.
 - **[../web/README.md](../web/README.md)** — the frontend boundary and UI
   invariants.
-- The bundled acceptance fixtures: `../assets/sample.mp4` (English) and
+- The bundled acceptance fixtures: `../docs/reference/pr-film.mp4` (English) and
   `../assets/sample-ko.wav` (Korean). Caption changes should be tested against
   both — a single-language run is not sufficient acceptance.
 
-### `Caption With Intention PR FILM.mp4` (113 s, with audio)
+### `docs/reference/pr-film.mp4` (113 s, with audio)
 
 CWI applied to real footage (Forrest Gump, Toy Story) plus documentary
 interviews, and a demo section (0:40–1:04) covering the same sentences as the

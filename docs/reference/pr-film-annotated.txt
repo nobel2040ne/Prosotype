@@ -1,0 +1,98 @@
+S1	Synchronization
+S1	Caption with Intention uses
+S1	dynamic text animation
+S1	so captions are synchronized
+S1	precisely as each word is spoken.
+S1	Intonation
+S1	This system brings in varying
+S1	types sizes, weights and animation,
+S1	so you can feel when my voice gets louder or softer.
+S1	Character Identification
+S1	Now, colors will distinguish characters,
+S2	so Deaf people instantly know who's speaking.
+
+--- [No on screen captions]
+
+lifting ->> maybe all has (little bit -y moved -> up lifting)
+
+S3	GUMP!
+    Bold, Pop, Character-Wave
+
+S3	What's your sole purpose in this army?
+    Bold, Pop / Bold, Pop / Bold, Pop / Bold, Pop(With Tiny lifting) / Bold, Pop(With Tiny lifting) / Bold, Pop / Bold, Pop
+
+S4	To do whatever you tell me, Drill Sergeant.
+    All - Pop(With Tiny lifting)
+
+S3	Goddamnit Gump!
+    All - Bold, Pop(With Tiny lifting) - Pops more than usual
+
+S5	I've seen Forrest Gump many times but now I'm like
+    I've: All both lift
+    seen: "s","e","e","n" has slight(tiny) different angle / "se" and "en" lift
+    Forrest: Not sure
+    Gump: "Gu" "mp" lift / each characters have slight different angle
+    many, times, but, now, I'm, like: all both lift
+
+S5	wow wow oh my God I can feel so much more.
+    wow, wow: Pop
+    oh: lift
+    my: pop (poping direction is little bit up not center)
+    God: pop (poping direction is little bit up not center)
+    I: lift
+    can: lift
+    feel: pop (poping direction is little bit up not center)
+    so: lift (little bit -y moved -> up lifting)
+    much: lift (little bit -y moved -> up lifting)
+    more: lift
+
+S6	Say, what's that button do?
+    Say,: little bold, pop
+    what's: lift
+    that: lift
+    button: "but" "ton" lift
+    do?: lift
+
+S7	I'll show you.
+    I'll: lift
+    show: lift (but has little tiny bit slope s->h->o->w)
+    you: lift
+
+--	[Toy music]
+    Vibrating
+
+S8	Buzz Light year to the rescue!
+    Buzz: lift
+    Light: lift
+    year: lift
+    to: lift
+    the: lift
+    rescue!: "res" "cue!" lift 
+
+--	WHOOOOOA!!
+    Rainbow slow pop
+
+S9	I like it because I can track,
+    I, like, it: lift
+    because: "be" "cause" lift (little bit -y moved -> up lifting)
+    I, can, track: lift
+
+S9	what the actor is saying in real time.
+    what, the, actor, is: lift
+    saying: "say" "ing" lift
+    in, real, time: lift (little bit -y moved -> up lifting)
+
+--	[Beep]
+    Vibrating
+
+S7	Star Command come in, do you read me?
+S7	Why don't they answer?
+S7	[GASP]
+S7	My ship!
+    My, ship!: bold, pop(direction is up not center)
+
+S10	It's helping me understand the mood.
+S10	And then you see how he gasps.
+S10	It got so big.
+
+S11 	Now, I'm following the story better.

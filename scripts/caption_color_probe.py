@@ -54,9 +54,31 @@ DOM = r"""
   const stage = document.querySelector('.caption-stage:not(.is-transcript)')
     || document;
   const rows = Array.from(stage.querySelectorAll('.caption-word')).map((word) => {
-    const chars = Array.from(word.querySelectorAll('.caption-character'));
+    /* WIDE SCRIPT TAKES A DIFFERENT PATH, AND SO MUST THIS CHECK.
+       A Hangul word does not turn per glyph -- its base ink layer stays
+       read-ahead white for life and a clipped overlay in the speaker colour is
+       swept across it, because a per-glyph step moves the boundary 0.91em in
+       Hangul against 0.43em in Latin and 46% of Korean words have <=2 steps.
+       So reading `.caption-character` colours here would see white AND the
+       speaker colour on every wide word and call all of them two-coloured --
+       measured, it reported 135 false positives the first time it ran against
+       the new path.
+       The defect this probe exists for is a character left in read-ahead ink
+       forever. On the wide path its exact analogue is a SETTLED word whose
+       wipe never reached 100%, so that is what gets scored: `colors` carries
+       the overlay's colour alone, and `wipe` carries the coverage. */
+    const turned = word.querySelector('.word-ink-turned');
+    const wide = word.getAttribute('data-script') === 'wide';
+    const chars = Array.from(
+      wide && turned
+        ? turned.querySelectorAll('.caption-character')
+        : word.querySelectorAll('.caption-character'));
     const colors = chars.map((c) => getComputedStyle(c).color);
+    const wipe = turned
+      ? parseFloat(getComputedStyle(turned).getPropertyValue('--wipe')) : null;
     return {
+      wide,
+      wipe: Number.isFinite(wipe) ? wipe : null,
       id: word.getAttribute('data-word-id') || '',
       text: (word.querySelector('.word-glyph') || {getAttribute: () => ''})
         .getAttribute('aria-label') || '',
@@ -66,7 +88,7 @@ DOM = r"""
       colors: Array.from(new Set(colors)),
       // A span the arming effect never reached. It is the mechanism behind
       // every mixed word measured so far, so report it beside the symptom.
-      unarmed: chars.filter(
+      unarmed: Array.from(word.querySelectorAll('.caption-character')).filter(
         (c) => !c.style.getPropertyValue('--char-turn-delay')).length,
     };
   });
@@ -80,6 +102,15 @@ BREAK = r"""
 (() => {
   let broke = 0;
   for (const word of document.querySelectorAll('.caption-word')) {
+    // Wide script: freeze the sweep part-way, which is the analogue of a
+    // character that never got its delay -- part of the word never turns.
+    const turned = word.querySelector('.word-ink-turned');
+    if (turned) {
+      turned.style.setProperty('--wipe', '55%');
+      turned.style.animation = 'none';
+      broke += 1;
+      continue;
+    }
     const chars = word.querySelectorAll('.caption-character');
     if (chars.length < 2) continue;
     const last = chars[chars.length - 1];
@@ -186,12 +217,33 @@ def report(samples: list[dict], interval_s: float, lingering_n: int) -> int:
     # it, which is the design; the sweep is bounded by
     # `word_motion_max_duration_s` (1.05 s), so anything past a couple of
     # samples is a word that stopped mid-turn.
+    def unfinished(row: dict) -> bool:
+        """Is this word showing more than one colour, on either path?
+
+        Narrow: its characters are painted in more than one colour.
+        Wide: the base layer is read-ahead by design and the OVERLAY carries
+        the speaker colour, so the equivalent question is whether the sweep has
+        finished covering the word. `--wipe` under 100% means part of it is
+        still read-ahead ink -- mid-sweep for a moment, stuck if it persists.
+        """
+        if row.get("wide"):
+            wipe = row.get("wipe")
+            if wipe is None:
+                return False
+            # MATCH THE NARROW SEMANTICS EXACTLY. There, a word every one of
+            # whose characters is still read-ahead ink counts as ONE colour and
+            # is not a defect -- that is just a word the playhead has not
+            # reached, which CWI 2.2.1 requires to exist. The wide analogue is
+            # `--wipe: 0%`. Only a PARTIAL sweep is two-coloured.
+            return 0.5 < wipe < 99.5
+        return len(row["colors"]) > 1
+
     run = collections.Counter()
     longest = collections.Counter()
     for snap in samples:
         seen = set()
         for row in snap["rows"]:
-            if len(row["colors"]) > 1:
+            if unfinished(row):
                 seen.add(row["id"])
                 run[row["id"]] += 1
                 longest[row["id"]] = max(longest[row["id"]], run[row["id"]])
@@ -199,7 +251,15 @@ def report(samples: list[dict], interval_s: float, lingering_n: int) -> int:
             if word_id not in seen:
                 run[word_id] = 0
 
-    mixed = [r for r in final if len(r["colors"]) > 1]
+    # A SINGLE MID-SWEEP SAMPLE IS NOT EVIDENCE ON THE WIDE PATH. The narrow
+    # turn is `--color-turn-ms` (90 ms), so sampling one in progress at a 1 s
+    # interval is rare and a mixed verdict sample really does mean stopped. The
+    # wide sweep deliberately spans the word's whole spoken span (up to
+    # `word_motion_max_duration_s`, 1.05 s), so catching one in progress is
+    # ordinary -- measured, one word per run. For wide words the real defect is
+    # therefore PERSISTENCE, which `stuck` already measures; scoring them here
+    # too would fail a healthy capture on timing alone.
+    mixed = [r for r in final if not r.get("wide") and unfinished(r)]
     unarmed = [r for r in final if r["unarmed"] > 0]
     stuck = sorted(n for n in longest.values() if n >= lingering_n)
 
@@ -211,7 +271,8 @@ def report(samples: list[dict], interval_s: float, lingering_n: int) -> int:
     print(f"  SETTLED words with >1 colour      {len(mixed)}")
     print(f"  words with an unarmed character   {len(unarmed)}")
     for row in (mixed or unarmed)[:12]:
-        print(f"    {row['text']!r:>22} chars={row['chars']} "
+        wipe = f" wipe={row['wipe']:.0f}%" if row.get("wipe") is not None else ""
+        print(f"    {row['text']!r:>22} chars={row['chars']}{wipe} "
               f"unarmed={row['unarmed']} status={row['status']} "
               f"armed={row['armed']} {row['colors']}")
 

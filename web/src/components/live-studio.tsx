@@ -2,6 +2,7 @@
 
 import {
   AudioWaveform,
+  AlignEndHorizontal,
   Captions,
   Check,
   ChevronRight,
@@ -9,12 +10,13 @@ import {
   Eye,
   Globe2,
   Mic2,
-  Navigation,
+  Minus,
   PanelRightClose,
   PanelRightOpen,
   SlidersHorizontal,
   Sparkles,
   Sun,
+  Type,
   X,
 } from "lucide-react";
 import {
@@ -55,10 +57,15 @@ import {
   charTurnDelayMs,
   crestDurationMs,
   crestWindowMs,
+  FILM_WORD_TURN_MS,
   HOLD_ENVELOPE_EMPHASIS,
   naturalMotionDurationMs,
 } from "@/lib/motion-timing";
 import {baselineOffsetEm, formatBaselineEm} from "@/lib/glyph-metrics";
+import {waveGrain, wordIsWide} from "@/lib/hangul";
+import {FILM_PEAK_FRACTION, fallDurationMs} from "@/lib/motion-timing";
+import {groupLeads, liftsInGroups, syllableGroups} from "@/lib/syllables";
+
 import {
   assignSpeakerColors,
   speakerColor,
@@ -75,6 +82,10 @@ interface SettingsState {
   reducedMotion: boolean;
   highContrast: boolean;
   lightStage: boolean;
+  hangulWave: boolean;
+  enhancedMotion: boolean;
+  rollingCaptions: boolean;
+  captionRules: boolean;
 }
 
 const clamp = (value: number, min: number, max: number) =>
@@ -83,19 +94,51 @@ const clamp = (value: number, min: number, max: number) =>
 const STACK_SHIFT_DURATION_MS = 540;
 const STACK_ENTER_DURATION_MS = 620;
 const STACK_EASING = "cubic-bezier(.18,.72,.22,1)";
+/* HOW LONG THE BOX TAKES TO OPEN over a newly appended word. It is a CLIP, so
+   while it runs the word is hidden -- a progressive appearance, which is what
+   2.2.1's read-ahead cannot afford much of. Against the 1.75s read-ahead lead
+   this spends 9% of the word's own preview, which is the trade taken
+   knowingly. Do not lengthen it; if the growth ever needs to read as slower,
+   soften the easing instead. */
+const ROW_GROW_DURATION_MS = 160;
+/* How far past its turn a word may still animate. Beyond this it settles --
+   see the arming effect. Roughly four frames: long enough to absorb render
+   jitter, far short of the ~1s a stretched tail now runs for. */
+const SETTLE_GRACE_MS = 70;
 
 const number = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+/**
+ * How much of a word's span was actually voiced, 1 when unknown.
+ *
+ * The recognizer's `end` runs to the NEXT word's onset and attributes no
+ * silence to anything, so `end - start` is an inter-onset interval. Multiplying
+ * by this recovers the duration the speaker was actually speaking -- validated
+ * against an energy-gated voiced span measured straight off the film's audio,
+ * correlation +0.765.
+ */
+function voicedFraction(word: {voiced_frac?: number | null}): number {
+  const value = Number(word?.voiced_frac);
+  return Number.isFinite(value) && value > 0 ? Math.min(1, value) : 1;
+}
+
 /** The CWI 2.3 crest bounds, as the runtime config declares them. */
-function voiceRanges(runtime: RuntimeConfig): VoiceTypeRanges {
+function voiceRanges(runtime: RuntimeConfig, enhanced = false): VoiceTypeRanges {
   return {
     scale: runtime.voiceScaleRange,
-    scaleResponse: runtime.voiceScaleResponse,
+    scaleResponse: enhanced
+      ? runtime.voiceScaleResponseEnhanced
+      : runtime.voiceScaleResponse,
     scaleResponseQuiet: runtime.voiceScaleResponseQuiet,
-    scaleDeadband: runtime.voiceScaleDeadband,
+    scaleDeadband: enhanced
+      ? runtime.voiceScaleDeadbandEnhanced
+      : runtime.voiceScaleDeadband,
+    ...(enhanced ? {scalePivot: runtime.voiceScalePivotEnhanced,
+                    scaleCurve: runtime.voiceScaleCurveEnhanced,
+                    scalePoints: runtime.voiceScalePointsEnhanced} : {}),
     weight: runtime.weightRange,
     weightEmphasis: runtime.weightEmphasis,
     width: runtime.widthRange,
@@ -180,6 +223,20 @@ interface WordMemo {
   clock: Map<string, {duration: number; sweepMs: number; crestMs: number}>;
   /** The resolved hold, once the gate has closed on it. */
   hold: Map<string, number>;
+  /* THE 2.3 VOICE AXES, frozen at first sight like the clock beside them.
+     "Everything is frozen at first sight -- duration, AXES, sweep, hold gap and
+     turn moment" is the standing rule and the axes were the one item not
+     actually implementing it.
+     What moved them was the SPEAKER'S RUNNING REGISTER. Weight is a property of
+     the voice, so it reads the speaker's median F0, and that median keeps
+     updating as the speaker talks -- which silently re-derived the size and
+     weight of words that had finished animating minutes earlier. MEASURED with
+     the re-motion detector: "like" settled at scale 1.000 / weight 400 and was
+     recomputed 7.3s later to 1.460 / 860, which also flipped `--voice-envelope`
+     from `voice-phase-film` to `voice-phase-hold` -- an animation-NAME change,
+     so the whole word visibly re-ran its motion.
+     Reported as "the previous words motions again sometimes". */
+  voice: Map<string, ReturnType<typeof captionMotionFor>>;
 }
 
 const MotionWord = memo(function MotionWord({
@@ -194,12 +251,18 @@ const MotionWord = memo(function MotionWord({
   clockEpoch,
   scheduleWord,
   memo,
+  hangulWave,
+  enhancedMotion,
 }: {
   id: string;
   word: CaptionWord;
   color: string;
   intensity: number;
   runtime: RuntimeConfig;
+  /** Settings toggle: give wide-script characters their own Hangul grain. */
+  hangulWave: boolean;
+  /** Settings toggle: anticipate the crest and sweep the whole spoken word. */
+  enhancedMotion: boolean;
   /*
    * WHAT THIS WORD FROZE AT FIRST SIGHT, KEPT OUTSIDE THE WORD (2026-08-06).
    * A row is a DOM element and a word is its CHILD, so React reconciles words
@@ -259,12 +322,27 @@ const MotionWord = memo(function MotionWord({
      so the register half reads this and a word's own excursion above it is
      treated as effort rather than as a lighter voice. */
   const register = number(motionWord.pitch_register_hz, 0);
-  const motion = captionMotionFor(
-    {loudness, pitchHz: pitch, texture, registerHz: register},
-    voiceRanges(runtime),
-    intensity,
-    runtime.syncPop,
-  );
+  /* FROZEN AT FIRST SIGHT -- see `WordMemo.voice`. Recomputing this under a
+     settled word is what made already-read captions animate again, because the
+     speaker's running register keeps moving after the word is history.
+     Written during render, exactly as `memo.clock` is, and for the same reason:
+     the value has to exist before the first paint that uses it, or the word
+     turns wearing one size and settles wearing another. */
+  const motion = (() => {
+    const remembered = memo.voice.get(id);
+    if (remembered) return remembered;
+    const fresh = captionMotionFor(
+      {loudness, pitchHz: pitch, texture, registerHz: register},
+      voiceRanges(runtime, enhancedMotion),
+      intensity,
+      /* 2.2.3's amplitude is per CLOCK: the PDF's verbatim 15% on legacy, and
+         on enhanced the ~55% the PR film actually renders. Measured per word
+         off the film -- see `live_sync.studio.sync_pop_enhanced`. */
+      enhancedMotion ? runtime.syncPopEnhanced : runtime.syncPop,
+    );
+    memo.voice.set(id, fresh);
+    return fresh;
+  })();
 
   /*
    * CWI 2.3 IS PER CHARACTER (PDF p.34 / p.38 / p.40), so the word is split and
@@ -273,6 +351,32 @@ const MotionWord = memo(function MotionWord({
    * astral-plane character must stay one unit, and Korean is a shipped language.
    */
   const characters = Array.from(word.text);
+  /* Which colour-turn path this word takes. Frozen per word by its text, and
+     `wordIsWide` is written so an all-Latin word can never come back true --
+     that is what keeps English on its existing per-glyph path, byte for byte. */
+  const isWide = wordIsWide(word.text);
+  /* WHICH LETTERS LEAVE THE LINE TOGETHER. The film lifts a word's glyphs in
+     syllables -- "but|ton", "se|en", "res|cue!" -- so each character carries
+     the index of the group's FIRST letter, and the wave reads its clock from
+     there. A Hangul block is already a syllable, so wide script is one group
+     per character and its existing per-glyph timing is untouched.
+     Derived from the text alone, so it is stable across every revision that
+     does not respell the word, and a respelling remounts anyway. */
+  /* Only a word of six letters or more raises its syllables independently --
+     see `liftsInGroups`. Wide script is excluded: a Hangul block is already a
+     syllable and its own wave shape carries the motion. */
+  /* .085em -> .155em (2026-08-13): measured, the widest a word's letters came
+     apart was 1.85px and the user still could not see the split. Bounded by
+     `scripts/ink_collision.py`, which has 16px of clearance and 0 close pairs
+     at this value. */
+  const groupLift = !isWide && liftsInGroups(word.text) ? ".155em" : "0em";
+  const waveLead = isWide
+    ? characters.map((_, i) => i)
+    : (() => {
+        const groups = syllableGroups(word.text);
+        const leads = groupLeads(groups);
+        return characters.map((_, i) => leads[groups[i] ?? 0] ?? i);
+      })();
   /*
    * The envelope no longer sets each character's TYPE -- 2.3 is per word (see
    * below). It sets how hard each character STRETCHES, so the wave still rides
@@ -324,6 +428,23 @@ const MotionWord = memo(function MotionWord({
         style={crest ? {"--char-index": index} as CSSVars : {
           // Where this letter sits in the wave, and how hard it stretches.
           "--char-index": index,
+          /* EACH LETTER TILTS SLIGHTLY DIFFERENTLY, and letters move in
+             SYLLABLES. Watched on the film: "seen" lifts as "se" + "en",
+             "Gump" as "Gu" + "mp", "button" as "but" + "ton", and inside a
+             lifting group the glyphs sit at slightly different angles -- it is
+             a hand-set look, not a rigid block. `Math.sin` on the index gives a
+             deterministic, non-repeating spread (a modulo would visibly cycle
+             every few letters); the GROUP carries the lift and the tilt varies
+             within it. Frozen with the word: derived from `index` alone, so a
+             remount cannot re-roll it. */
+          "--char-tilt": `${(Math.sin(index * 2.399) * 1.35).toFixed(2)}deg`,
+          /* HOW FAR THIS LETTER'S SYLLABLE LEAVES THE LINE. Zero unless the
+             word is long enough to lift in parts, so a short word still moves
+             as one piece on `--word-lift-em` and only a `but|ton` raises its
+             halves separately. Bounded by `scripts/ink_collision.py`: this
+             travels toward the row above, on top of the word-level lift. */
+          "--group-lift-em": groupLift,
+          "--char-group": waveLead[index] ?? index,
           /*
            * THE TWO SCOPES TRADE OFF. Amplitude is this letter's departure
            * from its own WORD's size -- so the wave describes variation
@@ -338,6 +459,13 @@ const MotionWord = memo(function MotionWord({
             0.45,
             1.30,
           )).toFixed(3),
+          /* Hangul-structural grain, wide script + toggle only. Absent
+             otherwise, and `character-wave` then reads its own literals, so
+             the Latin keyframe is byte-for-byte what it was. */
+          ...(hangulWave && isWide ? (() => {
+            const {ay, ax} = waveGrain(character.codePointAt(0) ?? 0);
+            return {"--wave-ay": ay.toFixed(4), "--wave-ax": ax.toFixed(4)};
+          })() : {}),
         } as CSSVars}
       >
         {character === " " ? "\u00a0" : character}
@@ -437,6 +565,30 @@ const MotionWord = memo(function MotionWord({
     setHoldAmount((current) => (current === holdTarget ? current : holdTarget));
   }, [holdSettled, holdTarget, holdAmount, id, memo]);
   const holdEnvelope = holdEmphasis >= HOLD_ENVELOPE_EMPHASIS;
+  /* HOW LONG THIS WORD TAKES TO COME BACK DOWN -- long enough to reach the
+     next word's turn, so the stage is never still while somebody is talking.
+     WAIT FOR THE NEIGHBOURHOOD, THEN FREEZE, exactly as the hold gap does.
+     `paceGapS` is 0 until the NEXT word has arrived, and freezing at first
+     sight would therefore capture 0 for almost every word and do nothing at
+     all. The wait is safe: a word is first drawn when it arrives and does not
+     turn until `read_ahead_delay_s` (1.75s) later, while its neighbour lands
+     at a median 0.62s -- so this settles well before the animation starts and
+     never re-times a running one.
+     Frozen in a ref rather than in `memo.clock`, because the clock is the
+     thing that must freeze at FIRST sight and this is the thing that must
+     not. */
+  const fallRef = useRef<number | null>(null);
+  /* ...AND IT STOPS ACCEPTING ONE ONCE THE WORD HAS TURNED. The neighbour
+     usually lands long before the turn, but the LAST word of an utterance can
+     wait seconds for the next one -- and taking its gap then would change
+     `--fall-ms` under an animation that is already running, which restarts it.
+     Reported as "두번 motion이 실행되는 단어들이 있음". Behind the playhead a
+     word is frozen history; this is that rule applied to the tail. */
+  const turnedRef = useRef(false);
+  if (fallRef.current === null && paceGapS > 0 && !turnedRef.current) {
+    fallRef.current = paceGapS;
+  }
+
   const [{duration, sweepMs, crestMs}] = useState(() => {
     /* FROZEN THE FIRST TIME THIS WORD WAS EVER DRAWN, not the first time this
        COMPONENT was, which are different moments once a word can change row.
@@ -453,36 +605,134 @@ const MotionWord = memo(function MotionWord({
     const push = emphasisOf(motion.voice.scale, voiceRanges(runtime));
     const naturalMs = naturalMotionDurationMs(motionWord, runtime, paceGapS);
     const spokenMs = Math.max(0, number(word.end) - number(word.start)) * 1000;
-    // Finish the wipe before the word is done being said, and never let a
-    // very long word crawl: the sweep is speech-paced, not decorative.
-    const sweep = clamp(spokenMs * 0.72, 0, runtime.wordMotionMaxMs);
+    /* LEGACY finishes the wipe before the word is done being said (0.72), a
+       boundary travelling across the characters -- which is what
+       `synchronization.mov` shows and what CWI 2.2.2 describes.
+
+       THE PR FILM DOES NOT DO THAT. Its AE range selector is expressed in WORD
+       units (`ret = ease(time, inTime, ..., 0, textLenWords)`, template
+       expressions 2 and 7), so a whole word changes colour at once. Checked
+       against the frames at 24fps rather than trusting the template: tracking
+       each word's green fraction through its own turn, `sole`, `in` and `this`
+       each spend exactly ONE frame between <15% and >85% turned. There is no
+       gradual boundary to find.
+
+       So enhanced turns the word as a unit. It matters beyond fidelity: with a
+       wipe running the length of the spoken word, the word is still mostly
+       white at the moment it punches, which is visibly wrong beside the film.
+       A short non-zero sweep keeps the turn from being a hard cut and keeps
+       every per-character span armed. */
+    /* LEGACY finishes the wipe before the word is done being said (0.72), a
+       boundary travelling across the characters, which is CWI 2.2.2 and what
+       `synchronization.mov` shows. A fixed per-character step was measured off
+       the film (42 ms, one frame) and TRIED HERE; it is recorded in
+       docs/MOTION.md and was reverted at the user's direction. */
+    const sweep = enhancedMotion
+      ? FILM_WORD_TURN_MS
+      : clamp(spokenMs * 0.72, 0, runtime.wordMotionMaxMs);
+    /* HOW LONG THE SIZE CHANGE LASTS -- and the legacy answer is far too long.
+       Legacy stretches the crest by `sweep / VOICE_PHASE_RISE_FRACTION` so the
+       swell cannot lead the wipe, dragging an ordinary word's size change out
+       toward a second. The film's words rise and fall in about a QUARTER
+       SECOND, every one of them, so enhanced runs the size channel on a fixed
+       film-paced window and lets only a genuinely emphatic word (`push`) run
+       longer. Ours previously overlapped three pops inside one 0.25s sample
+       because the window outlasted the gap between words; the film shows one
+       word punching at a time. */
+    /* AND THE BIGGER THE SWELL, THE LONGER THE WINDOW. The paragraph above
+       says "lets only a genuinely emphatic word run longer" and the code did
+       not do it -- every enhanced word ran the same 424ms whatever size it
+       reached, so the size channel's peak VELOCITY rose with its amplitude and
+       the words that grow most snapped. Reported as "some pop motions are too
+       fast -> looks aggressive", and it is the largest ones that were.
+       `push` is already this word's emphasis, 0..1, and already frozen here.
+       Ordinary words are untouched (push = 0 inside the deadband); the ceiling
+       is the crest's own `wordMotionMaxMs`, the same one legacy tops out at. */
+    const crest = enhancedMotion
+      ? Math.min(
+          runtime.wordMotionMaxMs,
+          runtime.wordMotionEnhancedMs + push * runtime.wordMotionEnhancedEmphasisMs,
+        )
+      : crestDurationMs(
+          sweep,
+          // The word's REAL speech: `end` runs to the next onset, so the raw
+          // span is an inter-onset interval and `voiced_frac` is what makes it
+          // speech. This anchors the crest's floor to the speaker.
+          crestWindowMs(push, runtime, spokenMs * voicedFraction(word)),
+          push, runtime.wordMotionMaxMs,
+        );
     const clock = {
       duration: naturalMs,
       sweepMs: sweep,
       // The crest is the SLOW clock -- emphasis, not speech rate.
-      crestMs: crestDurationMs(
-        sweep, crestWindowMs(push, runtime), push, runtime.wordMotionMaxMs,
-      ),
+      crestMs: crest,
     };
     memo.clock.set(id, clock);
     return clock;
   });
+  /* A word with no emphasis holds Regular -- see `--voice-weight` below.
+     `voice.scale` is the 2.3 size, which sits at exactly 1 for anything inside
+     the deadband, so it is the emphasis signal already. THIS GATES WEIGHT
+     ONLY. It used to gate the pop too, and that was wrong: see `--sync-pop`. */
+  const quietWord = enhancedMotion && motion.voice.scale <= 1.005;
   const style: CSSVars = {
     "--speaker-color": color,
-    // 2.2.3 is constant; the Expression control changes §2.3, not this cue.
-    "--sync-pop": motion.sync.scale.toFixed(3),
+    /* The word's normalised loudness, published so `scripts/motion_diff.py` can
+       read the distribution the size mapping is fed. Fitting that mapping to
+       the film needs the INPUT distribution, not just the output: a single
+       power curve cannot match the film's p50 and p75 at once because the two
+       distributions differ in shape, and diagnosing that from voice-scale alone
+       is impossible -- every word below the pivot clamps to 1 and the inverse
+       is ambiguous exactly where the disagreement is. Display-only. */
+    "--voice-loudness": loudness.toFixed(4),
+    /* The size cue trails the turn on the enhanced clock and starts with it on
+       legacy, where `calc(X + 0ms)` is X and the delay arithmetic is untouched. */
+    "--crest-lag": `${enhancedMotion ? runtime.crestLagMs : 0}ms`,
+    /* NOT EVERY WORD POPS -- and this has now been decided from the stage
+       twice, against the film both times, so it is settled here rather than
+       re-derived. Reading the film word by word says every word pops, and it
+       does; watching a real talker through the array at real speech rate, the
+       user's verdict both times was "so many words pop" and the stage read as
+       hard to follow. The difference is context, not fidelity: the film gives a
+       line four words and a held shot, this stage carries forty at 2.5 words/s,
+       and forty simultaneous pops is noise where four is emphasis.
+       So an unemphasised word keeps the colour turn, the character wave and the
+       small lift, and does NOT pop. Legacy is untouched and still pops
+       everything. */
+    "--sync-pop": (quietWord ? 1 : motion.sync.scale).toFixed(3),
+    /* ...AND WHAT AN UNEMPHASISED WORD DOES INSTEAD IS LIFT. Every word gets
+       it, popped or not -- the film's own reading opens "lifting -> maybe all
+       has". Ungated on purpose: this is the channel that keeps a quiet word
+       alive now that it does not grow, so gating it too would put the stage
+       back to nothing moving. */
+    "--word-lift-em": `${runtime.wordLiftEmEnhanced}em`,
     "--motion-duration": `${duration.toFixed(0)}ms`,
     // The 2.3 crest takes its own window so its rise tracks the colour wipe
     // instead of leading it (`crestDurationMs`); the pop and wave keep the
     // natural window.
     "--crest-duration": `${crestMs.toFixed(0)}ms`,
+    /* The wide-script wipe sweeps across the word over exactly this window, so
+       the continuous boundary reaches a given point at the same moment the
+       per-glyph steps used to. Frozen at mount with `duration`/`crestMs`. */
+    "--sweep-duration": `${sweepMs.toFixed(0)}ms`,
+    // Anticipation. 0ms on legacy -> `calc(turn-delay - 0ms)` is turn-delay.
     /* Ordinary words pulse; emphatic ones rise, HOLD and fall. The film's
        "louder" sits at full size for ~0.75s of a ~1.25s motion (share ~0.6)
        while the corpus median is 0.40 -- the median is carried by the 37 of 43
        words that barely move, and reading it as one universal shape is what
        flattened the emphatic words. A keyframe's stops cannot take a `var()`,
        but `animation-name` can. */
-    "--voice-envelope": holdEnvelope ? "voice-phase-hold" : "voice-phase",
+    /* The film's envelope peaks at 58% of its excursion, not half way, so the
+       rise is long and the fall short. A held word keeps its own envelope on
+       both clocks -- the lift is a separate cue and was never fitted here. */
+    "--voice-envelope": holdEnvelope
+      ? "voice-phase-hold"
+      : (enhancedMotion ? "voice-phase-film" : "voice-phase"),
+    /* The two halves of the split envelope. Only read when `data-tail` is
+       `extended`; harmless otherwise. */
+    "--rise-ms": `${(crestMs * FILM_PEAK_FRACTION).toFixed(0)}ms`,
+    "--fall-ms": `${fallDurationMs(crestMs, fallRef.current ?? 0).toFixed(0)}ms`,
+    "--sync-envelope": enhancedMotion ? "word-sync-pop-film" : "word-sync-pop",
     // CWI 2.3 is a WORD-level property: in intonation.mov every glyph of
     // "louder" is the same size and weight, and every glyph of "softer" is
     // uniformly small. Only the wave below is per character.
@@ -498,10 +748,27 @@ const MotionWord = memo(function MotionWord({
        so a partially-held word degrades smoothly rather than switching. */
     "--voice-scale": (1 + (motion.voice.scale - 1) * (1 - holdAmount))
       .toFixed(3),
+    /* AN UNEMPHASISED WORD HOLDS REGULAR. This is the one channel the film
+       withholds: read back line by line, the shouted lines are bold on every
+       word and the spoken ones are not bold at all, while both pop. The weight
+       rides the same phase as the pop, so leaving it live gave every word a
+       weight swing and made the whole stage read as bold. */
     "--voice-weight": String(
-      Math.round(400 + (motion.voice.weight - 400) * (1 - holdAmount)),
+      quietWord
+        ? 400
+        : Math.round(400 + (motion.voice.weight - 400) * (1 - holdAmount)),
     ),
     "--voice-width": `${motion.voice.width}%`,
+    /* HOW LONG ONE GLYPH STAYS ELEVATED. Measured off the film at 3x upscale
+       (at 720p glyphs touch and segment as 2-3 character blobs, which is what
+       makes the grouping look authored): across 57 glyphs each stays up for 4
+       frames = 167 ms, while adjacent glyphs step 1 frame = 42 ms apart. Four
+       are elevated at once, and THAT overlap is the "characters grouped in
+       2-3 moving together" -- they step one at a time and each outlasts its
+       neighbour's start.
+       This used to be `duration * 0.72`, which at our step gave ~7 glyphs up
+       at once: too many and each too long, so the word smeared instead of a
+       group travelling across it. */
     // The wave hands off letter to letter across ~55% of the window, so it
     // travels visibly instead of pulsing the word as one block.
     "--wave-span": `${(duration * 0.72).toFixed(0)}ms`,
@@ -578,16 +845,38 @@ const MotionWord = memo(function MotionWord({
       // below, which is where that defect actually lived.
       for (const span of unarmedCharacters(element)) {
         span.style.setProperty("--char-turn-delay", "-600000ms");
+        span.style.setProperty("--char-wave-delay", "-600000ms");
       }
       return;
     }
     const rearming = element.dataset.armed !== "true";
     element.dataset.armed = "true";
     const turnDelay = armedRef.current.turnAtMs - performance.now();
+    // Past its turn this word is history: nothing about its motion may change
+    // again. See `turnedRef` above.
+    if (turnDelay <= 0) turnedRef.current = true;
     // The word's own delay is written ONCE: rewriting `animation-delay` shifts
     // a running animation, which is the hazard `data-armed` exists to prevent.
     if (rearming) {
-      element.style.setProperty("--turn-delay", `${Math.round(turnDelay)}ms`);
+      /* A WORD WHOSE TURN HAS PASSED SETTLES. IT DOES NOT PLAY THE REMAINDER.
+         "Live motion is a function of the timeline, not of arrival" -- so a
+         word armed after its own turn moment is history and must paint its end
+         state, not resume mid-curve. A negative delay does resume mid-curve,
+         and that is what fired an OLD word's motion right after a NEW one:
+         measured on the sample, 27 words were armed 200-640ms past their turn
+         and adjacent pairs were firing right-to-left.
+         THE TAIL IS WHY THIS SURFACED NOW. The window in which a negative
+         delay still lands inside the animation was rise+fall = 424ms and is
+         now up to 1051ms, so a remount from a row re-break replays far more
+         often than it used to.
+         The grace is small: a word can arm a few frames after its turn purely
+         from render timing, and cutting those would make ordinary words
+         silently static. Past it, settle. */
+      const settled = turnDelay < -SETTLE_GRACE_MS;
+      element.style.setProperty(
+        "--turn-delay",
+        settled ? "-600000ms" : `${Math.round(turnDelay)}ms`,
+      );
       // The wipe is laid out across the letters the word had WHEN IT WAS ARMED,
       // and that denominator is then frozen with the sweep. See the loop below.
       charSpanRef.current = Math.max(1, characters.length);
@@ -597,7 +886,7 @@ const MotionWord = memo(function MotionWord({
     /*
      * THE COLOUR TURN IS A WIPE THROUGH THE WORD, NOT A SWITCH.
      *
-     * `Caption With Intention PR FILM.mp4` shows the boundary INSIDE a word
+     * `docs/reference/pr-film.mp4` shows the boundary INSIDE a word
      * over and over -- "dynamic te|xt" (42.0s), "brings in|" (49.3s),
      * "weigh|ts" (51.35s), "character|s," (60.4s), "instantly kn|ow" (62.1s) --
      * and in "weigh|ts" the SIZE AND WEIGHT sweep in with it: "weigh" is
@@ -639,11 +928,23 @@ const MotionWord = memo(function MotionWord({
     // backwards. Past the frozen length the wipe is over, so the tail turns
     // with its last letter. `sweepMs` freezes at mount alongside the crest
     // window, so the rise and the wipe are computed from the same number.
+    // THE COLOUR TRAVELS PER LETTER; THE LIFT TRAVELS PER SYLLABLE. Watched on
+    // the film, "seen" lifts as `se` + `en`, "button" as `but` + `ton` -- the
+    // letters of a syllable leave the line together -- while the colour
+    // boundary still crosses one letter at a time. So the wave gets its own
+    // delay, read from the group's FIRST letter (`waveLead`), and every letter
+    // of that group shares it. Frozen on the same terms as the turn delay, and
+    // written in the same pass, so `unarmedCharacters` (which tests only
+    // `--char-turn-delay`) can keep testing one property.
     for (const span of unarmedCharacters(element)) {
       const index = Number(span.dataset.charIndex ?? 0);
       span.style.setProperty(
         "--char-turn-delay",
         `${charTurnDelayMs(turnDelay, index, perWord, sweepMs)}ms`,
+      );
+      span.style.setProperty(
+        "--char-wave-delay",
+        `${charTurnDelayMs(turnDelay, waveLead[index] ?? index, perWord, sweepMs)}ms`,
       );
     }
     // `duration` is deliberately absent: like `crestMs` and `sweepMs` it is
@@ -658,6 +959,17 @@ const MotionWord = memo(function MotionWord({
   return (
     <span
       className="caption-word"
+      /* THE SPLIT IS UNCONDITIONAL ON THE ENHANCED CLOCK, and that is the
+         point: this used to also require a known next onset, so a word whose
+         neighbour arrived late flipped from `natural` to `extended` AFTER it
+         had turned -- an animation-NAME change, which restarts the animation
+         and runs the whole motion a second time.
+         A word with no neighbour yet simply gets the natural fall duration, so
+         the split renders exactly what the single animation did. Legacy and
+         the hold envelope keep their own unsplit shapes. */
+      data-tail={
+        enhancedMotion && !holdEnvelope ? "extended" : "natural"
+      }
       data-status={status}
       data-final={word.final ? "true" : "false"}
       data-sustain={word.sustain_active ? "true" : "false"}
@@ -666,6 +978,12 @@ const MotionWord = memo(function MotionWord({
       // italic. Live capture has no camera and never sets this; it is here so
       // the SSE contract can carry the distinction rather than inventing it.
       data-off-camera={word.off_camera ? "true" : "false"}
+      /* Wide scripts take the CONTINUOUS wipe: a Hangul block is 0.91em against
+         Latin's 0.43em, so a per-glyph step moves the colour boundary 2.1x
+         further, and 46% of Korean words have <=2 steps -- a switch, not a
+         sweep. Decided per WORD from the code points, never from the session
+         language, so a Korean caption carrying `2011` still behaves. */
+      data-script={isWide ? "wide" : "narrow"}
       data-word-id={id}
       style={style}
       ref={wordRef}
@@ -685,6 +1003,22 @@ const MotionWord = memo(function MotionWord({
         <span className="word-ink" aria-hidden="true">
           {renderCharacters(false)}
         </span>
+        {/* THE CONTINUOUS WIPE, wide script only. A second ink layer in the
+            speaker colour, revealed by an animated clip. It carries the SAME
+            character spans as the base, so both layers stretch identically and
+            stay registered while the wave runs -- precisely what a
+            `background-clip: text` gradient could NOT do, because the gradient
+            lives in the ancestor's coordinate space while the wave is a
+            transform on the descendants. Checked on a spike before building.
+            The speaker colour is inherited from `.caption-word`, so a late
+            attribution correction rewrites `--speaker-color` and recolours this
+            layer directly -- the same property the `to`-less colour keyframe
+            gives the narrow path. */}
+        {isWide ? (
+          <span className="word-ink word-ink-turned" aria-hidden="true">
+            {renderCharacters(false)}
+          </span>
+        ) : null}
       </span>
     </span>
   );
@@ -705,9 +1039,13 @@ const MotionWord = memo(function MotionWord({
 function VoiceCompass({
   level,
   color,
+  speakerColors,
+  sound,
 }: {
   level: LevelEvent;
   color: string;
+  speakerColors?: SpeakerColorMap;
+  sound?: {label?: string; category?: string} | null;
 }) {
   const volume = clamp((number(level.rms_db, -72) + 60) / 45, 0, 1);
   const pitch = clamp((number(level.pitch_hz, 165) - 80) / 170, 0, 1);
@@ -727,10 +1065,28 @@ function VoiceCompass({
     level.direction_deg ?? level.azimuth_deg,
     Number.NaN,
   );
-  const directionKnown = Number.isFinite(direction);
+  /* THE DIAL FALLS BACK TO 0°; THE EVENT DOES NOT (2026-08-13, at the user's
+     direction, and knowingly against this project's own standing rule).
+     "Never fabricate direction -- omit it. Do not default it to 0, which is
+     front and would be a claim about the room that nothing measured." The rule
+     still holds where it can do harm: `direction_deg` stays ABSENT from the
+     level and word events, so `autocwi/haptics.py` never drives a motor at a
+     bearing nobody observed and nothing downstream can mistake this for data.
+     What changes is only what the dial DRAWS with nothing to draw: it points
+     front and reads 0° instead of going inert. `data-measured` keeps the
+     distinction on the element, so the display can still tell the truth about
+     itself. */
+  const directionMeasured = Number.isFinite(direction);
+  const directionKnown = true;
   const style: CSSVars = {
     "--orb-color": color,
-    "--orb-scale": (0.84 + volume * 0.29).toFixed(3),
+    /* THE PULSE HAS A RANGE WORTH SEEING. 0.84..1.13 was a 29% span that read
+       as the dial twitching rather than breathing -- reported as moving "너무
+       찔금씩". 0.78..1.22 is nearly half again, which is a level meter you can
+       read from across a booth. It is bounded by the rail, not by taste: the
+       dial's own width is a clamp, so the top of this range has to fit inside
+       the section's padding at the widest rail. */
+    "--orb-scale": (0.78 + volume * 0.46).toFixed(3),
     "--orb-halo": `${(volume * periodicity * 38).toFixed(1)}px`,
     "--pitch-y": `${(78 - pitch * 56).toFixed(1)}%`,
     "--texture-x": (0.68 + brightness * 0.78).toFixed(3),
@@ -742,28 +1098,131 @@ function VoiceCompass({
     "--delivery-stretch-y": (0.94 + force * 0.15).toFixed(3),
     "--delivery-energy": (0.18 + force * 0.62 + attack * 0.20).toFixed(3),
     "--delivery-texture": texture.toFixed(3),
-    "--direction-angle": `${directionKnown ? ((direction % 360) + 360) % 360 : 0}deg`,
+    "--direction-angle": `${directionMeasured ? ((direction % 360) + 360) % 360 : 0}deg`,
   };
+  // Standing speaker positions, the SpeechCompass minimap idea: the live dot
+  // is where sound is arriving NOW, these are where each speaker sits. Colours
+  // are the caption colours, so the ring answers "who is where" with the same
+  // vocabulary the text uses. Absent until the array has placed somebody.
+  //
+  // `speaker_bearings` NAMES its speaker and is preferred wherever it arrives:
+  // the older `speaker_slots_deg` colours by array INDEX, which is the order
+  // bearings were first seen and not the order speakers were identified, so
+  // its marks can wear another speaker's colour. It also only ever grew while
+  // attribution was undecided -- measured live, one mark for two speakers
+  // across a 37 deg sweep -- which is why the ring never remembered anybody.
+  const marksRaw = level.speaker_bearings;
+  const marks = Array.isArray(marksRaw) ? marksRaw : [];
+  const slotsRaw = level.speaker_slots_deg;
+  const slots = marks.length
+    ? marks.map((mark) => number(mark.deg, 0))
+    : Array.isArray(slotsRaw) ? slotsRaw : [];
+  const slotSpeaker = (index: number): string =>
+    marks.length ? String(marks[index]?.speaker ?? "") : `S${index + 1}`;
+
   const label = `${profile} delivery, ${number(level.rms_db, -72).toFixed(1)} dB, ${
     number(level.pitch_hz) > 0 ? `${Math.round(number(level.pitch_hz))} Hz` : "unvoiced"
-  }${directionKnown ? `, ${Math.round(direction)} degrees` : ""}`;
+  }${directionMeasured
+    ? `, ${Math.round(direction)} degrees`
+    : ", direction not measured"}`;
 
   return (
     <div
       className="voice-compass"
       data-direction={directionKnown ? "known" : "unknown"}
+      data-measured={directionMeasured ? "true" : "false"}
       data-delivery={profile}
       role="img"
       aria-label={`Voice compass: ${label}`}
       style={style}
     >
-      <span className="compass-radar-ring ring-one" />
-      <span className="compass-radar-ring ring-two" />
-      <span className="compass-crosshair horizontal" />
-      <span className="compass-crosshair vertical" />
-      <span className="compass-direction"><i /></span>
-      <span className="compass-texture" />
-      <span className="compass-pitch" />
+      {/* THE DIAL SHOWS WHERE PEOPLE ARE, AND NOTHING ELSE (2026-08-13).
+          Two concentric radar rings and a full crosshair were drawing a radar
+          set: none of it was data, and at 152px they were the busiest thing in
+          a rail that had just been emptied for this dial's benefit. What a
+          bearing needs is a frame of reference, which is four ticks -- front,
+          both sides, behind -- and `.compass-front` marks which one is the
+          front of the case, the one thing a viewer has to know to read any of
+          the others. */}
+      {/* A DIAL WITHOUT A SCALE CANNOT BE READ. Four ticks stripped the radar
+          decoration and took the legibility with it -- on a bare circle there
+          is nothing to place 231 degrees AGAINST. Twelve, every 30 degrees,
+          with the four cardinals long: that is a scale, and a scale is
+          information rather than ornament.
+          The FRONT tick stays the brightest, because which way the case points
+          is what every other bearing is relative to -- and is the one value
+          this project has not measured against the real case. */}
+      {Array.from({length: 12}, (_, i) => i * 30).map((deg) => (
+        <span
+          key={`tick-${deg}`}
+          className="compass-tick"
+          data-cardinal={deg % 90 === 0 ? "true" : "false"}
+          data-front={deg === 0 ? "true" : "false"}
+          style={{"--tick-angle": `${deg}deg`} as CSSVars}
+        />
+      ))}
+      {slots.map((bearing, index) => {
+        const angle = ((Number(bearing) % 360) + 360) % 360;
+        /* AN ARC, NOT A DOT, AND ITS WIDTH IS THE UNCERTAINTY. A 6px mark is
+           hard to see at rail size and it claims a precision the measurement
+           does not have: a speaker seen once from one angle and one seen
+           thirty times from the same angle got identical marks. The arc spans
+           two circular standard deviations of that speaker's own bearings, so
+           a settled talker reads as a tight band and an unsettled one as a
+           wide smear -- which is the honest picture and also the one that
+           reads peripherally.
+           FLOORED AND CAPPED. Below ~8deg an arc is a dot again; past ~150deg
+           it wraps far enough to stop meaning a direction, and the tracker has
+           already dropped anything genuinely scattered (`MIN_CONCENTRATION`).
+           `spread` is absent on the older `speaker_slots_deg` lane, which
+           carries no dispersion at all -- those fall back to a mid width
+           rather than pretending to be precise. */
+        const spread = marks.length ? number(marks[index]?.spread, 26) : 26;
+        const span = clamp(spread * 2, 8, 150);
+        /* A SPEAKER NEVER LEAVES THE RING once they have been placed, so some
+           marks are the last place somebody was seen rather than where they
+           are now. Drawn dimmer and hollow: still there, no longer a claim
+           about the present. Dropping them instead was read as the compass
+           forgetting people, and "this speaker left" is indistinguishable from
+           "their bearings went noisy" from the viewer's side. */
+        const stale = Boolean(marks.length && marks[index]?.stale);
+        return (
+          <span
+            key={`slot-${index}`}
+            className="compass-slot"
+            data-stale={stale ? "true" : "false"}
+            style={{
+              "--slot-angle": `${angle.toFixed(1)}deg`,
+              "--slot-span": `${span.toFixed(1)}deg`,
+              "--slot-color": speakerColors
+                ? speakerColor(slotSpeaker(index), speakerColors)
+                : "var(--accent)",
+            } as CSSVars}
+          />
+        );
+      })}
+      {/* THE NEEDLE. A 9px dot on the rim asked the viewer to find it and then
+          work out which way it lay; a line from the centre states the bearing
+          the way a compass has always stated it. The dot stays at its tip --
+          it is what carries the ACTIVE speaker's colour. */}
+      {/* WHAT IS HAPPENING IN THE ROOM, IN THE MIDDLE OF THE INSTRUMENT THAT
+          DESCRIBES THE ROOM (2026-08-13, at the user's request). A non-speech
+          sound is not a word -- it has no speaker, no colour and no place in a
+          line of text -- but it IS an event around the listener, which is
+          exactly what this dial is for.
+          The stage keeps its own `[Toy music]` caption: CWI 2.4.4 requires the
+          bracketed white label and this does not replace it. This is the same
+          fact placed where the room is drawn. */}
+      {sound?.label || sound?.category ? (
+        <span className="compass-sound" data-category={sound.category ?? "environmental"}>
+          <i>[{sound.label ?? sound.category}]</i>
+        </span>
+      ) : null}
+      <span className="compass-direction"><b /><i /></span>
+      {/* `.compass-texture` and `.compass-pitch` are gone with them. Both were
+          voice channels -- brightness and F0 -- and both are on screen already
+          as the caption's own texture and weight under CWI 2.3. The dial was
+          restating the captions inside a diagram about space. */}
     </div>
   );
 }
@@ -779,6 +1238,8 @@ function CaptionFeed({
   playheadMs,
   transcript,
   reducedMotion,
+  hangulWave,
+  enhancedMotion,
 }: {
   paragraphs: CaptionParagraph[];
   /*
@@ -809,6 +1270,10 @@ function CaptionFeed({
   playheadMs: number;
   transcript: boolean;
   reducedMotion: boolean;
+  /** Settings toggle, threaded to `MotionWord`. Wide script only. */
+  hangulWave: boolean;
+  /** Settings toggle, threaded to `MotionWord`. */
+  enhancedMotion: boolean;
 }) {
   /** Hold gap per word id, frozen at first sight; survives child remounts. */
   const holdMemoRef = useRef(new Map<string, number>());
@@ -817,12 +1282,19 @@ function CaptionFeed({
   const [wordMemo] = useState<WordMemo>(() => ({
     clock: new Map(),
     hold: new Map(),
+    voice: new Map(),
   }));
   const rowNodes = useRef(new Map<string, HTMLElement>());
   const previousPositions = useRef<CaptionStackPosition[]>([]);
   const stackInitialized = useRef(false);
   const stackAnimations = useRef(new Map<string, Animation>());
   const seenRows = useRef(new Set<string>());
+  /* Each caption row's last measured width, keyed by its position in the feed.
+     INDEX IS A LEGITIMATE KEY HERE and nowhere else: the layout contract is
+     that rows never move once laid out and a late word may only append, so a
+     row's index is stable for as long as it is on screen. */
+  const rowWidths = useRef<number[]>([]);
+  const rowGrowAnimations = useRef(new Map<number, Animation>());
 
   useLayoutEffect(() => {
     if (transcript || reducedMotion || paragraphs.length === 0) {
@@ -917,6 +1389,67 @@ function CaptionFeed({
     for (const {id} of currentPositions) seenRows.current.add(id);
     previousPositions.current = currentPositions;
   }, [paragraphs, reducedMotion, transcript]);
+
+  /* THE BOX OPENS SIDEWAYS OVER A NEWLY APPENDED WORD.
+
+     A clip, not a width animation: `.caption-words` is sized by its content,
+     so there is no transitionable width, and animating the used width would
+     relayout the row every frame -- which is row breaking and the motion clock
+     put at risk for a cosmetic effect. `clip-path` touches no layout at all.
+
+     Measured in the same pass as the stack shift, and deliberately AFTER it in
+     source order so both read the same post-layout geometry. */
+  useLayoutEffect(() => {
+    if (transcript || reducedMotion) {
+      for (const animation of rowGrowAnimations.current.values()) {
+        animation.cancel();
+      }
+      rowGrowAnimations.current.clear();
+      rowWidths.current = [];
+      return;
+    }
+    // Rows in paragraph order, from the nodes the stack effect already
+    // tracks -- no second ref, and the order is the stack's own.
+    const rows = paragraphs.flatMap((paragraph) => {
+      const node = rowNodes.current.get(paragraph.id);
+      return node
+        ? Array.from(node.querySelectorAll<HTMLElement>(".caption-words"))
+        : [];
+    });
+    const widths = rows.map((row) => row.getBoundingClientRect().width);
+    const previous = rowWidths.current;
+    rowWidths.current = widths;
+    // The first pass has nothing to compare against, and a row that appears
+    // with the paragraph it belongs to is the stack's ENTER transition --
+    // opening it sideways as well would double the effect.
+    if (previous.length === 0) return;
+    rows.forEach((row, index) => {
+      const before = previous[index];
+      const after = widths[index];
+      if (before === undefined || after - before < 1) return;
+      rowGrowAnimations.current.get(index)?.cancel();
+      const animation = row.animate(
+        [
+          {clipPath: `inset(0 ${(after - before).toFixed(1)}px 0 0)`},
+          {clipPath: "inset(0 0 0 0)"},
+        ],
+        {duration: ROW_GROW_DURATION_MS, easing: "cubic-bezier(.22,.61,.36,1)"},
+      );
+      rowGrowAnimations.current.set(index, animation);
+      animation.addEventListener("finish", () => {
+        if (rowGrowAnimations.current.get(index) === animation) {
+          rowGrowAnimations.current.delete(index);
+        }
+      }, {once: true});
+    });
+  }, [paragraphs, reducedMotion, transcript]);
+
+  useEffect(() => () => {
+    for (const animation of rowGrowAnimations.current.values()) {
+      animation.cancel();
+    }
+    rowGrowAnimations.current.clear();
+  }, []);
 
   useEffect(() => () => {
     for (const animation of stackAnimations.current.values()) {
@@ -1104,6 +1637,8 @@ function CaptionFeed({
               <div className="caption-words">
                 {paragraph.words.map(({id, word}) => (
                   <MotionWord
+                    hangulWave={hangulWave}
+                    enhancedMotion={enhancedMotion}
                     id={id}
                     word={word}
                     holdGapS={holdGaps.get(id) ?? 0}
@@ -1140,7 +1675,8 @@ function CaptionFeed({
  * Everything the planner needs is read off the live DOM rather than restated
  * here: the feed's real width and clip gutters, the height term
  * (`--caption-height-cap`, registered with `@property` so it computes to px), the
- * per-language `--per-word-em` budget, and a rendered row's true height, which
+ * `--word-em-linear`/`--word-em-spread` row budget, and a rendered row's true
+ * height, which
  * the dark stage inflates with .22em of padding the light stage does not have.
  */
 /**
@@ -1223,6 +1759,83 @@ function useGlyphBaseline(language: string | null): string | null {
     };
   }, [language]);
   return offset;
+}
+
+/**
+ * How wide one WIDE-script character is, in em, on the live caption face.
+ *
+ * The row chunker budgets `chars * charEm + wordEm`, and `charEm` was fitted on
+ * the English PR film and then applied to every script. A Hangul syllable's real
+ * advance is 0.9200em -- uniform, min = max, because Hangul is fixed-width --
+ * against the 0.4343em it was charged, so the chunker packed about twice as many
+ * Korean words into a row as fit. `.caption-words` is `nowrap`, so the overrun
+ * was CUT, silently.
+ *
+ * MEASURED, NOT TABULATED, for the same reason `useGlyphBaseline` is. The font's
+ * own `hmtx` does not answer it: frequency-weighted over the PR film transcript,
+ * Latin advances read 0.4934em against the shipped 0.4343em -- a 0.88 ratio
+ * absorbed by the chunker's slope/intercept fit and by the live variable-font
+ * axes -- and there is no reason that ratio transfers to a different face.
+ * Returning a hardcoded number here would be a guess wearing a measurement's
+ * clothes, and this project has shipped that mistake before.
+ *
+ * Cheap, and once per face: the caption font is locked before the first word.
+ */
+function useWideCharEm(language: string | null): number | null {
+  const [em, setEm] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const measure = () => {
+      if (cancelled) return;
+      const host = document.createElement("div");
+      host.className = "caption-feed";
+      host.setAttribute("aria-hidden", "true");
+      // No `contain:strict` and no fixed width: this probe MEASURES width, so
+      // it must be free to be as wide as the text makes it.
+      host.style.cssText =
+        "position:absolute;left:-9999px;top:0;visibility:hidden;" +
+        "width:max-content;white-space:nowrap;";
+      const row = document.createElement("div");
+      row.className = "caption-words";
+      const word = document.createElement("span");
+      word.className = "caption-word";
+      // A spread of real syllables rather than one repeated block, so a face
+      // with per-glyph variation cannot be read off an unlucky sample. Hangul
+      // measures uniform, which is itself worth confirming at runtime.
+      const sample = "가나다라마바사아자차카타파하각힣";
+      word.textContent = sample;
+      row.appendChild(word);
+      host.appendChild(row);
+      // MOUNT IT INSIDE THE SHELL -- `--font-caption` is switched by
+      // `.studio-shell[data-language="ko"]`, so a probe parented to
+      // `document.body` measures Roboto Flex even in a Korean session. That is
+      // the exact mistake `useGlyphBaseline` made twice.
+      const shell = document.querySelector(".studio-shell") ?? document.body;
+      shell.appendChild(host);
+      const fontSize = parseFloat(getComputedStyle(word).fontSize);
+      const width = word.getBoundingClientRect().width;
+      host.remove();
+      const count = Array.from(sample).length;
+      if (!Number.isFinite(fontSize) || fontSize <= 0 || width <= 0) return;
+      const measured = width / fontSize / count;
+      // Sanity band. A wide character cannot be narrower than a Latin one, and
+      // cannot exceed one em by much. Outside this the probe measured the wrong
+      // face or the fallback, and a wrong number here CLIPS captions -- so
+      // report nothing and let the chunker fall back to `charEm`, which is
+      // today's behaviour rather than a new failure.
+      if (measured < 0.5 || measured > 1.4) return;
+      setEm((current) => (
+        current !== null && Math.abs(current - measured) < 1e-4
+          ? current
+          : measured
+      ));
+    };
+    document.fonts.ready.then(measure).catch(measure);
+    return () => {
+      cancelled = true;
+    };
+  }, [language]);
+  return em;
 }
 
 function useStageLayout(
@@ -1348,8 +1961,11 @@ function LanguageGate({
         </header>
 
         <div className="language-gate-copy">
+          {/* The eyebrow was the only blue thing on the screen, and blue is
+              the interactive signal -- on a page whose entire content is three
+              buttons, colouring the one non-interactive line was backwards. */}
           <span className="eyebrow">
-            <Globe2 size={14} />
+            <Globe2 size={13} aria-hidden="true" />
             Session language
           </span>
           <h1 id="language-gate-title">
@@ -1380,15 +1996,22 @@ function LanguageGate({
                 onClick={() => onSelect(language.id)}
                 type="button"
               >
+                {/* ONE SHAPE FOR ALL THREE. They had three different internal
+                    layouts -- EN put the code inline with the name, KO added a
+                    latin gloss beside it, MULTI stacked the code on its own
+                    line and slipped "Bilingual" between name and description --
+                    so the eye had to re-learn the row each time. Every option
+                    is now code, name, gloss, description, in that order, and a
+                    gloss that would repeat the name is simply absent. */}
+                <span className="language-code">{language.id.toUpperCase()}</span>
                 <span className="language-name">
-                  <span className="language-code">{language.id.toUpperCase()}</span>
-                  <strong>{language.nativeLabel}</strong>
+                  <strong lang={language.id}>{language.nativeLabel}</strong>
                   {language.nativeLabel !== language.label && (
                     <small>{language.label}</small>
                   )}
                 </span>
                 <span className="language-description">{language.description}</span>
-                <ChevronRight size={18} />
+                <ChevronRight size={17} aria-hidden="true" />
               </button>
             ))}
           </div>
@@ -1502,6 +2125,54 @@ function SettingsPanel({
         <i data-on={settings.lightStage ? "true" : "false"} />
       </button>
 
+      <button
+        className="toggle-row"
+        aria-pressed={settings.hangulWave}
+        onClick={() => setSettings({
+          ...settings,
+          hangulWave: !settings.hangulWave,
+        })}
+      >
+        <span><Type size={15} /> Hangul-shaped motion</span>
+        <i data-on={settings.hangulWave ? "true" : "false"} />
+      </button>
+
+      <button
+        className="toggle-row"
+        aria-pressed={settings.rollingCaptions}
+        onClick={() => setSettings({
+          ...settings,
+          rollingCaptions: !settings.rollingCaptions,
+        })}
+      >
+        <span><AlignEndHorizontal size={15} /> Rolling captions</span>
+        <i data-on={settings.rollingCaptions ? "true" : "false"} />
+      </button>
+
+      <button
+        className="toggle-row"
+        aria-pressed={settings.captionRules}
+        onClick={() => setSettings({
+          ...settings,
+          captionRules: !settings.captionRules,
+        })}
+      >
+        <span><Minus size={15} /> Caption rules, not a box</span>
+        <i data-on={settings.captionRules ? "true" : "false"} />
+      </button>
+
+      <button
+        className="toggle-row"
+        aria-pressed={settings.enhancedMotion}
+        onClick={() => setSettings({
+          ...settings,
+          enhancedMotion: !settings.enhancedMotion,
+        })}
+      >
+        <span><Sparkles size={15} /> Enhanced motion</span>
+        <i data-on={settings.enhancedMotion ? "true" : "false"} />
+      </button>
+
       <div className="settings-note">
         <Check size={15} />
         <p>These controls affect presentation only. Recognition and speaker evidence stay untouched.</p>
@@ -1527,6 +2198,68 @@ export function LiveStudio() {
        green 4.86 -> 12.26) and the turns are unmistakable, which is the whole
        job of CWI 2.1. The toggle keeps the light stage one click away. */
     lightStage: false,
+    /* Hangul-structural character motion. The Latin wave is Y-dominant --
+       `scale(1 - .022w, 1 + .13w)`, a narrow mark stretching upward -- and a
+       Hangul block is a square assembly whose grain depends on where its vowel
+       sits. With this on, a horizontal-gather block (가) breathes along its
+       width and a vertical-gather one (고) upward, per the design factor in
+       *Kinetic Typography from the Structural Characteristics of Hangul*.
+       DEFAULT ON since 2026-08-11, at the user's request after seeing it.
+       It remains a JUDGEMENT, not a measurement -- no probe can tell you a
+       stretch axis feels native -- so the toggle stays, and turning it off
+       restores the Latin wave exactly. It affects wide script only; English
+       never reaches this branch. */
+    hangulWave: true,
+    /* THE ENHANCED MOTION SYSTEM (2026-08-11). The legacy clock is intact and
+       one click away; this is the corrected one, and both corrections are
+       measurements against the reference rather than taste:
+         - the crest is ANTICIPATED so it peaks ON the word's onset. The film
+           peaks +0.04s from the acoustic onset having risen 0.21s before it;
+           ours rose a median 0.161s AFTER the turn, i.e. ~0.12s late on every
+           word.
+         - the colour wipe spans the WHOLE spoken word instead of 72% of it,
+           so the boundary lands as the word ends. Measured on the film's
+           "To do whatever you tell me, Drill Sergeant" line, its turns track
+           the spoken onsets at a mean offset of +0.02s.
+       DEFAULT ON (2026-08-12), and this is the second time the default has
+       moved -- read both halves before moving it again.
+
+       It went OFF because the user watched `--sample` beside the film and
+       judged legacy closer. That was correct for what was on screen: the
+       sample played from 0 s, which is the film's TITLES DEMO on black, and
+       the demo half uses a per-character wave -- which is what legacy does.
+
+       Measured since, the film uses TWO treatments split at 28 s. After 28 s,
+       CWI applied to real footage: 63% of words turn colour in a single frame,
+       word top-edges travel 2.6% of a glyph height, weight swings a median of
+       -40, and no word scatters its characters at all. Colour and size, both
+       per WORD. That is the enhanced clock exactly, and it is the half that
+       matches this product -- captions over live speech, not a titles demo.
+       `--sample` now starts at 28 s for the same reason.
+
+       Legacy remains one click away and is bit-identical to what it always
+       was; it is the right choice for the 0-28 s treatment. */
+    enhancedMotion: true,
+    /* ROLLING CAPTIONS: newest at the bottom, history rising above it and
+       receding as it goes. DEFAULT ON (2026-08-12, at the user's direction).
+       Presentation only: it changes where a caption SITS, never how a word
+       moves, so no motion figure in docs/MOTION.md depends on it -- and the
+       top-anchored stack is one click away in Settings, unchanged.
+       The layout contract is unaffected either way: rows still never move once
+       laid out and a late word may still only append. What flips is which end
+       of the stage is the live one, so the top-anchoring invariant
+       (`top` + `max-height` + `justify-content`) is mirrored rather than
+       dropped -- see `[data-layout="rolling"]` in globals.css. */
+    rollingCaptions: true,
+    /* THE CAPTION PLATE, AS TWO RULES INSTEAD OF A FILLED BOX. A deviation
+       from CWI 2.4.1, which specifies a 90%-black captions box -- so it is a
+       toggle, exactly like the light stage, and `autocwi cc` (which renders
+       over real footage, where the plate is what carries legibility) never
+       sees it. On this stage the surface behind the captions is already a
+       controlled dark field, so the box is drawing a lozenge rather than
+       buying contrast. Default ON at the user's request; one click restores
+       the compliant box. */
+    captionRules: true,
   });
   const [view, setView] = useState<ViewMode>("stage");
   const [railOpen, setRailOpen] = useState(true);
@@ -1574,6 +2307,7 @@ export function LiveStudio() {
     [paragraphs],
   );
   const glyphBaselineEm = useGlyphBaseline(session.language);
+  const wideCharEm = useWideCharEm(session.language);
   const stageLayout = useStageLayout(
     stageRef,
     runtime,
@@ -1622,6 +2356,17 @@ export function LiveStudio() {
            right at 0.87 against 6 of 6 at 0.82. `WordMemo` makes a rebuild
            value-identical; it does not make one free. */
         fill: 0.82,
+        /* Per-character width for East Asian WIDE scripts, measured off the
+           live face (`useWideCharEm`). `charEm` above is a LATIN fit and was
+           being charged for Hangul too, at 0.4343em against a real 0.9200em --
+           so Korean rows carried about twice the words that fit and `nowrap`
+           cut the rest with no error and nothing on screen to show for it.
+           Undefined until the probe resolves, and `wordWidthEm` then falls back
+           to `charEm`, which is the pre-fix behaviour rather than a new one.
+           Latin text costs the identical float either way -- there is a test on
+           exactly that, because a moved English break would remount words and
+           put the motion acceptance figures at risk. */
+        ...(wideCharEm !== null ? {wideCharEm} : {}),
       },
     )
     : paragraphs;
@@ -1648,17 +2393,6 @@ export function LiveStudio() {
     return newest;
   }, [stageParagraphs]);
   const speechActive = playheadMs <= speechEndMs + runtime.soundLingerMs;
-  const speakers = useMemo(() => {
-    const bySpeaker = new Map<string, CaptionWord>();
-    for (const paragraph of paragraphs) {
-      if (!paragraph.speaker) continue;
-      const latest = paragraph.words.at(-1)?.word;
-      if (latest) bySpeaker.set(paragraph.speaker, latest);
-    }
-    return [...bySpeaker.entries()].sort(([left], [right]) =>
-      left.localeCompare(right, undefined, {numeric: true})
-    );
-  }, [paragraphs]);
   const currentParagraph = paragraphs.at(-1);
   // CWI 2.1 assignment (wheel geometry, first-appearance order). The CI palette
   // is built for the black captions box and measures as low as 1.19:1 on the
@@ -1676,8 +2410,8 @@ export function LiveStudio() {
   const activeColor = currentParagraph
     ? speakerColor(currentParagraph.speaker, speakerColors)
     : fallbackColor;
-  const direction = number(level.direction_deg ?? level.azimuth_deg, Number.NaN);
-  const directionKnown = Number.isFinite(direction);
+  // The bearing is read inside `VoiceCompass` now -- the parent no longer
+  // renders a number for it, so it no longer needs to know one.
   const inputGood = level.status === "good";
   const studioStyle: CSSVars = {
     "--caption-scale": settings.captionScale,
@@ -1717,6 +2451,10 @@ export function LiveStudio() {
       data-contrast={settings.highContrast ? "high" : "normal"}
       data-theme={settings.lightStage ? "light" : "dark"}
       data-reduced-motion={settings.reducedMotion ? "true" : "false"}
+      data-hangul-wave={settings.hangulWave ? "true" : "false"}
+      data-motion={settings.enhancedMotion ? "enhanced" : "legacy"}
+      data-layout={settings.rollingCaptions ? "rolling" : "stack"}
+      data-plate={settings.captionRules ? "rules" : "box"}
       data-language={session.language ?? "pending"}
       lang={session.language === "ko" ? "ko" : "en"}
       style={studioStyle}
@@ -1786,30 +2524,19 @@ export function LiveStudio() {
           className={`caption-stage ${view === "transcript" ? "is-transcript" : ""}`}
           ref={stageRef}
         >
-          {model.sound && (
-            /* CWI 2.4.4 and 2.4.5. A sound effect is white, inside brackets,
-               and otherwise obeys the caption system: its type grows and pops
-               with the loudness of the sound it describes. Music is the
-               documented exception -- it is wrapped in the ♫ symbol on either
-               side and, per 2.4.5, "they don't need to be animated and don't
-               change color", so its scale is pinned at 1. */
-            <div
-              className="sound-caption"
-              data-category={model.sound.category ?? "environmental"}
-              data-suppressed={speechActive ? "true" : "false"}
-              style={{
-                "--sound-level": clamp(
-                  (number(level.rms_db, -72) + 52) / 34,
-                  0,
-                  1,
-                ).toFixed(3),
-              } as CSSVars}
-            >
-              {model.sound.category === "music" ? "♫ " : null}
-              [{model.sound.label ?? model.sound.category ?? "sound"}]
-              {model.sound.category === "music" ? " ♫" : null}
-            </div>
-          )}
+          {/* THE BRACKETED LABEL LIVES IN THE COMPASS NOW (2026-08-13, at the
+              user's direction: "[GASP] 이런게 캡션에서 잘 반영이 안되서 그냥
+              콤퍼스에서 처리하는게 좋겠다").
+              It sat at the foot of the stage as a second, differently-shaped
+              caption -- no speaker, no colour, no motion, and outside the row
+              stack that every other caption belongs to. A non-speech sound is
+              an event in the ROOM rather than a word in the line, and the dial
+              is the instrument that draws the room.
+              THIS IS A DEVIATION FROM CWI 2.4.4, which puts sound effects in
+              white brackets among the captions. It is a placement change, not
+              a removal: the same label, the same brackets, the same white, the
+              same vibration -- moved to where it is legible. `autocwi cc`,
+              which renders to the design system's own layout, is untouched. */}
           <CaptionFeed
             paragraphs={stageParagraphs}
             timingWords={timingWords}
@@ -1821,6 +2548,8 @@ export function LiveStudio() {
             playheadMs={playheadMs}
             transcript={view === "transcript"}
             reducedMotion={settings.reducedMotion}
+            hangulWave={settings.hangulWave}
+            enhancedMotion={settings.enhancedMotion}
           />
           {!stageParagraphs.length && (
             <div className="empty-stage">
@@ -1837,85 +2566,69 @@ export function LiveStudio() {
       </section>
 
       <aside className="signal-rail" aria-label="Live signal intelligence">
+        <section className="rail-section compass-section">
+          {/* The arrow glyph went with the heading: an icon alone in an
+              otherwise empty row is decoration, and the dial already draws a
+              bearing. */}
+          <header className="rail-heading">
+            <h2>Voice compass</h2>
+          </header>
+          <div className="compass-layout">
+            <VoiceCompass level={level} color={activeColor}
+                          speakerColors={speakerColors}
+                          sound={speechActive ? null : model.sound} />
+            {/* THE DIAL IS THE WHOLE READOUT NOW (2026-08-13).
+                It has lost, in order: `Direction` (a label on a number that
+                already ended in a degree sign), `Voice profile` (the voice
+                described in prose the captions carry -- delivery is weight and
+                size under CWI 2.3), and finally the number itself. `231°` sat
+                beside a dial that was already pointing at it, and with no
+                array it read `0°`, which is a bearing nobody measured.
+                Twelve ticks put the needle inside 30° at a glance, which is
+                the resolution "who is where" actually needs. */}
+          </div>
+        </section>
+
+        {/* THE LEVEL SITS BELOW THE COMPASS (2026-08-13, at the user's
+            direction). In the rolling layout the rail is bottom-aligned and
+            the reader's eye is at the bottom of the stage, so the section
+            nearest them should be the one they least need to look at -- "is
+            the mic working" is a glance, "who is where" is the thing being
+            read. */}
         <section className="rail-section signal-section">
           <header className="rail-heading">
             <h2>Voice activity</h2>
-            <span className="health-badge" data-good={inputGood ? "true" : "false"}>
-              {level.status ?? "idle"}
-            </span>
           </header>
           <SignalWaveform values={waveform} />
-          <div className="metric-row three">
-            <div><strong>{number(level.rms_db, -72).toFixed(1)}</strong><span>dBFS</span></div>
-            <div><strong>{Math.round(number(level.pitch_hz)) || "—"}</strong><span>Hz pitch</span></div>
-            <div><strong>{Math.round(number(level.spectral_centroid_hz)) || "—"}</strong><span>Hz color</span></div>
+          {/* THE TWO Hz READINGS ARE GONE (2026-08-13). "215 Hz pitch" and
+              "2641 Hz color" are engineering telemetry: a viewer cannot act on
+              either, and both channels are ALREADY on screen in the form that
+              matters -- pitch is the caption's weight and colour-brightness is
+              its texture, per CWI 2.3. The rail was restating the captions in
+              numbers. Level stays because it is the one reading that says
+              whether the mic is working at all. */}
+          {/* ONE LINE, NOT TWO CORNERS. The status word sat top-right and the
+              level sat bottom-left, and they are the same fact at two
+              resolutions: `IDLE` is the summary, `-17.6 dBFS` is the number
+              behind it. Read together they answer "is the microphone working"
+              once instead of twice. */}
+          <div className="level-line" data-good={inputGood ? "true" : "false"}>
+            <strong>{level.status ?? "idle"}</strong>
+            <span>{number(level.rms_db, -72).toFixed(1)} dBFS</span>
           </div>
         </section>
 
-        <section className="rail-section compass-section">
-          <header className="rail-heading">
-            <h2>Voice compass</h2>
-            <Navigation size={16} />
-          </header>
-          <div className="compass-layout">
-            <VoiceCompass level={level} color={activeColor} />
-            <div className="compass-readout">
-              <div>
-                <span>Direction</span>
-                <strong>{directionKnown ? `${Math.round(direction)}°` : "Awaiting array"}</strong>
-              </div>
-              <div>
-                <span>Voice profile</span>
-                <strong>{
-                  number(level.pitch_hz) <= 0
-                    ? "Awaiting voice"
-                    : `${String(level.delivery_profile ?? "steady")} · ${
-                      number(level.delivery_contour) > 0.2
-                        ? "rising"
-                        : number(level.delivery_contour) < -0.2
-                          ? "falling"
-                          : number(level.delivery_flow) > 0.68
-                            ? "flowing"
-                            : "level"
-                    }`
-                }</strong>
-              </div>
-              {/* "Hardware: Mono input" said the same thing as "Direction:
-                  Awaiting array" one line above it. */}
-            </div>
-          </div>
-        </section>
-
-        <section className="rail-section speakers-section">
-          <header className="rail-heading">
-            <h2>Active speakers</h2>
-            <span className="section-count">{speakers.length}</span>
-          </header>
-          <div className="speaker-list">
-            {speakers.length ? speakers.map(([speaker, word]) => {
-              const status = speakerStatus(word);
-              const color = speakerColor(speaker, speakerColors);
-              return (
-                <div className="speaker-card" key={speaker}>
-                  <span className="speaker-avatar" style={{"--speaker-color": color} as CSSVars}>
-                    {speakerNumber(speaker)}
-                  </span>
-                  <div>
-                    <strong>Speaker {speakerNumber(speaker)}</strong>
-                    <span>{status} · {Math.round(number(word.speaker_confidence, 0) * 100)}% confidence</span>
-                  </div>
-                  <i style={{"--speaker-color": color} as CSSVars} />
-                </div>
-              );
-            }) : (
-              <div className="speaker-empty">
-                <span>—</span>
-                <p>Speaker profiles appear after the first attributed turn.</p>
-              </div>
-            )}
-          </div>
-        </section>
-
+        {/* ACTIVE SPEAKERS IS GONE (2026-08-13, at the user's direction).
+            Every speaker it listed is already on screen wearing their colour,
+            in the captions and on the compass ring -- CWI 2.1 makes colour THE
+            speaker signal, so a legend restating it is redundant by the design
+            system's own logic. What the section added on top was
+            `provisional · 95% confidence`, which is the system talking about
+            its own certainty: operator information, and it belongs with the
+            operator.
+            The `speakers` memo went with it. It fed nothing else --
+            `useSpeakerColors` reads `paragraphs` directly, which is what the
+            captions and the compass ring have always been coloured from. */}
         {/* A fourth "system" section listed Recognition (a hardcoded string),
             Expression (the settings slider's own value) and Direction (the
             compass readout, again). None of it was a signal. */}

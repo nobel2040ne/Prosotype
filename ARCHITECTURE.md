@@ -326,8 +326,9 @@ and Noto Sans KR (Korean). This is what lets typography track pitch smoothly.
 **CaptionSpec (`spec.json`)** — the versioned data contract. It is the single,
 stable description of a caption: the words, their timing, speaker, loudness,
 pitch, and how to style them. **Every consumer (the renderer, a future haptic
-device) reads only the CaptionSpec — never the internal model objects.** See
-[../ARCHITECTURE.md](../ARCHITECTURE.md).
+device) reads only the CaptionSpec — never the internal model objects.** Its
+definition is `autocwi/schema.py`; the data contract section above describes
+how it flows.
 
 **Server-Sent Events (SSE)** — a one-way stream from the Python server to the
 browser over plain HTTP. Live captions arrive as SSE `word` events. The browser

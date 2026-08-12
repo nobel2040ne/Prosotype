@@ -100,14 +100,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lv.add_argument(
         "--lang",
-        choices=("en", "ko"),
+        # Kept as an explicit list rather than read from config: this is the
+        # deterministic/headless bypass, and a typo here must fail loudly at
+        # parse time instead of loading the wrong recognizer.
+        choices=("en", "ko", "multi"),
         default=None,
-        help="skip the startup picker and use English (en) or Korean (ko)",
+        help="skip the startup picker: English (en), Korean (ko), or bilingual "
+             "auto-detect (multi)",
     )
     lv.add_argument("--file", default=None,
                     help="stream a wav/mp4 file at real-time pace instead of the mic")
     lv.add_argument("--sample", action="store_true",
                     help="stream the bundled sample for the selected language")
+    # The PR film changes treatment at 28 s: before it is the titles demo on
+    # black (a per-character wave), after it is CWI applied to real footage
+    # (whole-word colour and size) -- which is what this product does. The
+    # English sample therefore starts there by default. `--start 0` plays the
+    # whole film; the Korean clip is 13 s and is never skipped.
+    lv.add_argument("--start", type=float, default=None, metavar="SECONDS",
+                    help="skip this many seconds of --sample/--file "
+                         "(default: 28 for the English sample, 0 otherwise)")
     lv.add_argument(
         "--diarizer",
         choices=("auto", "sortformer", "embedding", "off"),
@@ -131,6 +143,21 @@ def build_parser() -> argparse.ArgumentParser:
                          "the adaptive gain that lifts quiet speech")
     lv.add_argument("--no-gain", dest="no_gain", action="store_true",
                     help="feed the recognizer the raw input level")
+    # --- hardware node (ReSpeaker array + Pi + haptics) --------------------
+    # The array plugs into the Pi, which cannot host the recognizers, so audio
+    # and direction arrive over the network and haptic cues go back.
+    lv.add_argument("--node", action="store_true",
+                    help="capture from the hardware node instead of a local mic")
+    lv.add_argument("--node-port", dest="node_port", type=int, default=7338,
+                    metavar="PORT",
+                    help="port the hardware node connects to (default: 7338)")
+    # Loopback by default. `Local and offline by default` is a hard rule; the
+    # node needs a LAN address, so widening the bind is explicit and opt-in,
+    # never a side effect of --node.
+    lv.add_argument("--host", default="127.0.0.1", metavar="ADDR",
+                    help="address to serve the studio and node port on "
+                         "(default: 127.0.0.1; use 0.0.0.0 to let the "
+                         "hardware node reach this machine over the LAN)")
 
     return ap
 

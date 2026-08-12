@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildCaptionParagraphs,
+  isWideChar,
   planCaptionStackMotion,
   selectStableCaptionStack,
   createStageMemory,
+  wordWidthEm,
 } from "./caption-paragraphs.ts";
 import type {CaptionWord} from "./caption-store.ts";
 
@@ -570,4 +572,108 @@ test("a stale break is retired once the text that caused it changes", () => {
     99, 50, memory, BUDGET,
   );
   assert.equal(healed.length, 1, "and the break goes when they shorten again");
+});
+
+/*
+ * SCRIPT-AWARE ROW WIDTH.
+ *
+ * `charEm` was fitted on the English PR film and then applied to every script,
+ * so a Hangul syllable was budgeted at 0.4343em against a real advance of
+ * 0.9200em -- uniform, because Hangul is fixed-width. The chunker packed about
+ * twice as many Korean words into a row as fit and `.caption-words` is
+ * `nowrap`, so the overrun was cut silently.
+ */
+
+const KO_BUDGET = {...BUDGET, wideCharEm: 0.92};
+
+test("Latin widths are BIT-IDENTICAL with and without a wide-char width", () => {
+  /*
+   * THIS IS THE MOTION GATE, and it is why the fix is script-aware rather than
+   * a re-measurement of everything. A word that changes row is unmounted and
+   * REBUILT, and row-break frequency is what flipped the held "is" between
+   * 4 of 6 and 6 of 6 runs at fill 0.87 against 0.82 -- while every motion
+   * acceptance figure is measured on the ENGLISH film. If Latin widths do not
+   * move by a single bit, no English break decision can move, so English
+   * motion cannot move either.
+   *
+   * Exact equality, not `closeTo`: a last-bit difference is enough to flip a
+   * `rowEm + cost > ceiling` comparison, which is the whole failure mode.
+   */
+  for (const text of [
+    "louder", "softer", "is", "synchronized", "precisely", "animation,",
+    "Goddamnit", "a", "", "don't", "1640", "S1:",
+  ]) {
+    assert.equal(
+      wordWidthEm(text, KO_BUDGET),
+      wordWidthEm(text, BUDGET),
+      `"${text}" must cost the same with and without wideCharEm`,
+    );
+  }
+});
+
+test("a Hangul syllable costs the wide width, not the Latin one", () => {
+  // 3 syllables: 3*0.92 + 0.378 against the old 3*0.432 + 0.378.
+  assert.equal(wordWidthEm("안녕히", KO_BUDGET), 3 * 0.92 + 0.378);
+  // 3.138em against 1.674em: the old estimate is 1.87x low. Not the full 2.12x
+  // the per-character ratio implies, because the `wordEm` intercept is charged
+  // once either way and dilutes it -- which is exactly why this has to be
+  // asserted on the real numbers rather than reasoned from 0.92/0.4343.
+  assert.ok(
+    wordWidthEm("안녕히", KO_BUDGET) > wordWidthEm("안녕히", BUDGET) * 1.8,
+    "the old estimate was far under",
+  );
+});
+
+test("a mixed Korean and Latin word charges each character its own width", () => {
+  // `2011년` is exactly the case a per-LANGUAGE budget could not express, and
+  // FLEURS Korean is full of it.
+  assert.equal(wordWidthEm("2011년", KO_BUDGET), 4 * 0.432 + 0.92 + 0.378);
+});
+
+test("without a wide width, Korean falls back to the old behaviour", () => {
+  // The chunker is a pure function used by callers that have not measured a
+  // face; it must not start throwing or returning NaN for them.
+  assert.equal(wordWidthEm("안녕히", BUDGET), 3 * 0.432 + 0.378);
+});
+
+test("Korean rows break about twice as early as they used to", () => {
+  // The bug, end to end: same words, same 20em row, correct widths.
+  const ko = texts(Array(40).fill("안녕히"));
+  const before = selectStableCaptionStack(
+    buildCaptionParagraphs(ko.words, ko.order), 99, 50, createStageMemory(),
+    BUDGET,
+  );
+  const after = selectStableCaptionStack(
+    buildCaptionParagraphs(ko.words, ko.order), 99, 50, createStageMemory(),
+    KO_BUDGET,
+  );
+  assert.equal(before[0].words.length, 11, "the under-estimate packed 11");
+  assert.equal(after[0].words.length, 6, "the real width fits 6");
+  // 11 words at a TRUE 3.138em each is 34.5em in a 20em row: 73% past the edge,
+  // cut with no error and nothing on screen to show for it.
+});
+
+test("English row composition is unchanged by the wide-char width", () => {
+  // The same assertion as the bit-identical test, but at the level that
+  // actually matters: identical rows means identical row ids, so no word is
+  // remounted and no motion is re-armed.
+  const en = texts([
+    "as", "each", "word", "is", "spoken", "precisely", "synchronized",
+    "with", "the", "audio", "so", "that", "everyone", "can", "follow",
+  ]);
+  const rows = (budget: typeof BUDGET) => selectStableCaptionStack(
+    buildCaptionParagraphs(en.words, en.order), 99, 50, createStageMemory(),
+    budget,
+  ).map((row) => [row.id, row.words.map((w) => w.word.text).join(" ")]);
+
+  assert.deepEqual(rows(KO_BUDGET), rows(BUDGET));
+});
+
+test("wide-character classification covers the scripts captions actually use", () => {
+  for (const ch of ["가", "힣", "ㄱ", "漢", "字", "あ", "ア", "，", "！"]) {
+    assert.ok(isWideChar(ch.codePointAt(0)!), `${ch} is wide`);
+  }
+  for (const ch of ["a", "Z", "0", "-", ".", " ", "'", "é"]) {
+    assert.ok(!isWideChar(ch.codePointAt(0)!), `${ch} is narrow`);
+  }
 });

@@ -7,7 +7,16 @@ pydantic==2.9.2
 faster-whisper==1.1.1
 ctranslate2==4.5.0
 # Dual true-streaming live ASR (local Nemotron; prebuilt platform wheels)
-sherpa-onnx==1.13.4
+# BUILT FROM MASTER, NOT PyPI (2026-08-11). Multilingual Nemotron-3.5 streaming
+# (PR #3671, merged 2026-06-12) is what the `multi` bilingual capture profile
+# needs, and it is in NO released wheel: 1.13.4 is the newest on PyPI and on
+# k2-fsa's own nightly index, and its `OnlineStream` has no `set_option`.
+# Verified after installing: the English and Korean profiles both still load
+# and decode, and the 216-test suite is unchanged.
+# Pin back to `sherpa-onnx==1.13.4` to revert -- the bilingual profile is the
+# only thing that stops working.
+# Replace this with a plain version pin as soon as a release contains #3671.
+sherpa-onnx @ git+https://github.com/k2-fsa/sherpa-onnx@master  # -> 1.13.5
 # Optional first-phone onset sidecar. The checkpoint is fetched explicitly by
 # scripts/fetch_streaming_model.py; live inference remains fully local.
 transformers==4.48.3

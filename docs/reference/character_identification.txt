@@ -1,5 +1,0 @@
--	so Deaf people instantly know who's speaking.
--	Character Identification
-S1	Now, colors will distinguish characters,
-S2	so Deaf people instantly know who's speaking.
-S1	Character Identification

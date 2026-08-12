@@ -11,6 +11,11 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // `src/lib/*.ts` are plain modules run BOTH by Next and directly by
+    // `node --experimental-strip-types --test`. Node's ESM resolver needs the
+    // real extension; without this flag tsc rejects the same specifier. Legal
+    // here because `noEmit` is set above.
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "incremental": true,
     "plugins": [{"name": "next"}],

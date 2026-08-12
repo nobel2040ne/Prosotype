@@ -95,9 +95,32 @@ export interface RuntimeConfig {
   wordMotionMaxMs: number;
   wordMotionSpanStretch: number;
   wordMotionMinMs: number;
+  wordMotionFollowsSpeech: boolean;
+  wordMotionSpeechScale: number;
+  wordMotionSpeechFloorMs: number;
   /** Ceiling for the 2.2.3 pop; the crest has its own. */
   wordMotionPopMaxMs: number;
   syncPop: number;
+  /** 2.2.3 on the enhanced clock -- measured off the PR film. */
+  syncPopEnhanced: number;
+  /** How far an ordinary word lifts, em -- the film's default treatment. */
+  wordLiftEmEnhanced: number;
+  /** The enhanced size cue's whole window, ms, for an unemphasised word. */
+  wordMotionEnhancedMs: number;
+  /** ...and how much longer it runs at full emphasis, ms. */
+  wordMotionEnhancedEmphasisMs: number;
+  /** Enhanced: how far the size cue trails the turn, ms. */
+  crestLagMs: number;
+  /** Enhanced: narrower 2.3 size deadband. */
+  voiceScaleDeadbandEnhanced: number;
+  /** Enhanced: slope of the continuous loudness ramp. */
+  voiceScaleResponseEnhanced: number;
+  /** Enhanced: where the size mapping pivots. */
+  voiceScalePivotEnhanced: number;
+  /** Enhanced: convexity of the loudness ramp. */
+  voiceScaleCurveEnhanced: number;
+  /** Enhanced: fitted loudness -> crest control points. */
+  voiceScalePointsEnhanced?: Array<[number, number]>;
   /** How far the character wave is suppressed as the WORD's own volume departs
    *  from normal: the two scopes trade off. See config.yaml. */
   characterWaveFalloff: number;
@@ -162,8 +185,20 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   wordMotionMaxMs: 1050,
   wordMotionSpanStretch: 0.42,
   wordMotionMinMs: 320,
+  wordMotionFollowsSpeech: true,
+  wordMotionSpeechScale: 2.4,
+  wordMotionSpeechFloorMs: 160,
   wordMotionPopMaxMs: 700,
   syncPop: 0.15,
+  syncPopEnhanced: 0.55,
+  wordLiftEmEnhanced: 0.045,
+  wordMotionEnhancedMs: 500,
+  wordMotionEnhancedEmphasisMs: 0,
+  crestLagMs: 40,
+  voiceScaleDeadbandEnhanced: 0.1,
+  voiceScaleResponseEnhanced: 0.5,
+  voiceScalePivotEnhanced: 0.1,
+  voiceScaleCurveEnhanced: 2.0,
   characterWaveFalloff: 1.0,
   characterWaveFloor: 0.0,
   holdLiftEm: 0.525,

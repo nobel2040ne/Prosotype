@@ -222,3 +222,32 @@ def test_config_exposes_sound_events():
     se = cfg["live"]["sound_events"]
     assert se["enabled"] is True
     assert set(se["categories"]) == set(CATEGORIES)
+
+
+def test_no_audioset_label_is_claimed_by_two_categories():
+    """First-category-wins, so a duplicate silently steals the label.
+
+    `Bell` was added to `music` while `environmental` already had it, and
+    because `CATEGORIES` iterates vocal -> reaction -> music -> environmental,
+    every doorbell and alarm in the room started reporting as music. Nothing
+    about the config looks wrong when this happens -- both lists read fine on
+    their own -- so it needs its own check.
+    """
+    from autocwi.config import load_config
+    categories = load_config()["live"]["sound_events"]["categories"]
+    owner: dict[str, str] = {}
+    clashes = []
+    for category, labels in categories.items():
+        for label in labels:
+            if label in owner:
+                clashes.append(f"{label!r}: {owner[label]} and {category}")
+            owner[label] = category
+    assert not clashes, "one label, two categories: " + "; ".join(clashes)
+
+
+def test_suppressed_classes_are_never_also_a_category():
+    """The ASR owns speech. A class in both lists would be a chip for a word."""
+    from autocwi.config import load_config
+    sound = load_config()["live"]["sound_events"]
+    listed = {label for labels in sound["categories"].values() for label in labels}
+    assert not (listed & set(sound["suppress"]))

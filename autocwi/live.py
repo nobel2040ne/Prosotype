@@ -32,6 +32,7 @@ import os
 import platform
 import queue
 import re
+import socket
 import threading
 import time
 import unicodedata
@@ -46,6 +47,8 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 import numpy as np
+
+from autocwi import haptics, netaudio
 
 SR = 16_000
 BLOCK = 1024  # samples per audio block (~64 ms)
@@ -329,6 +332,210 @@ def mic_blocks(stop: threading.Event, device: int | str | None = None):
             yield chunk
 
 
+class NodeLink:
+    """The connection to the hardware node (ReSpeaker array + Pi Zero 2 W).
+
+    The Pi cannot host the recognizers (512 MB against 600 MB-per-model
+    weights), so with the array plugged into the Pi the capture path crosses the
+    network. This owns that socket in both directions: audio and
+    direction-of-arrival arrive, haptic cues go back.
+
+    It is a THIRD audio source beside ``mic_blocks`` and ``file_blocks`` and
+    yields the same ``AudioChunk``, so nothing downstream knows the difference.
+
+    Direction expires. ``direction_deg`` returns None once the newest
+    observation is older than ``doa_ttl_s``, so an unplugged array or a node
+    that stopped reporting falls back to the compass's `awaiting array` instead
+    of freezing a stale bearing on screen. Never fabricate direction.
+    """
+
+    # Reject a span's bearing below this mean resultant length. 0.5 is two
+    # readings ~120 deg apart: past that they describe two directions, not one
+    # noisy one, and an averaged answer would name a place nobody spoke from.
+    MIN_BEARING_CONCENTRATION = 0.5
+
+    def __init__(self, host: str = "0.0.0.0", port: int = 7338,
+                 doa_ttl_s: float = 1.5, history: int = 4096) -> None:
+        self.host = host
+        self.port = port
+        self.doa_ttl_s = doa_ttl_s
+        self._doa: tuple[float, float] | None = None   # (deg, monotonic stamp)
+        # (source_time, deg) for attribution, which scores a WORD SPAN and so
+        # needs the bearing during that span, not the latest one. Bearings are
+        # recorded against the source clock the words are timed on; the DoA
+        # frame's position in the stream is its position in time, because the
+        # node interleaves it with the audio on one ordered connection.
+        self._doa_history: deque[tuple[float, float]] = deque(maxlen=history)
+        self._doa_lock = threading.Lock()
+        self._conn: socket.socket | None = None
+        self._send_lock = threading.Lock()
+        self.dropped_blocks = 0
+
+    @property
+    def direction_deg(self) -> float | None:
+        with self._doa_lock:
+            if self._doa is None:
+                return None
+            deg, stamp = self._doa
+            if time.monotonic() - stamp > self.doa_ttl_s:
+                return None
+            return deg
+
+    def bearing_for_span(self, start_s: float, end_s: float) -> float | None:
+        """The array's bearing while this word was spoken, or None.
+
+        None when the array reported nothing across the span -- because it was
+        silent, absent, or the reading was rejected. Absent is the honest
+        answer and the caller must not substitute the latest bearing: a word
+        spoken while the array heard nothing has no direction, and borrowing a
+        neighbouring one is exactly the fabrication 'omit it' forbids.
+
+        Averaged as a CIRCULAR mean. Bearings are angles, so 359 and 1 average
+        to 0, not to 180 -- and a talker straight ahead of the case is
+        precisely where the naive mean is worst.
+        """
+        if end_s < start_s:
+            start_s, end_s = end_s, start_s
+        with self._doa_lock:
+            spanned = [deg for t, deg in self._doa_history
+                       if start_s <= t <= end_s]
+        if not spanned:
+            return None
+        radians = [math.radians(d) for d in spanned]
+        x = sum(math.cos(r) for r in radians)
+        y = sum(math.sin(r) for r in radians)
+        # Mean resultant length: 1 when every reading agrees, 0 when they
+        # cancel. Testing `x == y == 0` instead does not work -- sin(180 deg)
+        # is 1.2e-16, not zero, so two opposed bearings sail through it and
+        # atan2 confidently returns 90 degrees.
+        concentration = math.hypot(x, y) / len(radians)
+        if concentration < self.MIN_BEARING_CONCENTRATION:
+            # The readings point more apart than together, so their mean is an
+            # artefact of arithmetic rather than a direction anyone spoke from.
+            return None
+        return math.degrees(math.atan2(y, x)) % 360.0
+
+    def send_cue(self, flag: str, direction_deg: float | None,
+                 intensity: float, seq: int = 0) -> bool:
+        """Fire one haptic actuation. False when no node is attached.
+
+        Never raises: a dead haptic link must degrade to no vibration, never
+        interrupt captions.
+        """
+        conn = self._conn
+        if conn is None:
+            return False
+        try:
+            with self._send_lock:
+                conn.sendall(
+                    netaudio.pack_cue(seq, flag, direction_deg, intensity)
+                )
+            return True
+        except OSError:
+            return False
+
+    def blocks(self, stop: threading.Event):
+        """Yield captured audio, reconnecting for as long as capture runs.
+
+        A booth demo must survive the node rebooting or WiFi dropping, so a lost
+        connection waits for the next one rather than ending the capture.
+        """
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((self.host, self.port))
+        server.listen(1)
+        server.settimeout(0.5)
+        print(f"[live] waiting for hardware node on {self.host}:{self.port}")
+        captured = 0
+        try:
+            while not stop.is_set():
+                try:
+                    conn, peer = server.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                print(f"[live] hardware node connected: {peer[0]}")
+                self._conn = conn
+                # A reconnect is a real capture gap, so the first block after
+                # one is marked and the captioner resets its stream.
+                yield from self._serve(conn, stop, first_is_gap=captured > 0,
+                                       counter=lambda n: None)
+                self._conn = None
+                conn.close()
+                captured += 1
+                if not stop.is_set():
+                    print("[live] hardware node disconnected — waiting for it")
+        finally:
+            self._conn = None
+            server.close()
+
+    def _serve(self, conn: socket.socket, stop: threading.Event,
+               first_is_gap: bool, counter):
+        reader = netaudio.FrameReader()
+        tracker = netaudio.SequenceTracker()
+        conn.settimeout(0.5)
+        source_start = 0.0
+        pending_gap = first_is_gap
+        while not stop.is_set():
+            try:
+                data = conn.recv(65536)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            if not data:
+                return
+            for frame in reader.feed(data):
+                if frame.kind == netaudio.KIND_DOA:
+                    body = frame.json()
+                    deg = float(body["doa_deg"])
+                    with self._doa_lock:
+                        self._doa = (deg, time.monotonic())
+                        # `source_start` is where the next audio block lands on
+                        # the source clock, so it timestamps this bearing on the
+                        # same timeline the word spans use.
+                        self._doa_history.append((source_start, deg))
+                    continue
+                if frame.kind == netaudio.KIND_HELLO:
+                    body = frame.json()
+                    rate = int(body.get("sample_rate", SR))
+                    if rate != SR:
+                        # Resampling belongs on the node, where it is one cheap
+                        # pass; accepting a wrong rate here would silently
+                        # detune every timing in the pipeline.
+                        print(f"[live] node sample rate {rate} != {SR} — refusing")
+                        return
+                    print(f"[live] node ready: {body.get('node', 'unknown')}")
+                    continue
+                if frame.kind != netaudio.KIND_AUDIO:
+                    continue
+
+                gap = tracker.observe(frame.seq)
+                samples = frame.samples()
+                dropped_s = 0.0
+                if gap or pending_gap:
+                    dropped_s = max(0.0, tracker.dropped) * len(samples) / SR
+                    self.dropped_blocks = tracker.dropped
+                    print(f"[live] node dropped {tracker.dropped} blocks "
+                          f"({dropped_s:.2f}s) — resyncing")
+                chunk = AudioChunk(
+                    samples=samples,
+                    source_start=source_start,
+                    discontinuity=gap or pending_gap,
+                    dropped_s=dropped_s,
+                )
+                pending_gap = False
+                source_start = chunk.source_end
+                yield chunk
+
+
+def net_blocks(stop: threading.Event, link: "NodeLink"):
+    """Adapter so the source selection reads like the other two."""
+
+    yield from link.blocks(stop)
+
+
 def sample_clip_path(language: str = "en") -> str:
     """The bundled language sample, for testing live mode without a mic.
 
@@ -347,9 +554,12 @@ def sample_clip_path(language: str = "en") -> str:
             "bundled Korean sample not found: assets/sample-ko.wav"
         )
     candidates = [
-        root / "assets" / "sample.mp4",
+        # The PR film. It lives with the other reference recordings because that
+        # is what it IS -- the same file was checked in twice, once here and
+        # once in docs/, byte for byte, until 2026-08-13.
+        root / "docs" / "reference" / "pr-film.mp4",
         root / "AE PROJECT" / "AE PROJECT" / "(Footage)" / "ASETS" / "Video"
-             / "Cena_ref_CI_Template_v02a.mp4",
+             / "cena-ci-template-v02a.mp4",
     ]
     for path in candidates:
         if path.exists():
@@ -361,7 +571,7 @@ def sample_clip_path(language: str = "en") -> str:
 
 
 def file_blocks(path: str | Path, realtime: bool = True, loop: bool = False,
-                _clock=None, _sleep=None):
+                start_s: float = 0.0, _clock=None, _sleep=None):
     """Yield file audio against a source clock without dropping late blocks.
 
     Deadline pacing is important: sleeping for every block *after* inference
@@ -372,6 +582,11 @@ def file_blocks(path: str | Path, realtime: bool = True, loop: bool = False,
     first block of each new pass is marked as a discontinuity, so the captioner
     resets its stream and the browser clears the previous pass instead of
     stacking the same words on top of each other.
+
+    ``start_s`` skips the head of the clip. The source clock still starts at
+    zero, so the playhead, the read-ahead floor and every word span stay in the
+    same frame of reference — only the audio handed to the recognizer is
+    shorter.
     """
 
     import librosa
@@ -383,6 +598,9 @@ def file_blocks(path: str | Path, realtime: bool = True, loop: bool = False,
         # PySoundFile "failed" (it just cannot read compressed audio) — harmless.
         warnings.simplefilter("ignore")
         data, _ = librosa.load(str(path), sr=SR, mono=True)
+    skip = max(0, int(max(0.0, start_s) * SR))
+    if skip < len(data):
+        data = data[skip:]
     duration = len(data) / SR
     started = clock()
     base = 0.0
@@ -460,6 +678,11 @@ class InputGain:
         self._delivery_pitch_history: deque[float] = deque(maxlen=5)
         self._previous_rms_db = self.absolute_floor_db
         self._speech_run_s = 0.0
+        # Set to a zero-arg callable returning the newest bearing in degrees, or
+        # None when nothing is measuring one (no array, or the reading expired).
+        # `NodeLink.direction_deg` satisfies this; a local mic leaves it unset,
+        # which is why mono still shows `awaiting array`.
+        self.direction_source = None
 
     def _update_floor(self, rms_db: float) -> None:
         self.levels.append(rms_db)
@@ -641,8 +864,38 @@ class InputGain:
         return "idle"
 
     def level_event(self, t: float) -> dict:
+        # Direction is OMITTED, never defaulted, when no array is reporting.
+        # The compass keys on the field's absence to show `awaiting array`, and
+        # a fabricated bearing would be a claim about the room that nothing
+        # measured. `NodeLink.direction_deg` already expires a stale reading.
+        direction = None
+        direction_source = getattr(self, "direction_source", None)
+        if direction_source is not None:
+            direction = direction_source()
+        # Where each speaker slot sits, for the compass to mark. Optional and
+        # omitted when empty: the compass shows the CURRENT bearing, and these
+        # are the standing positions, which is the part it cannot infer.
+        slots = None
+        slots_source = getattr(self, "speaker_slots_source", None)
+        if slots_source is not None:
+            found = slots_source()
+            if found:
+                slots = [round(float(b), 1) for b in found]
+        # Where each DECIDED speaker has been heard from. Carries the speaker
+        # id explicitly, unlike `speaker_slots_deg`, whose colour comes from
+        # its array INDEX -- the ring marks who is where, so it must name who.
+        marks = None
+        marks_source = getattr(self, "speaker_bearings_source", None)
+        if marks_source is not None:
+            found = marks_source()
+            if found:
+                marks = found
         return {
             "type": "level",
+            **({"direction_deg": round(direction, 1)}
+               if direction is not None else {}),
+            **({"speaker_slots_deg": slots} if slots else {}),
+            **({"speaker_bearings": marks} if marks else {}),
             "t": round(t, 3),
             "rms_db": round(self.rms_db, 1),
             "peak_db": round(self.peak_db, 1),
@@ -1471,6 +1724,230 @@ def word_events(utts, model, lang: str, cfg: dict, speaker: str = "S1"):
 # ---------------------------------------------------------------------------
 
 SpeakerStatus = Literal["unknown", "provisional", "stable", "corrected"]
+
+
+class DirectionSpeakerMap:
+    """Speakers from azimuth alone, the SpeechCompass way.
+
+    Voice evidence is slow: text lands at a median 0.62 s and durable identity
+    at 4.48 s, so a speaker who has just started renders grey for seconds. A
+    bearing is available on the word itself. Clustering bearings into slots
+    gives every word a colour immediately, and the endpoint embedding pass
+    still corrects it, so the claim stays revisable rather than final.
+
+    **This trades a different error, it does not remove error.** Two people at
+    one bearing collapse into one slot; one person who crosses the tolerance
+    splits into two. SpeechCompass (CHI '25) accepts exactly this and measures
+    11-22 deg localization error, which is why the tolerance below is far
+    wider than that figure -- it must absorb the error without merging people
+    who are genuinely apart.
+
+    A `None` bearing keeps the CURRENT slot rather than inventing an angle:
+    absent direction means "no new evidence", and turn continuity is the
+    ordinary diarization prior. Half of all reads carry no bearing, so
+    without this the grey would simply come back.
+    """
+
+    def __init__(self, tolerance_deg: float = 35.0) -> None:
+        self.tolerance_deg = float(tolerance_deg)
+        self._slots: list[float] = []          # circular-mean centroid per slot
+        self._counts: list[int] = []
+        self._current: int | None = None
+
+    @staticmethod
+    def _separation(a: float, b: float) -> float:
+        """Smallest angle between two bearings, 0..180."""
+        return abs((a - b + 180.0) % 360.0 - 180.0)
+
+    def assign(self, bearing: float | None) -> int | None:
+        """The slot index for this bearing, creating one if it is new."""
+        if bearing is None:
+            return self._current
+        bearing %= 360.0
+        if self._slots:
+            nearest = min(range(len(self._slots)),
+                          key=lambda i: self._separation(bearing, self._slots[i]))
+            if self._separation(bearing, self._slots[nearest]) <= self.tolerance_deg:
+                # Circular running mean: a plain average would drag a centroid
+                # across 0/360 to the opposite side of the room.
+                n = self._counts[nearest]
+                centroid = self._slots[nearest]
+                delta = (bearing - centroid + 180.0) % 360.0 - 180.0
+                self._slots[nearest] = (centroid + delta / (n + 1)) % 360.0
+                self._counts[nearest] = n + 1
+                self._current = nearest
+                return nearest
+        self._slots.append(bearing)
+        self._counts.append(1)
+        self._current = len(self._slots) - 1
+        return self._current
+
+    @property
+    def slots(self) -> list[float]:
+        return list(self._slots)
+
+
+class SpeakerBearingMap:
+    """Where each DECIDED speaker has been heard from, for the compass ring.
+
+    ``DirectionSpeakerMap`` cannot answer this. It exists to colour a word the
+    voice lane has not decided yet, so `_colour_from_direction` stops feeding
+    it the moment attribution settles -- and attribution settles almost
+    immediately. Measured against the array over 22 s: the live bearing swept
+    37 deg and the voice lane labelled 343 words across S1 and S2, while the
+    slot map held **one** centroid the whole time. A ring fed from it marks one
+    position and then goes deaf, which is not "who is where".
+
+    So this is a SEPARATE, purely descriptive map. It never returns an identity
+    and nothing reads it back into attribution: it takes decisions the voice
+    lane already made and remembers the bearing they were made at. Direction-
+    derived guesses are excluded by the caller, because feeding a geometric
+    identity back into a geometric position is circular -- it would report a
+    confident mark built out of its own prior.
+
+    Recent-window for the MEAN, lifetime for the MARK. A speaker who moves
+    should end up marked where they are now, and a bounded window is also what
+    lets concentration be computed honestly rather than washing a move out
+    against session history -- so the position keeps coming from the window.
+    But a speaker never LEAVES the ring once they have been placed: when the
+    window goes too scattered to give a mean, the last good mark is re-emitted
+    with ``stale: True`` instead of the speaker vanishing. Dropping them was
+    read as the compass forgetting people, and a viewer cannot tell "this
+    speaker left" from "this speaker's bearings got noisy for a moment".
+    """
+
+    # A speaker's bearings must point more together than apart before their
+    # mean is a place anyone stood. Same threshold and same reasoning as
+    # ``NodeLink.MIN_BEARING_CONCENTRATION``: below it, the average is an
+    # artefact of arithmetic, and the ring would mark somewhere nobody was.
+    MIN_CONCENTRATION = 0.5
+
+    # Enough to smooth the array's 11-22 deg localization error without
+    # pinning a mark to where somebody was sitting several turns ago.
+    WINDOW = 64
+
+    def __init__(self, window: int = WINDOW) -> None:
+        self.window = int(window)
+        self._bearings: dict[str, deque[float]] = {}
+        # The last mark each speaker had that was concentrated enough to mean
+        # anything. This is what keeps them on the ring for the session.
+        self._placed: dict[str, dict] = {}
+        # A word is re-emitted under its own id on every revision, and a
+        # correction can move it to another speaker. Counting each (word,
+        # speaker) once keeps a single loud word from dragging a centroid.
+        self._seen: set[tuple[str, str]] = set()
+
+    def observe(self, word_id: str | None, speaker_id: str,
+                bearing: float | None) -> None:
+        if bearing is None or word_id is None:
+            return
+        key = (word_id, speaker_id)
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        history = self._bearings.setdefault(
+            speaker_id, deque(maxlen=self.window))
+        history.append(float(bearing) % 360.0)
+
+    @property
+    def marks(self) -> list[dict]:
+        """``[{speaker, deg, spread, observations}]``, quietest speaker last.
+
+        Circular mean per speaker: bearings are angles, so 359 and 1 average
+        to 0 rather than to 180 -- and a talker straight ahead of the case is
+        exactly where the naive mean is worst.
+        """
+        marks = []
+        for speaker_id, history in self._bearings.items():
+            if not history:
+                continue
+            radians = [math.radians(d) for d in history]
+            x = sum(math.cos(r) for r in radians)
+            y = sum(math.sin(r) for r in radians)
+            concentration = math.hypot(x, y) / len(radians)
+            if concentration < self.MIN_CONCENTRATION:
+                # Scattered: the mean is an artefact of arithmetic and must not
+                # be published as a position. But the speaker stays on the ring
+                # wearing the last place they were actually seen, flagged so
+                # the renderer can show it as remembered rather than live.
+                remembered = self._placed.get(speaker_id)
+                if remembered is not None:
+                    marks.append({**remembered, "stale": True})
+                continue
+            mark = {
+                "speaker": speaker_id,
+                # Round BEFORE the wrap. Two bearings either side of north
+                # average to -2e-13 deg, which `% 360` turns into 359.9999 and
+                # rounding then reports as 360 -- a mark behind the array for
+                # a speaker standing in front of it.
+                "deg": round(math.degrees(math.atan2(y, x)), 1) % 360.0,
+                # HOW WIDELY THIS SPEAKER'S BEARINGS ARE SCATTERED, as the
+                # circular standard deviation in degrees: sqrt(-2 ln R), the
+                # textbook conversion from the concentration already computed
+                # above. It was being thrown away, and it is the honest width
+                # for the compass arc -- a speaker seen once from one angle and
+                # one seen thirty times from the same angle are not equally
+                # located, and a fixed-size mark claims they are.
+                # Only ever a spread, never a confidence score: the renderer
+                # decides how many sigma to draw.
+                # `abs` is for the SIGN, not the size: a perfectly
+                # concentrated speaker gives -2 * log(1) = -0.0, which
+                # serialises as `-0.0` and reads as a negative angle.
+                "spread": abs(round(
+                    math.degrees(math.sqrt(abs(-2.0 * math.log(
+                        min(1.0, max(1e-6, concentration)))))), 1)),
+                "observations": len(history),
+            }
+            self._placed[speaker_id] = mark
+            marks.append(mark)
+        marks.sort(key=lambda m: m["speaker"])
+        return marks
+
+    def match(self, bearing: float | None, *, sigma: float = 2.0,
+              min_observations: int = 4, floor_deg: float = 12.0
+              ) -> tuple[str, float] | None:
+        """Which PLACED speaker best explains this bearing, and how well.
+
+        Returns ``(speaker_id, z)`` where ``z`` is the separation in units of
+        that speaker's own bearing spread -- so a talker the array has pinned
+        tightly is matched strictly and a loosely-placed one leniently. ``None``
+        when nothing is close enough, which must stay a real outcome: a bearing
+        from somewhere nobody has ever spoken is evidence of a NEW speaker, not
+        of the nearest old one.
+
+        This is the difference between direction as a fallback and direction as
+        evidence. ``DirectionSpeakerMap`` invents geometric slots and can only
+        ever say "the 2nd distinct direction"; this names a speaker the VOICE
+        lane identified, because the positions it reads were learned from
+        voice-attributed words only.
+
+        **The circularity guard upstream is what makes it sound.**
+        ``_record_speaker_bearing`` refuses to record a bearing under a
+        direction-derived identity, so this map is never confirming its own
+        guesses. If that guard is ever relaxed, this becomes a feedback loop
+        that will look like a confident, self-reinforcing answer.
+
+        ``floor_deg`` keeps a speaker seen from one exact angle from having a
+        zero-width band that nothing can ever match, and is well under the
+        array's own 11-22 deg localization error.
+        """
+        if bearing is None:
+            return None
+        bearing %= 360.0
+        best: tuple[str, float] | None = None
+        for mark in self.marks:
+            if int(mark.get("observations", 0)) < min_observations:
+                continue
+            width = max(float(mark.get("spread", 0.0)), floor_deg)
+            z = self._separation(bearing, float(mark["deg"])) / width
+            if z <= sigma and (best is None or z < best[1]):
+                best = (str(mark["speaker"]), z)
+        return best
+
+    @staticmethod
+    def _separation(a: float, b: float) -> float:
+        """Smallest angle between two bearings, 0..180."""
+        return abs((a - b + 180.0) % 360.0 - 180.0)
 
 
 @dataclass(frozen=True)
@@ -3074,8 +3551,36 @@ class StreamingCaptioner:
         self.draft_only = draft_only
         self.verifier = verifier
         self.speaker_tracker = speaker_tracker
-        self.stream = recognizer.create_stream()
+        self.stream = self._new_stream()
         self.stream_base = 0.0
+        # Built only when a node attaches, alongside `direction_for_span`, so a
+        # local mic keeps the existing grey-until-decided behaviour untouched.
+        speaker_cfg = (cfg.get("live", {}) or {}).get("speaker_attribution", {}) or {}
+        # Prefer the tracker's map when there is one: the draft and accurate
+        # captioners must agree about which slot is which, and the level meter
+        # reads the same slots to mark them on the compass.
+        shared = getattr(speaker_tracker, "direction_speakers", None)
+        self.direction_speakers = shared if shared is not None else (
+            DirectionSpeakerMap(
+                tolerance_deg=float(
+                    speaker_cfg.get("direction_slot_tolerance_deg", 35.0)))
+            if speaker_cfg.get("direction_slot_colouring", True) else None
+        )
+        # The compass's "who is where" marks. Shared from the tracker for the
+        # same reason the slot map is: draft and accurate captioners must feed
+        # ONE map, or the ring shows two disagreeing sets of marks. Absent
+        # without a node, exactly like every other direction consumer.
+        self.speaker_bearings = getattr(speaker_tracker, "speaker_bearings", None)
+        # HOW MUCH THE GEOMETRY IS ALLOWED TO SAY. See
+        # `_colour_from_direction` and `SpeakerBearingMap.match`.
+        self.direction_identity = bool(
+            speaker_cfg.get("direction_identity", True))
+        self.direction_match_sigma = float(
+            speaker_cfg.get("direction_match_sigma", 2.0))
+        self.direction_min_observations = int(
+            speaker_cfg.get("direction_min_observations", 4))
+        self.direction_override_below = float(
+            speaker_cfg.get("direction_override_below", 0.45))
         self.total_samples = 0
         self.audio_blocks: list[np.ndarray] = []
         self.previous: list[HypothesisWord] = []
@@ -3100,6 +3605,11 @@ class StreamingCaptioner:
         self.prosody_cache: dict[tuple[str, int], tuple[float, float, float]] = {}
         self.delivery_cache: dict[tuple[str, int, int], dict] = {}
         self._last_final_speaker: str | None = None
+        # Zero-arg callable returning the newest bearing in degrees, or None
+        # when nothing is measuring one. Set by the live runner when a mic
+        # array is attached; unset for a local mic, which is why a mono capture
+        # produces no `direction_deg` and the compass says `awaiting array`.
+        self.direction_source = None
         self._word_slots: list[tuple[float, float, str]] = []
         self._final_word_events: dict[str, dict] = {}
         self._word_revisions: dict[str, dict] = {}
@@ -3516,6 +4026,130 @@ class StreamingCaptioner:
             "timing_revision_id": current["timing_revision_id"],
         }
 
+    def _colour_from_direction(self, result, bearing: float | None):
+        """Give an undecided word a colour from its bearing.
+
+        The voice lane leaves a new speaker's first words `unknown` for
+        seconds -- text at a median 0.62 s, durable identity at 4.48 s -- and
+        those words render grey. Azimuth is available immediately, so this
+        fills the gap the SpeechCompass way and the endpoint pass corrects it
+        afterwards, which is what keeps the claim revisable.
+
+        Only ever *adds* a colour: a word the voice lane has already decided
+        is left exactly as it was, so this cannot overwrite real evidence with
+        geometry.
+        """
+        if self.direction_speakers is None:
+            return result
+        decided = result is not None and getattr(result, "speaker_id", None) is not None
+
+        # WHERE THIS BEARING SAYS THE TALKER IS, against the positions the
+        # VOICE lane established. Preferred over a geometric slot wherever it
+        # answers: a slot can only ever say "the 2nd distinct direction", while
+        # this names a speaker somebody already identified by voice.
+        placed = None
+        bearings = getattr(self, "speaker_bearings", None)
+        if bearings is not None and self.direction_identity:
+            placed = bearings.match(
+                bearing,
+                sigma=self.direction_match_sigma,
+                min_observations=self.direction_min_observations,
+            )
+
+        if decided:
+            # DIRECTION MAY CONTEST A WEAK VOICE DECISION, and only a weak one.
+            # The voice lane's own confidence is the gate: a `final` identity,
+            # or any decision at or above `direction_override_below`, is left
+            # exactly as it was. Below it the lanes genuinely disagree and the
+            # bearing is independent evidence -- a different failure mode from
+            # the embedding, which is the whole reason it is worth having.
+            # Still `provisional`, so the endpoint pass corrects it afterwards.
+            if (placed is None or self.direction_override_below <= 0.0
+                    or getattr(result, "status", None) == "final"
+                    or getattr(result, "confidence", 1.0)
+                    >= self.direction_override_below
+                    or placed[0] == getattr(result, "speaker_id", None)):
+                return result
+            return replace(
+                result,
+                speaker_id=placed[0],
+                status="provisional",
+                reason="direction-contested",
+            )
+
+        if placed is not None:
+            return SpeakerAttribution(
+                speaker_id=placed[0],
+                status="provisional",
+                confidence=0.0,
+                speaker_change_probability=None,
+                revision_id=0,
+                reason="direction-placed",
+            )
+
+        slot = self.direction_speakers.assign(bearing)
+        if slot is None:
+            return result                    # no bearing yet, and no turn to continue
+        return SpeakerAttribution(
+            speaker_id=f"S{slot + 1}",
+            status="provisional",
+            confidence=0.0,
+            speaker_change_probability=None,
+            revision_id=0,
+            reason="direction",
+        )
+
+    def _record_speaker_bearing(self, word_id: str | None, attribution,
+                                word) -> None:
+        """Remember the bearing a decided speaker was heard at.
+
+        Descriptive only -- nothing reads this back into attribution, and it
+        cannot change a word's colour. It exists so the compass ring can mark
+        who is where instead of only marking the one position that happened to
+        be current while the voice lane was still undecided.
+
+        **Direction-derived identities are skipped.** `_colour_from_direction`
+        names a speaker FROM a bearing; recording that bearing under that name
+        would be the map confirming its own guess, and the mark would look like
+        evidence while carrying none.
+
+        getattr throughout: the tests build captioners with `__new__` to skip
+        loading a recognizer, so this must tolerate an instance that never ran
+        `__init__`.
+        """
+        bearings = getattr(self, "speaker_bearings", None)
+        if bearings is None or word_id is None:
+            return
+        speaker_id = getattr(attribution, "speaker_id", None)
+        if speaker_id is None:
+            return
+        # EVERY direction-derived reason, not just the original one. This is
+        # the guard that keeps `SpeakerBearingMap` free of its own guesses, and
+        # `_colour_from_direction` now has three of them
+        # (`direction`, `direction-placed`, `direction-contested`). A prefix
+        # test so a fourth cannot silently escape it.
+        if str(getattr(attribution, "reason", "") or "").startswith("direction"):
+            return
+        bearings.observe(word_id, speaker_id,
+                         self._direction_for(word.start, word.end))
+
+    def _direction_for(self, start: float, end: float) -> float | None:
+        """The array's bearing while this span was spoken, or None.
+
+        Absent whenever there is no array, no node, or no reading inside the
+        span -- attribution then scores on voice evidence alone, exactly as it
+        did before direction existed. The lookup is set on the tracker only
+        when a node is attached, so a local mic never reaches this.
+
+        Word times are stream-relative; bearings are recorded on the source
+        clock, so `stream_base` is what makes the two comparable. Getting that
+        wrong would score every word against a bearing from a different moment.
+        """
+        lookup = getattr(self.speaker_tracker, "direction_for_span", None)
+        if lookup is None:
+            return None
+        return lookup(self.stream_base + start, self.stream_base + end)
+
     def _word_event(self, word: HypothesisWord, audio: np.ndarray,
                     final: bool,
                     speaker: SpeakerAttribution | str | None = None,
@@ -3715,6 +4349,7 @@ class StreamingCaptioner:
         salience: dict = {}
         attribution = self._attribution(speaker, final=final)
         stable_attribution = attribution.status in {"stable", "corrected"}
+        self._record_speaker_bearing(word_id, attribution, word)
         if final and stable_attribution and attribution.speaker_id is not None:
             spoken_by = attribution.speaker_id
             if (self._last_final_speaker is not None
@@ -3727,6 +4362,20 @@ class StreamingCaptioner:
             emphasis_db = self.cfg.get("haptics", {}).get("emphasis_db", 6.0)
             if len(self.db_history) >= 6 and db - med >= emphasis_db:
                 salience["emphasis"] = True
+        # The bearing this word was spoken from, when a mic array measured one.
+        # It rides on the WORD rather than streaming to the motors: driving
+        # haptics from raw direction is exactly the continuous vibration
+        # Tactile Emotions (CHI '25) measured as distracting, while a bearing
+        # attached to a speaker change is one event. Absent with no array --
+        # never fabricate direction.
+        # getattr, not attribute access: the tests build captioners with
+        # `__new__` to skip loading a recognizer, so anything read here has to
+        # tolerate an instance that never ran `__init__`.
+        direction_source = getattr(self, "direction_source", None)
+        if final and direction_source is not None:
+            bearing = direction_source()
+            if bearing is not None:
+                salience["direction_deg"] = round(float(bearing), 1)
         # Pivot the scale on the speaker's median so it lands on the CWI
         # baseline (2.3.5: normal speaking volume = 5% of frame height).
         # A plain lo..hi normalization put the MEDIAN word at mid-scale, which
@@ -4067,13 +4716,16 @@ class StreamingCaptioner:
             # boundary. The endpoint pass owns learning; it corrects these.
             if self.speaker_tracker is None:
                 return None
-            return self.speaker_tracker.classify_span(
+            bearing = self._direction_for(word.start, word.end)
+            result = self.speaker_tracker.classify_span(
                 audio,
                 word.start,
                 word.end,
                 observation_key=word_id,
                 timestamp_offset=self.stream_base,
+                direction_estimate=bearing,
             )
+            return self._colour_from_direction(result, bearing)
 
         if self.verifier is None:
             if endpoint and current and self.speaker_tracker is not None:
@@ -4087,6 +4739,8 @@ class StreamingCaptioner:
                     current,
                     observation_keys=current_word_ids,
                     timestamp_offset=self.stream_base,
+                    direction_estimate=self._direction_for(
+                        current[0].start, current[-1].end),
                 )
                 for index, word in enumerate(current):
                     event = self._word_event(
@@ -4141,8 +4795,10 @@ class StreamingCaptioner:
                     verified,
                     observation_keys=word_ids,
                     timestamp_offset=self.stream_base,
+                    direction_estimate=self._direction_for(
+                        verified[0].start, verified[-1].end),
                 )
-                if self.speaker_tracker is not None else None
+                if self.speaker_tracker is not None and verified else None
             )
             final_events = [self._word_event(
                                 word, audio, final=True,
@@ -4279,9 +4935,36 @@ class StreamingCaptioner:
             self.recognizer.decode_stream(self.stream)
         yield from self._process_result(endpoint=True)
 
+    def _new_stream(self):
+        """Open a decoder stream, conditioning the language when the model takes one.
+
+        MULTILINGUAL NEMOTRON CARRIES THE LANGUAGE PER STREAM, NOT PER
+        RECOGNIZER. Its encoder takes a 6th input (`prompt_index`), and
+        sherpa-onnx exposes it as `stream.set_option("language", ...)` --
+        which is why `OnlineRecognizer.from_transducer` has no language
+        argument and why this has to be applied at EVERY stream creation,
+        including the reset after each endpoint. A stream opened without it
+        silently decodes under whatever the model defaults to.
+
+        `auto` is the model's own language identification, which is the whole
+        point of the bilingual profile. MEASURED by NVIDIA at the 1.12 s chunk:
+        Korean CER 7.12% with the language named, 7.30% on auto -- so detection
+        costs 0.18 points.
+
+        Unset for the English and Korean profiles, which are single-language
+        models with no such input; calling it there would be a no-op at best.
+        """
+        stream = self.recognizer.create_stream()
+        language = str(
+            (self.cfg.get("live", {}) or {}).get("streaming_language", "") or ""
+        ).strip()
+        if language and hasattr(stream, "set_option"):
+            stream.set_option("language", language)
+        return stream
+
     def _reset_stream(self, base: float | None = None) -> None:
         self.stream_base = self.total_samples / SR if base is None else base
-        self.stream = self.recognizer.create_stream()
+        self.stream = self._new_stream()
         self.audio_blocks = []
         self.previous = []
         self.committed = []
@@ -4509,6 +5192,13 @@ def streaming_events(blocks, recognizer, cfg: dict, draft_recognizer=None,
         )
     )
     gain = gain if gain is not None else InputGain(cfg)
+    # One direction source feeds both lanes: the level meter (so the compass
+    # tracks continuously) and the durable word (so a haptic cue knows where).
+    # `DualStreamingCaptioner` composes rather than inherits, so the durable
+    # lane is its inner `accurate` captioner -- the draft never emits finals.
+    if getattr(gain, "direction_source", None) is not None:
+        target = getattr(captioner, "accurate", captioner)
+        target.direction_source = gain.direction_source
     # Sound tagging is useful context, but its AudioSet inference must not sit
     # in front of the speech recognizer. A dedicated serial worker preserves
     # detector state/order while the caption-critical path continues.
@@ -4942,6 +5632,85 @@ def reconstruct_durable_words(events: Iterable[dict]) -> list[dict]:
     return words
 
 
+class WhisperEndpointVerifier:
+    """Whole-phrase verifier backed by faster-whisper. Text only, never timing.
+
+    WHY THIS EXISTS. Korean shipped with `verifier_enabled: false`, so its
+    streaming Zipformer owned durable text alone. MEASURED, Korean's largest
+    error category is the FIRST WORD of an utterance -- 5 of 8 clips in the old
+    slice had an error in their opening word, with whole words dropped -- which
+    is exactly where a CAUSAL streaming model has the least context and a
+    whole-utterance pass has all of it.
+
+    The accurate open Korean models are all offline and none of them return
+    usable word timings while streaming (Qwen3-ASR states outright that
+    "streaming inference does not support ... returning timestamps"). That is
+    the same disqualifier the OpenAI lane carries, and the same answer applies:
+    a model with no timings may supply **text only**, at the endpoint, with the
+    streaming recognizer keeping ownership of every `start`/`end`.
+
+    faster-whisper rather than a better-scoring model because it is ALREADY
+    pinned in `requirements.txt` (with ctranslate2), so this adds no dependency
+    and no new runtime. Qwen3-ASR-0.6B scores better on OpenKoASR (KsponSpeech
+    clean CER 0.139 against large-v3-turbo's 0.155) and is Apache-2.0, but needs
+    MLX or a transformers bump; see `docs/KOREAN-ASR.md`.
+    """
+
+    def __init__(self, model, language: str, beam_size: int = 5,
+                 tail_padding_s: float = 0.0):
+        self.model = model
+        self.language = language
+        self.beam_size = int(beam_size)
+        self.tail_padding_s = max(0.0, float(tail_padding_s))
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        audio = np.asarray(audio, dtype=np.float32)
+        if self.tail_padding_s:
+            audio = np.concatenate((
+                audio,
+                np.zeros(round(self.tail_padding_s * SR), dtype=np.float32),
+            ))
+        segments, _ = self.model.transcribe(
+            audio,
+            language=self.language,
+            beam_size=self.beam_size,
+            # The verifier sees ONE endpoint-bounded phrase, so Whisper's own
+            # segmentation and its previous-text conditioning have nothing to
+            # add and are the usual source of invented text on short audio.
+            condition_on_previous_text=False,
+            vad_filter=False,
+            word_timestamps=False,
+        )
+        return " ".join(str(s.text).strip() for s in segments).strip()
+
+
+def load_whisper_verifier(cfg: dict):
+    """Build the faster-whisper verifier from `live.verifier_whisper`."""
+
+    from faster_whisper import WhisperModel
+
+    live_cfg = cfg["live"]
+    whisper_cfg = dict(live_cfg.get("verifier_whisper", {}) or {})
+    name = whisper_cfg.get("model", "large-v3-turbo")
+    # CPU int8 is the documented Apple Silicon path: CTranslate2 has no MPS
+    # backend, and MPS here is pyannote/torch only.
+    model = WhisperModel(
+        name,
+        device=whisper_cfg.get("device", "cpu"),
+        compute_type=whisper_cfg.get("compute_type", "int8"),
+        cpu_threads=int(whisper_cfg.get("cpu_threads", 4)),
+    )
+    print(f"[live] endpoint verifier: faster-whisper {name} "
+          f"({whisper_cfg.get('compute_type', 'int8')}, "
+          f"lang={live_cfg.get('lang', 'en')})")
+    return WhisperEndpointVerifier(
+        model,
+        language=str(live_cfg.get("lang", "en")),
+        beam_size=int(whisper_cfg.get("beam_size", 5)),
+        tail_padding_s=live_cfg.get("verifier_tail_padding_s", 0.0),
+    )
+
+
 def load_endpoint_verifier(cfg: dict) -> EndpointVerifier:
     """Load the configured phrase verifier.
 
@@ -4951,9 +5720,14 @@ def load_endpoint_verifier(cfg: dict) -> EndpointVerifier:
     lane may only ever touch durable TEXT and never word timing.
     """
 
+    live_cfg = cfg["live"]
+    # `whisper` routes to faster-whisper; anything else keeps the sherpa
+    # transducer this has always loaded.
+    if str(live_cfg.get("verifier_engine", "sherpa")).casefold() == "whisper":
+        return apply_verifier_backend(load_whisper_verifier(cfg), cfg)
+
     import sherpa_onnx
 
-    live_cfg = cfg["live"]
     model_dir = Path(live_cfg["verifier_model_dir"])
     if not model_dir.is_absolute():
         model_dir = Path(__file__).resolve().parent.parent / model_dir
@@ -5459,6 +6233,7 @@ def _start_server(
     korean_font_path: Path | None = None,
     runtime_config: dict | None = None,
     language_session: LiveLanguageSession | None = None,
+    host: str = "127.0.0.1",
 ):
     broadcaster = Broadcaster()
     handler = make_handler(
@@ -5474,7 +6249,7 @@ def _start_server(
     server = None
     for p in range(port, port + 10):
         try:
-            server = http.server.ThreadingHTTPServer(("127.0.0.1", p), handler)
+            server = http.server.ThreadingHTTPServer((host, p), handler)
             port = p
             break
         except OSError:
@@ -5482,8 +6257,15 @@ def _start_server(
     if server is None:
         raise SystemExit(f"no free port in {port}..{port + 9} — pass --port")
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    # The browser always opens on loopback even when the bind is wider: the
+    # studio runs on this machine, and only the hardware node needs the LAN
+    # address. `Local and offline by default` -- a wider bind is opt-in, says
+    # so, and still reaches nothing beyond the LAN.
     url = f"http://127.0.0.1:{port}/"
     print(f"[live] serving {url}")
+    if host not in ("127.0.0.1", "localhost"):
+        print(f"[live] also reachable on the LAN at {host}:{port} "
+              f"(--host {host}) — no telemetry, no internet")
     if open_browser:
         webbrowser.open(url)
     return server, broadcaster
@@ -5604,7 +6386,30 @@ def _studio_runtime_config(
         "wordMotionMinMs": round(
             float(display.get("word_motion_min_duration_s", 0.32)) * 1000
         ),
+        "wordMotionFollowsSpeech": bool(
+            display.get("word_motion_follows_speech", True)),
+        "wordMotionSpeechScale": float(
+            display.get("word_motion_speech_scale", 2.4)),
+        "wordMotionSpeechFloorMs": round(
+            float(display.get("word_motion_speech_floor_s", 0.16)) * 1000
+        ),
         "syncPop": live_sync.get("sync_pop", 0.15),
+        "syncPopEnhanced": live_sync.get("sync_pop_enhanced", 0.55),
+        "wordLiftEmEnhanced": live_sync.get("word_lift_em_enhanced", 0.045),
+        "wordMotionEnhancedMs": live_sync.get("word_motion_enhanced_ms", 500),
+        "wordMotionEnhancedEmphasisMs": live_sync.get(
+            "word_motion_enhanced_emphasis_ms", 0),
+        "crestLagMs": live_sync.get("crest_lag_ms", 40),
+        "voiceScaleDeadbandEnhanced": live_sync.get(
+            "voice_scale_deadband_enhanced", 0.10),
+        "voiceScaleResponseEnhanced": live_sync.get(
+            "voice_scale_response_enhanced", 0.50),
+        "voiceScalePivotEnhanced": live_sync.get(
+            "voice_scale_pivot_enhanced", 0.10),
+        "voiceScaleCurveEnhanced": live_sync.get(
+            "voice_scale_curve_enhanced", 2.0),
+        "voiceScalePointsEnhanced": live_sync.get(
+            "voice_scale_points_enhanced") or None,
         "characterWaveFalloff": live_sync.get("character_wave_falloff", 1.0),
         "characterWaveFloor": live_sync.get("character_wave_floor", 0.0),
         "holdLiftEm": live_sync.get("hold_lift_em", 0.525),
@@ -5767,6 +6572,16 @@ def run_live(args, cfg: dict, device: str) -> None:
     mic_device = getattr(args, "device", None)
     if mic_device is not None and str(mic_device).lstrip("-").isdigit():
         mic_device = int(mic_device)
+
+    # The hardware node owns capture when it is selected, so it binds before
+    # the models load and waits for the Pi rather than opening a local mic.
+    node_link = None
+    if getattr(args, "node", False):
+        host = getattr(args, "host", "127.0.0.1")
+        if host == "127.0.0.1":
+            print("[live] --node on 127.0.0.1: only a node on THIS machine can "
+                  "connect. Pass --host 0.0.0.0 to accept one over the LAN.")
+        node_link = NodeLink(host=host, port=getattr(args, "node_port", 7338))
     server = broadcaster = None
     if not headless:
         # Page first, language second, models third. Capture has not started
@@ -5781,6 +6596,7 @@ def run_live(args, cfg: dict, device: str) -> None:
             korean_font_path=korean_font_path,
             runtime_config=runtime_config,
             language_session=language_session,
+            host=getattr(args, "host", "127.0.0.1"),
         )
         if selection_required:
             broadcaster.publish({"type": "boot", "stage": "choose language"})
@@ -5825,21 +6641,33 @@ def run_live(args, cfg: dict, device: str) -> None:
     # picker could select Korean while `--sample` had already bound the English
     # video, making a healthy Korean model look catastrophically inaccurate.
     source_file = getattr(args, "file", None)
+    start_s = getattr(args, "start", None)
     if getattr(args, "sample", False) and not source_file:
         source_file = sample_clip_path(lang)
+        if start_s is None:
+            # The PR film changes treatment at 28 s -- before it is the titles
+            # demo on black, after it is CWI applied to real footage, which is
+            # what this product does. Start there. The Korean clip is 13 s of
+            # FLEURS narration and has no such split, so it is never skipped.
+            start_s = 28.0 if lang != "ko" else 0.0
         print(
             f"[live] streaming bundled {lang} sample: "
             f"{Path(source_file).name}"
+            + (f" from {start_s:g}s" if start_s else "")
         )
+    if start_s is None:
+        start_s = 0.0
     # --once processes to EOF and exits; a loop would never reach EOF.
     loop = getattr(args, "loop", False) and not getattr(args, "once", False)
     if loop and source_file:
         print("[live] looping clip — Ctrl-C to quit")
-    blocks = (
-        file_blocks(source_file, realtime=realtime, loop=loop)
-        if source_file
-        else mic_blocks(stop, device=mic_device)
-    )
+    if source_file:
+        blocks = file_blocks(source_file, realtime=realtime, loop=loop,
+                             start_s=float(start_s))
+    elif node_link is not None:
+        blocks = net_blocks(stop, node_link)
+    else:
+        blocks = mic_blocks(stop, device=mic_device)
 
     if whisper_model:
         from faster_whisper import WhisperModel
@@ -5875,8 +6703,41 @@ def run_live(args, cfg: dict, device: str) -> None:
                 "stage": "listening",
                 "language": lang,
             })
+        # The level meter reports the array's bearing when one is attached.
+        # Built here rather than inside `streaming_events` so the node's
+        # direction can reach it without threading the link through the
+        # recognizer's signature.
+        input_gain = InputGain(cfg)
+        if node_link is not None:
+            input_gain.direction_source = lambda: node_link.direction_deg
+            # Same injection shape for attribution: the tracker's direction
+            # prior was plumbed end to end but never fed, so `direction_deg`
+            # only ever reached the compass. With an array attached, WHO spoke
+            # now has spatial evidence beside the voice evidence.
+            if tracker is not None:
+                tracker.direction_for_span = node_link.bearing_for_span
+                # The ring's "who is where" marks. NOT gated on
+                # `direction_slot_colouring`: that switch decides whether
+                # geometry may colour an undecided WORD, which is a claim about
+                # identity. This only describes where decisions the voice lane
+                # already made were heard from, so turning the colouring off
+                # must not blind the compass.
+                tracker.speaker_bearings = SpeakerBearingMap()
+                input_gain.speaker_bearings_source = (
+                    lambda: tracker.speaker_bearings.marks)
+                # One map shared by both captioners and the level meter, so the
+                # compass marks the same slots the captions are coloured from.
+                speaker_cfg = (cfg.get("live", {}) or {}).get(
+                    "speaker_attribution", {}) or {}
+                if speaker_cfg.get("direction_slot_colouring", True):
+                    tracker.direction_speakers = DirectionSpeakerMap(
+                        tolerance_deg=float(speaker_cfg.get(
+                            "direction_slot_tolerance_deg", 35.0)))
+                    input_gain.speaker_slots_source = (
+                        lambda: tracker.direction_speakers.slots)
         events = streaming_events(
             blocks, model, cfg, draft_model, verifier=verifier,
+            gain=input_gain,
             speaker_tracker=tracker, sound_detector=detector,
             onset_detector=onset,
         )
@@ -5905,6 +6766,15 @@ def run_live(args, cfg: dict, device: str) -> None:
             language_session=language_session,
         )
 
+    # Haptics actuate on the durable record and nothing else. `cue_for_word`
+    # returns None for the overwhelming majority of words, which is the rule:
+    # continuous vibration measured as distracting, so the motors fire on
+    # speaker changes and emphasis only.
+    haptic_intensity = float(
+        (cfg.get("haptics", {}) or {}).get("intensity", 0.8)
+    )
+    cue_seq = 0
+
     try:
         with open(events_path, "w", encoding="utf-8") as f:
             for ev in events:
@@ -5912,6 +6782,12 @@ def run_live(args, cfg: dict, device: str) -> None:
                 if _is_durable_record(ev):
                     f.write(json.dumps(ev, ensure_ascii=False) + "\n")
                     f.flush()
+                    if node_link is not None and ev.get("type") == "word":
+                        cue = haptics.cue_for_word(ev, haptic_intensity)
+                        if cue is not None:
+                            cue_seq += 1
+                            node_link.send_cue(cue.flag, cue.direction_deg,
+                                               cue.intensity, cue_seq)
         print("[live] audio source finished — server still running (Ctrl-C to quit)")
         while True:
             time.sleep(1)

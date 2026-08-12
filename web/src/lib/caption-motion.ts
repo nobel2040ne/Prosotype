@@ -42,6 +42,33 @@ export interface VoiceTypeRanges {
    * unstressed word drifts smaller and the captions read as unstable.
    */
   scaleDeadband: number;
+  /**
+   * Where the size mapping pivots, as a fraction of normalised loudness.
+   * Defaults to `LOUDNESS_PIVOT`. The ENHANCED clock passes 0, which turns the
+   * two-sided mapping into one continuous upward ramp -- see `voiceScale`.
+   */
+  scalePivot?: number;
+  /**
+   * Exponent applied to the re-spanned deviation before the response. 1 is the
+   * straight mapping legacy uses. The ENHANCED clock raises it, because our
+   * normalised loudness compresses at the top: with a linear response our p75
+   * and p90 landed at 1.355x and 1.370x -- nearly touching -- against the
+   * film's 1.256x and 1.394x, i.e. most of the loud half saturating against the
+   * ceiling instead of spreading across it.
+   */
+  scaleCurve?: number;
+  /**
+   * Control points `[normalisedLoudness, crestAboveOne]`, ascending in both.
+   * When present this REPLACES the pivot/response/curve mapping entirely.
+   *
+   * It exists because no single power curve can pass through the three points
+   * the film requires. Measured, the film wants loudness 0.227 -> 1.064x,
+   * 0.577 -> 1.156x and 0.780 -> 1.283x; a power law fitted to the first pair
+   * gives an exponent of 0.955 and to the second 1.975, so any one exponent
+   * misses one end. Sweeping the exponent confirmed it: at 1.0 our p75 was
+   * 0.099 out, at 2.0 our p50 was 0.063 out, and nothing between fixed both.
+   */
+  scalePoints?: Array<[number, number]>;
   /** Reachable `font-weight`. 400 is fixed at the 2.3.8 neutral band. */
   weight: readonly [number, number];
   /**
@@ -158,15 +185,46 @@ export function voiceScale(
   ranges: VoiceTypeRanges,
 ): number {
   const level = clamp(Number.isFinite(loudness) ? loudness : 0.5, 0, 1);
-  const deviation = level - LOUDNESS_PIVOT;
-  const sideRange = deviation >= 0 ? 1 - LOUDNESS_PIVOT : LOUDNESS_PIVOT;
+  const points = ranges.scalePoints;
+  if (points && points.length > 1) {
+    // Piecewise-linear through the fitted control points. Monotone by
+    // construction, so a louder word can never render smaller than a quieter
+    // one -- the property the parametric mapping guaranteed for free.
+    let above = 1 + points[points.length - 1][1];
+    for (let i = 1; i < points.length; i += 1) {
+      const [x0, y0] = points[i - 1];
+      const [x1, y1] = points[i];
+      if (level <= x1) {
+        const span = x1 - x0;
+        const t = span > 1e-9 ? (level - x0) / span : 0;
+        above = 1 + y0 + clamp(t, 0, 1) * (y1 - y0);
+        break;
+      }
+    }
+    return clamp(above, ranges.scale[0], ranges.scale[1]);
+  }
+  /*
+   * THE PIVOT IS WHY OUR DISTRIBUTION WAS TWO-HUMPED. Measured against the PR
+   * film, its per-word peaks climb smoothly (1.086 / 1.156 / 1.256 / 1.394)
+   * while ours clustered at two values -- the bare 2.2.3 pop, and a large
+   * crest, with nothing between. Most words sit BELOW this pivot, and on the
+   * enhanced clock the size cue is clamped upward-only, so all of them pinned
+   * to exactly 1.0. Passing `scalePivot: 0` makes the whole loudness range one
+   * continuous ramp, which is the shape the film actually has. Legacy keeps
+   * the two-sided mapping and its quiet half.
+   */
+  const pivot = clamp(ranges.scalePivot ?? LOUDNESS_PIVOT, 0, 0.99);
+  const deviation = level - pivot;
+  const sideRange = deviation >= 0 ? 1 - pivot : Math.max(1e-6, pivot);
   const dead = clamp(ranges.scaleDeadband, 0, 0.95) * sideRange;
   const [minimum, maximum] = ranges.scale;
   if (Math.abs(deviation) <= dead) return 1;
 
   // Re-span what is left of the side so the mapping stays continuous at the
   // band edge and still reaches 2.3.6's limit at the extreme.
-  const shaped = (Math.abs(deviation) - dead) / Math.max(1e-6, sideRange - dead);
+  const spanned = (Math.abs(deviation) - dead) / Math.max(1e-6, sideRange - dead);
+  const shaped = Math.pow(clamp(spanned, 0, 1),
+                          Math.max(0.1, ranges.scaleCurve ?? 1));
   /* WHY `voice_scale_range[0]` DOES NOT MOVE THE QUIET FLOOR (2026-08-04).
      The two sides are not symmetric. The loud limit (12%/5% = 2.40) sits
      BEYOND `voice_scale_range`'s ceiling, so the clamp binds and the ceiling

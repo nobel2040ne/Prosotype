@@ -8,7 +8,7 @@ is comparable to the literature. Fetch it once with `scripts/fetch_fleurs.py`.
     .venv/bin/python scripts/benchmark.py --lang ko
     .venv/bin/python scripts/benchmark.py --lang ko --stress
     .venv/bin/python scripts/benchmark.py --lang en --quiet-sweep   # InputGain guard
-    .venv/bin/python scripts/benchmark.py --audio assets/sample.mp4 --lang en
+    .venv/bin/python scripts/benchmark.py --audio docs/reference/pr-film.mp4 --lang en
 
 Scoring is text AND word timing: every expressive path here keys off per-word
 `start`/`end`, so a backend with better words and worse spans is a downgrade.
@@ -145,7 +145,7 @@ def main() -> None:
     parser.add_argument("--audio", metavar="FILE", nargs="+",
                         help="score-free mode: compare backends on bare audio "
                              "with no reference transcript (e.g. "
-                             "assets/sample.mp4, which has none)")
+                             "docs/reference/pr-film.mp4, which has none)")
     parser.add_argument("--backends", default="local",
                         help="comma-separated: " + ",".join(BACKENDS) +
                              ". Cloud arms UPLOAD AUDIO and need API keys.")

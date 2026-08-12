@@ -375,6 +375,55 @@ display:
   # So this is a viewer-preference deviation from a measured value. If the
   # reference is ever the tiebreak again, 0.32 is the fitted number.
   word_motion_min_duration_s: 0.52
+
+  # TRIED AND REVERTED: the film's own glyph rule, applied literally.
+  # Measured off its first 10 s at 3x upscale (at 720p glyphs touch and segment
+  # as 2-3 character blobs, which is what makes the grouping look authored),
+  # across 57 glyphs in 4 captions:
+  #     each glyph stays elevated   4 frames = 167 ms
+  #     adjacent glyphs step apart  1 frame  =  42 ms   -> 4 elevated at once
+  # That overlap IS "characters grouped in 2-3 moving together"; they step one
+  # at a time and each outlasts its neighbour's start, so there is no grouping
+  # rule as such -- the group size is span / step.
+  # Applied as a fixed step (sweep = charCount x 42 ms) the aggregate was a
+  # wash: width p50 and both peak percentiles moved toward the film, width p90
+  # moved away, most of it inside the run-to-run noise. Reverted at the user's
+  # direction; the sweep stays at 0.72 x the spoken word.
+
+  # TRIED AND REVERTED (2026-08-12): driving the motion clock off the word's
+  # real speech duration, `(end - start) x voiced_frac`.
+  #
+  # The premise was that our `--motion-duration` ran 580 ms against 170 ms of
+  # actual speech and was therefore 3.4x too long. THAT COMPARISON WAS WRONG: it
+  # measured our TOTAL duration against speech, and the film's total is 625 ms,
+  # i.e. 3.7x -- equally "too long". The two were already matched.
+  #
+  # What matters is the VISIBLE width, the part above half height, because an
+  # envelope peaking at 50% spends only about half its length there. Measured
+  # per word against the film:
+  #     original legacy   p10 208 ms   p50 226 ms   17% under the film's p10
+  #     speech-locked     p10 106 ms   p50 149 ms   62% under
+  #     film              p10 210 ms   p50 333 ms
+  # Legacy's floor matches the film's almost exactly; the speech-locked clock
+  # made short words far too fast, which is what it looked like on screen.
+  #
+  # The film's own width correlates -0.046 with CHARACTER COUNT and +0.111 with
+  # SPOKEN TIME -- it depends on neither. Its selector sweeps a whole caption, so
+  # every word gets the same slice. Do not re-derive a per-word duration from
+  # speech without measuring the visible width first.
+  word_motion_follows_speech: false
+  # HOW LONG THE ANIMATION RUNS PER SECOND OF SPEECH -- and it is not 1.0.
+  # Setting the TOTAL duration equal to the spoken duration measured as "too
+  # fast" on screen, and it was: an envelope only spends about half its length
+  # above half-height, so the VISIBLE part came out at 0.49x the word's speech
+  # against the film's 1.18x. What reads as synchronised is the rise and the
+  # peak, not the long shallow tail.
+  # Fitted so our half-width matches the film's 0.2002 s at the measured median
+  # speech of 0.170 s. Check it with `scripts/motion_diff.py` -- `width_s`, not
+  # the total -- and re-fit if the envelope's shape ever changes.
+  word_motion_speech_scale: 1.5
+  # A floor, because a 60 ms animation is a flicker rather than a cue.
+  word_motion_speech_floor_s: 0.30
   word_motion_backlog_target_s: 0.60
   # Above this much acoustic backlog a word is HISTORY, not live speech: it is
   # revealed settled and un-paced instead of animating. Cold start is why this
@@ -637,7 +686,7 @@ motion:
     # (2026-07-31. Overrides any key above; the legacy diagnostics renderer keeps
     # the values it was tuned against.)
     #
-    # `docs/cwi-design-system-v1.0.pdf` pp.26-41 describes THREE things:
+    # `docs/reference/cwi-design-system-v1.0.pdf` pp.26-41 describes THREE things:
     #   2.2.2  the word turns the speaker colour at its spoken onset;
     #   2.2.3  as it turns, it undergoes "a 15% increase in type size before
     #          returning to its original size" -- the diagram labels the rise
@@ -664,6 +713,61 @@ motion:
       # about the glyph box's bottom (a descender below the baseline) raises the
       # word's TOP by ~0.15em on its own, which is what the diagram labels.
       sync_pop: 0.15
+      # ...AND THE PR FILM DOES NOT RENDER 15%. MEASURED on the film's
+      # drill-sergeant line ("What's your sole purpose in this army?") by
+      # segmenting the words at a fully-settled frame and tracking each one's
+      # cap height through its own turn, every word pops to ~1.55x and returns
+      # inside ~0.25 s:
+      #     What's 1.64x   sole 1.55x   purpose 1.55x   this 1.62x
+      # The spread is 1.55-1.64x with no visible emphasis ordering -- in that
+      # line the sergeant shouts every word, so this is the LOUD end of 2.3,
+      # not a contradiction of it. Our render peaks at a median 1.16x on the
+      # same audio, i.e. essentially the 15% pop alone, because the emphasis
+      # crest sits in its deadband for ordinary words. That gap is why the
+      # motion reads as unreal: in the film every word punches, in ours almost
+      # nothing moves.
+      # ENHANCED ONLY. The legacy clock keeps the PDF's verbatim 15% and every
+      # acceptance figure measured on it. Do not raise `sync_pop` itself.
+      # 0.086 -> 0.076 (2026-08-13, "pop의 사이즈를 아주 약간만 더 줄여줘").
+      # Third trim; the first two came down the CREST curve below, and this one
+      # is the 2.2.3 pop itself, so an ordinary word is what gets quieter.
+      sync_pop_enhanced: 0.076
+      # How long the enhanced size cue lasts, end to end. Every word gets this
+      # window -- the film's envelope is uniform, so emphasis does not stretch
+      # it. Fitted against the film with `scripts/motion_diff.py`, which is the
+      # only thing here that compares the two rather than measuring one.
+      # HOW FAR AN ORDINARY WORD LIFTS. This is the film's DEFAULT treatment,
+      # not a decoration: read word by word from 28s on, its annotated lines
+      # carry ~30 lifts against ~8 pops, and the reading opens "lifting ->>
+      # maybe all has (little bit -y moved -> up lifting)".
+      # It shipped at 0.045em -- under a pixel at this type size, so it was in
+      # the DOM and invisible on the stage.
+      # BOUNDED BY CLEARANCE, not by taste: the lift travels toward the row
+      # above and `scripts/ink_collision.py` measures 9px at rest, so re-run it
+      # after any change here. At 0.16em this is ~3.5px of travel.
+      word_lift_em_enhanced: 0.16
+      word_motion_enhanced_ms: 424
+      # ...FOR AN UNEMPHASISED WORD. This is how much longer the window runs at
+      # full emphasis, and it exists because the fixed 424 was a constant
+      # window over a NON-constant amplitude: an ordinary word travels the 8.6%
+      # pop in it, a shouted one travels that plus the whole 2.3 crest, so the
+      # size channel's peak velocity climbed with its size and the biggest
+      # words snapped. Reported by the user as "some pop motions are too fast
+      # -> looks aggressive" (2026-08-12), and it was the large ones.
+      # 424 + 626 = 1050ms at push = 1, which is `word_motion_max_duration_s`,
+      # the ceiling the LEGACY crest already tops out at -- so the two systems
+      # now agree at their loudest and the acceptance figures still bound this.
+      # `push` is `emphasisOf`, zero inside the 2.3 deadband, so this changes
+      # nothing for the ordinary words that make up the median.
+      word_motion_enhanced_emphasis_ms: 626
+      # How long AFTER the colour turn the size cue starts. The film's crest
+      # follows its turn -- measured per word at +0.08..+0.12s, and as a whole
+      # envelope at +0.14s. Ours landed at +0.10s with the window alone, and the
+      # window cannot close the rest without also widening the curve, which
+      # already matches exactly. So the remainder is a delay, not a duration.
+      # An earlier attempt ran this NEGATIVE (the crest peaking on the turn);
+      # that is measured wrong -- see docs/MOTION.md.
+      crest_lag_ms: 0
       # A WORD THAT WAITS RISES, AND LANDS AS IT TURNS.
       # synchronization.mov f236-292: the speaker holds before "is", and "is"
       # sits ABOVE the baseline in white for ~40 frames, then lands on the line
@@ -878,6 +982,102 @@ motion:
       # With it, ordinary words render at exactly 1.0 and only genuinely loud
       # or hushed ones move, which is what "occasional emphasis" means.
       voice_scale_deadband: 0.34
+      # ENHANCED USES A NARROWER BAND. Measured against the film, our per-word
+      # peak distribution was too STEP-LIKE: p25 and p50 both sat at the bare
+      # pop (1.107x, 1.108x) and then jumped to 1.312x at p90, where the film
+      # climbs smoothly (1.107 / 1.157 / 1.256 / 1.344). A wide deadband is what
+      # makes that a step -- it decides WHICH words move at all, so ordinary
+      # words get no size at all and the middle of the distribution is empty.
+      # The band exists so ordinary words do not drift SMALLER; on the enhanced
+      # clock the size cue is already clamped upward-only, so that job is done
+      # by the clamp and the band can be narrow without the defect returning.
+      voice_scale_deadband_enhanced: 0.0
+      # TRIED AND REVERTED: a continuous loudness ramp (`scalePivot: 0`) with a
+      # softened slope. It exists because our per-word peak DISTRIBUTION is
+      # two-humped where the film's climbs smoothly, and most words sit below
+      # the mapping's pivot so the upward-only clamp pins them at exactly 1.0.
+      # Ramping every word did smooth the distribution -- but it raised the
+      # median CURVE's peak to 1.20x against the film's 1.09x, taking the whole
+      # envelope from a mean difference of 0.005 to 0.023. The two disagree
+      # because the pointwise median also encodes the spread in WHEN words
+      # peak, which a 38-curve reference cannot pin down. Left at the legacy
+      # mapping, which matches the envelope far better. `scalePivot` is still
+      # supported in `caption-motion.ts` if a larger reference ever settles it.
+      voice_scale_response_enhanced: 0.50
+      # WHERE THE ENHANCED SIZE MAPPING PIVOTS. The default 0.22 is why our
+      # per-word peak distribution was two-humped: measured, our normalised
+      # loudness rarely exceeds ~0.35, so the MEDIAN word sits below 0.22, gets
+      # no crest at all, and the upward-only clamp pins it at exactly the bare
+      # pop -- our p50 was 1.092x against the film's 1.156x. Dropping the pivot
+      # lets the median word take a small crest without lifting the floor.
+      # A pivot of 0 (every word on one ramp) was tried and reverted: it raised
+      # the whole distribution and the median CURVE with it.
+      voice_scale_pivot_enhanced: 0.10
+      # CONVEXITY of the enhanced ramp. Our normalised loudness compresses at
+      # the top, so a straight response saturated the whole loud half against
+      # the ceiling: p75 1.355x and p90 1.370x, nearly touching, against the
+      # film's 1.256x and 1.394x. Squaring spreads them. Fitted with
+      # `scripts/motion_diff.py`; legacy is linear.
+      voice_scale_curve_enhanced: 2.0
+      # THE FITTED LOUDNESS -> SIZE CURVE, and it replaces the three knobs above
+      # on the enhanced clock. `scripts/motion_diff.py` measures the film's
+      # per-word peak distribution; `--voice-loudness` publishes ours. Matching
+      # the two means mapping OUR loudness quantiles onto the FILM's size
+      # quantiles, and no single power curve can: fitted to the film's p50/p75
+      # pair the exponent is 0.955, to its p75/p90 pair 1.975, so any one value
+      # misses an end -- measured, exponent 1.0 left p75 0.099 out and 2.0 left
+      # p50 0.063 out. These points are [our normalised loudness, crest above
+      # one] at the film's own quantiles, so the distributions coincide by
+      # construction. Re-fit them if the prosody normalisation changes.
+      voice_scale_points_enhanced:
+        # REFITTED 2026-08-12 against a CORRECTED film measurement. The first
+        # fit used a band that clipped every large word (see globals.css), so
+        # the film looked flatter than it is and every point here was too low --
+        # that is what read as the motion losing its diversity.
+        # Film 28s+, band expanded: peaks run 1.04 .. 1.59, median 1.30.
+        # Targets, divided by the 1.086 pop to give the crest alone:
+        #   our loudness 0.150 -> 1.00   (p25: the pop and nothing else)
+        #                0.227 -> 1.197  (p50 1.30)
+        #                0.577 -> 1.335  (p75 1.45)
+        #                0.780 -> 1.418  (p90 1.54)
+        # SCALED UP 2026-08-12 after a WORD-FOR-WORD check on the
+        # drill-sergeant line, the section this product actually resembles.
+        # Same words, same audio, film vs ours:
+        #   what's 1.80/1.35  your 1.45/1.35  sole 1.35/1.35  purpose 1.55/1.34
+        #   in     1.30/1.15  this 1.50/1.29  army  1.60/1.24
+        # Film median 1.50 against our 1.34, and our range 1.15..1.35 against
+        # its 1.30..1.80 -- uniformly smaller AND flatter. The ceiling was
+        # binding on every loud word.
+        # THE ZERO POINT IS WHAT DECIDES HOW MANY WORDS STAY STILL, and the
+        # film keeps a lot of them still: over 28s+, 43% of its words do not
+        # move at all. Our loudness runs p25 0.150 / p50 0.227, so the curve
+        # must stay flat to ~0.21 for a comparable share to get no crest -- and
+        # with no crest a word also gets no pop and no weight change, because
+        # all three ride the same phase.
+        # TRIMMED: the previous fit measured ABOVE the film at every quantile
+        # (ours 1.15/1.40/1.57/1.63 against its 1.08/1.30/1.45/1.54), which
+        # reads as aggressive. Each point is reduced so the peaks land on the
+        # film's rather than past them; the flat run to 0.21 is unchanged,
+        # since that is what keeps ordinary words still.
+        # A GRADUAL RAMP, not a step. Jumping straight from the flat zone to a
+        # large crest made the distribution bimodal -- a word either sat still
+        # or leapt, which is what reads as aggressive. The rise is spread so
+        # words in the middle of the loudness range get middling motion, which
+        # is what the film's smooth 1.08/1.30/1.45/1.54 actually describes.
+        # TRIMMED AGAIN 2026-08-12, ~18%, after watching a real talker through
+        # the array: the largest words were OVERLAPPING their neighbours. The
+        # word-level sizer reserves the row's width, but `.word-glyph` grows
+        # out of flow and about its own centre, so a word at 1.56x overhangs
+        # both sides by ~0.28 of its own width -- and with no push (the film's
+        # rule and ours) the neighbour does not move out of the way.
+        # The flat run to 0.21 is UNCHANGED, so the same words stay still; only
+        # the top of the ramp comes down, 1.56x -> 1.46x at full loudness.
+        - [0.00, 0.000]
+        - [0.21, 0.000]
+        - [0.30, 0.107]
+        - [0.45, 0.222]
+        - [0.65, 0.303]
+        - [1.00, 0.425]
       # 2.3.8: 160-200 Hz is Regular 400 -- a BAND, not a pivot, so ordinary F0
       # jitter must not move the weight at all. 2.3.9: 80 Hz -> heavy,
       # 250 Hz -> light. The design system reaches 100..1000; live narrows it
@@ -1026,10 +1226,57 @@ live:
       # bundled KSS clips; this profile scored 0%. Keep one authoritative
       # stream instead of showing the older model's errors as an early draft.
       draft_enabled: false
-      # A separately tested 2024 endpoint verifier scored 1.32% CER, but
-      # changed one phrase that this stream had already recognized correctly.
-      # Do not let a weaker endpoint model overwrite the stronger live text.
+      # THE VERIFIER IS ON AGAIN, AND ON A DIFFERENT ENGINE (2026-08-11).
+      # It was off because a 2024 offline Zipformer "changed one phrase this
+      # stream had already recognized correctly" -- a judgement made on FOUR
+      # bundled utterances, before the 120-clip FLEURS eval set existed.
+      # Korean's largest measured error category is the FIRST WORD of an
+      # utterance (5 of 8 clips in the old slice), which is precisely where a
+      # CAUSAL streaming model has no left context and a whole-utterance pass
+      # has all of it. So the verifier is the right shape of fix.
+      #
+      # WHY WHISPER AND NOT THE BEST-SCORING MODEL. Every accurate open Korean
+      # model is offline, and none returns word timings while streaming --
+      # Qwen3-ASR says so outright. That is the OpenAI disqualifier again, and
+      # the same rule applies: no timings means TEXT ONLY, at the endpoint,
+      # with the Zipformer keeping every start/end. Qwen3-ASR-0.6B scores
+      # better (KsponSpeech clean CER 0.139 vs large-v3-turbo's 0.155, both
+      # Apache-2.0/MIT) but needs MLX or a transformers bump; faster-whisper is
+      # ALREADY pinned, so this costs no new dependency. See docs/KOREAN-ASR.md.
+      # MEASURED 2026-08-11, AND IT IS A REAL TRADE, NOT A WIN.
+      # `benchmark.py --lang ko`, 120 FLEURS clips:
+      #     verifier OFF   10.54% normalized / 13.23% raw   RTF 0.055
+      #     verifier ON     7.94% normalized / 11.18% raw   RTF 0.473
+      # A 24.7% relative CER reduction, and the onset distribution survives
+      # (median 560 ms and p10 320 ms both unchanged) -- so the Zipformer really
+      # does keep owning timing and the text really does get better.
+      #
+      # AND IT COSTS CWI 2.2.1 OUTRIGHT. Controlled A/B with `studio_probe.py`
+      # on the same clip, same machine:
+      #     verifier OFF   read-ahead median 474 ms, 1 word past the playhead
+      #     verifier ON    read-ahead median   0 ms, 0 words past the playhead
+      # At RTF 0.473 the endpoint pass takes ~47% of the utterance's duration on
+      # top of the ~1.3 s stall, so words land after the playhead has passed
+      # them. That is the same disqualification chunk-64 already carries here:
+      # better text, no read-ahead, and read-ahead is the whole point.
+      #
+      # SO IT SHIPS OFF. The engine stays wired and one flag away, because the
+      # accuracy is real and the blocker is latency, not quality. To claim it:
+      # run the verifier ASYNCHRONOUSLY -- its output is a text revision, not a
+      # gate, and the revision lane (`text_revision_id`) already exists -- or
+      # try a smaller Whisper and re-measure BOTH columns. Do not turn this on
+      # without re-running `studio_probe.py`; the benchmark alone cannot see it.
       verifier_enabled: false
+      verifier_engine: whisper
+      verifier_whisper:
+        # ~1.6 GB, downloaded once by faster-whisper on first use.
+        model: large-v3-turbo
+        # CTranslate2 has no MPS backend; CPU int8 is the documented Apple
+        # Silicon path.
+        device: cpu
+        compute_type: int8
+        beam_size: 5
+        cpu_threads: 4
       # MEASURED 2026-08-05 with `scripts/korean_sweep.py` on 120 FLEURS ko
       # clips (5453 scored units, normalized CER -- see autocwi/scoring).
       # The repo ships chunk-16/32/64 exports of the SAME weights, and the
@@ -1079,6 +1326,45 @@ live:
         retain_threshold: 0.36
         switch_threshold: 0.42
         short_stable_threshold: 0.28
+    multi:
+      label: Bilingual
+      native_label: 한국어 + English
+      description: One model, automatic language detection
+      model_label: Nemotron 3.5 ASR 0.6B · 1120ms · auto-detect
+      # THE THIRD CAPTURE MODE (2026-08-11). English and Korean above are
+      # unchanged and still ship their own models; this is an ADDITIONAL choice
+      # for a session where both languages are spoken, including inside one
+      # sentence ("디자인 system이"), which the single-language models cannot do.
+      #
+      # `nvidia/nemotron-3.5-asr-streaming-0.6b` carries 40 language-locales in
+      # one 600M model. It is the ONLY option that clears this project's bar --
+      # true streaming, per-word start/end, local -- because every other
+      # accurate multilingual model is offline or returns no streaming
+      # timestamps (Qwen3-ASR says so outright). MEASURED by NVIDIA at this
+      # 1.12 s chunk: Korean CER 7.12% with the language named, 7.30% on auto,
+      # so detection costs 0.18 points. Not yet re-measured on our own eval set
+      # -- NVIDIA's normalization is not ours, a trap this project has hit
+      # twice, so treat those as a ranking, not a prediction.
+      streaming_model_dir: assets/streaming-nemotron35-multi-1120ms
+      # THE LANGUAGE IS A PER-STREAM OPTION, NOT A RECOGNIZER ARGUMENT. The
+      # multilingual encoder takes a 6th input (`prompt_index`), exposed as
+      # `stream.set_option("language", ...)`, so `_new_stream` applies it at
+      # EVERY stream creation including the reset after each endpoint. `auto`
+      # is the model's own language ID. Naming "ko" or "en" here instead turns
+      # this into a slightly better single-language profile.
+      streaming_language: auto
+      # One authoritative stream. The 160 ms English draft is an English model
+      # and the Parakeet verifier is English-only, so neither applies.
+      draft_enabled: false
+      verifier_enabled: false
+      decoding_method: greedy_search
+      # Korean is the harder script for the shared diarizer, and the
+      # multilingual CAM++ embedding is the one that covers both.
+      diarization:
+        model: assets/speaker-embedding-multilingual/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
+      # The English TIMIT onset sidecar cannot serve a Korean-carrying stream.
+      onset_prefix:
+        enabled: false
   # Fast model drives revisable white words; accurate model alone locks color
   # and writes durable events. Both run faster than real time on the target M1.
   draft_model_dir: assets/streaming-nemotron-en-160ms
@@ -1408,6 +1694,61 @@ live:
     short_stable_max_duration_s: 1.3
     min_signal_quality: 0.25        # optional 0..1 update-quality floor
     direction_prior_weight: 0.05    # optional direction contribution (weak prior only)
+    # Colour an undecided word from its bearing instead of leaving it grey
+    # (the SpeechCompass approach, CHI '25). Voice identity is slow -- text at
+    # a median 0.62 s, durable identity at 4.48 s -- so a new speaker's first
+    # words are grey for seconds; azimuth is available on the word itself.
+    # Only ADDS a colour where the voice lane had none; the endpoint pass still
+    # corrects it. Needs an array, so a local mic is unaffected.
+    direction_slot_colouring: true
+    # Bearings within this many degrees are the same speaker. Far wider than
+    # the 11-22 deg localization error SpeechCompass measures, because it must
+    # absorb that error without merging two people who are genuinely apart.
+    # Below it, one talker's jitter splits into two colours; above it, two
+    # people at a booth table merge into one.
+    # DIRECTION AS EVIDENCE, NOT ONLY AS A STOPGAP (2026-08-12, at the user's
+    # request: "make diarization depend more on the speaker's direction").
+    #
+    # `direction_slot_colouring` below is the older lane and stays: it invents
+    # geometric SLOTS and can only ever say "the 2nd distinct direction", which
+    # is enough to fill the grey while the voice lane decides. What follows
+    # uses the positions the VOICE lane actually established -- each speaker's
+    # own mean bearing and its spread, from `SpeakerBearingMap` -- so a match
+    # names a real speaker rather than a slot.
+    #
+    # WHY THIS IS SOUND AND NOT CIRCULAR: `_record_speaker_bearing` refuses to
+    # record a bearing under any direction-derived identity, so the map is
+    # built from voice evidence alone and can never confirm its own guess.
+    # That guard is load-bearing now; relaxing it turns this into a feedback
+    # loop that looks like a confident answer.
+    #
+    # UNMEASURED AGAINST HARDWARE. Phase 0 of docs/HARDWARE.md has run for the
+    # array and DoA, but nobody has scored attribution with two real
+    # simultaneous talkers -- the array's own beam evidence is likewise a
+    # signal inventory rather than something shown to discriminate speakers.
+    # Score it the way docs/LIVE.md requires: identity STRUCTURE (speakers and
+    # switches per utterance) beside raw agreement, because agreement is not
+    # accuracy.
+    direction_identity: true
+    # A bearing counts as this speaker's when it lands within this many of
+    # THEIR OWN standard deviations -- so a tightly-pinned talker is matched
+    # strictly and a loosely-placed one leniently. A bearing matching nobody
+    # stays unmatched on purpose: it is evidence of a NEW speaker, not of the
+    # nearest old one.
+    direction_match_sigma: 2.0
+    # Before a speaker's band may name anybody. Below this their spread is not
+    # a distribution, it is one or two readings and the array's own 11-22 deg
+    # localization error.
+    direction_min_observations: 4
+    # ...AND DIRECTION MAY CONTEST A WEAK VOICE DECISION. Under this
+    # confidence the two lanes genuinely disagree and the bearing is
+    # independent evidence with a different failure mode from the embedding.
+    # A `final` identity is never contested, and a contested word stays
+    # `provisional` so the endpoint pass still corrects it.
+    # 0 disables contesting entirely and leaves direction as a pure stopgap,
+    # which is what it was before.
+    direction_override_below: 0.45
+    direction_slot_tolerance_deg: 35
     provisional_color_strength: 0.55 # speaker-color share in tentative word color
     debug: false                    # add decision details and print session metrics
     # MID-UTTERANCE VERIFICATION WAS BUILT, MEASURED AND REMOVED (2026-08-04).
@@ -1477,6 +1818,25 @@ live:
         - Groan
         - Screaming
         - Whistling
+        # WIDENED 2026-08-13. AudioSet carries far more of the vocal
+        # non-speech than the original list claimed, and every one of these is
+        # a thing a hearing viewer would notice and a Deaf one would not.
+        - Yell
+        - Shout
+        - Bellow
+        - Whoop
+        - Battle cry
+        - Children shouting
+        - Screech
+        - Wail, moan
+        - Grunt
+        - Yawn
+        - Hiccup
+        - Burping, eructation
+        - Snoring
+        - Gargling
+        - Humming
+        - Whimper (dog)
       reaction:
         - Applause
         - Clapping
@@ -1485,6 +1845,11 @@ live:
         - Booing
         - Chatter
         - Hubbub
+        - Children playing
+        - Crowd noise
+        - Whistle
+        - Finger snapping
+        - Cheer
       music:
         - Music
         - Musical instrument
@@ -1496,6 +1861,24 @@ live:
         - Trumpet
         - Violin
         - Song
+        - Bass guitar
+        - Electric guitar
+        - Acoustic guitar
+        - Keyboard (musical)
+        - Synthesizer
+        - Organ
+        - Flute
+        - Saxophone
+        - Cello
+        - Harp
+        - Chime
+        - Wind chime
+        - Music box
+        - Theme music
+        - Background music
+        - Jingle (music)
+        - Christmas music
+        - Musical ensemble
       environmental:
         - Door
         - Knock
@@ -1510,6 +1893,51 @@ live:
         - Dog
         - Bark
         - Bell
+        # The booth and the room. A caption that says a door opened behind you
+        # is doing the job this lane exists for.
+        - Slam
+        - Cupboard open or close
+        - Drawer open or close
+        - Sliding door
+        - Squeak
+        - Footsteps
+        - Walk, footsteps
+        - Water
+        - Pour
+        - Glass
+        - Chink, clink
+        - Shatter
+        - Beep, bleep
+        - Buzzer
+        - Alarm clock
+        - Smoke detector, smoke alarm
+        - Fire alarm
+        - Air horn, truck horn
+        - Reversing beeps
+        - Typing
+        - Computer keyboard
+        - Writing
+        - Camera
+        - Printer
+        - Microwave oven
+        - Blender
+        - Vacuum cleaner
+        - Engine
+        - Motor vehicle (road)
+        - Train
+        - Aircraft
+        - Helicopter
+        - Thunder
+        - Thunderstorm
+        - Rain
+        - Wind
+        - Explosion
+        - Gunshot, gunfire
+        - Fireworks
+        - Cat
+        - Meow
+        - Bird
+        - Bird vocalization, bird call, bird song
   # Quiet speech produced no captions at all because the streaming transducer
   # stops emitting non-blank tokens well below its training level. This gains
   # ONLY the recognizer's copy of the audio; prosody keeps measuring the true
@@ -1873,6 +2301,30 @@ normalization:
 # strongly emphasized words — with the threshold exposed for per-user tuning.
 haptics:
   emphasis_db: 6.0    # word this far above the speaker's median dB = emphatic
+
+  # Overall actuation strength, 0..1. User-tunable by design: Tactile Emotions
+  # (CHI '25) found combined visual+haptic beats visual-only for immersion, but
+  # that continuous vibration is distracting -- actuate selectively, threshold
+  # it, and let the wearer set the level.
+  intensity: 0.8
+
+  # The motor ring on the Pi, BCM pin numbers, CLOCKWISE FROM THE CASE'S FRONT.
+  # An even ring is assumed from the count, so this is enough for four motors
+  # at 0/90/180/270. For an uneven layout give each one its bearing instead:
+  #   motors:
+  #     - {gpio: 17, angle_deg: 0}
+  #     - {gpio: 27, angle_deg: 60}
+  # A cue cross-fades between the two nearest motors, so four read as a
+  # continuous direction rather than as four buzzers.
+  #
+  # ONE MOTOR CANNOT ENCODE DIRECTION, however it is driven. With a single
+  # motor every cue pulses it and says nothing about where, which is the honest
+  # rendering -- `bearing_weights` enforces that rather than implying a bearing.
+  #
+  # Empty by default: the motors only exist on the hardware node, and a laptop
+  # run must not try to open GPIO. `scripts/hw/probe_motor.py --wiring` prints
+  # the driver circuit -- a GPIO pin CANNOT drive a coin motor directly.
+  motors: []
 
 asr:
   model: small          # base | small | medium

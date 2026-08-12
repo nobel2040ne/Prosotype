@@ -76,6 +76,20 @@ export interface LevelEvent {
   spectral_centroid_hz?: number;
   direction_deg?: number;
   azimuth_deg?: number;
+  /** Standing bearing of each speaker slot, index 0 = S1. Absent until the
+   *  array has placed somebody; never an empty array. */
+  speaker_slots_deg?: number[];
+  /** Where each DECIDED speaker has been heard from. Names the speaker rather
+   *  than relying on array position, so the ring's marks carry that speaker's
+   *  own caption colour. Absent with no array. */
+  speaker_bearings?: {
+    speaker: string; deg: number;
+    /** Circular standard deviation of this speaker's bearings, degrees. */
+    spread?: number;
+    /** The last place this speaker was seen; their bearings are scattered now. */
+    stale?: boolean;
+    observations?: number;
+  }[];
   delivery_force?: number;
   delivery_attack?: number;
   delivery_contour?: number;
