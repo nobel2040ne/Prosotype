@@ -36,9 +36,7 @@ import time
 import urllib.error
 import urllib.request
 
-# Every SSE type the studio reducer turns into painted words. `verification`
-# carries corrections, not first paints, but is included so a correction that
-# arrives only at verification is still attributed to the right stage.
+# Every SSE type the studio reducer turns into painted words.
 PAINTING_TYPES = {"hypothesis", "cue", "commit", "word", "verification"}
 
 
@@ -271,10 +269,6 @@ def report(collected: dict, read_ahead_s: float, min_read_ahead_s: float) -> int
         elif seen != last["speaker"]:
             turn_wrong += 1
         # ...and did it change again AFTER the viewer had already read it?
-        # The studio deliberately repaints a settled word on a late attribution
-        # correction -- only spelling is frozen behind the playhead -- so this
-        # is by design, but every occurrence is a caption changing colour under
-        # the reader's eye, which is a different cost from a patchy stage.
         if seen is not None and any(
             event["at"] > turn_at and event.get("speaker")
             and event["speaker"] != seen
@@ -287,16 +281,8 @@ def report(collected: dict, read_ahead_s: float, min_read_ahead_s: float) -> int
     )
     speakers = collections.Counter(speaker for _, speaker, _ in final_order)
 
-    # HOW OFTEN DOES THE COLOUR CHANGE? This is the readability number, and it
-    # is not the same question as "is the colour right". A caption can be
-    # correct at every single turn and still be unreadable if the correct
-    # answer changes every few words: CWI 2.1 makes colour THE speaker signal,
-    # so each change asserts "somebody else is talking now", and a viewer
-    # cannot follow a stage that asserts that eight times a sentence.
-    # MEASURED before this existed: a change every 8.5 words, median run 7,
-    # and 29% of runs three words or shorter -- inside single sentences spoken
-    # by one person. Nobody says one word and stops, so short runs are the
-    # signature of the defect rather than of the material.
+    # HOW OFTEN DOES THE COLOUR CHANGE? This is the readability number, and
+    # it is not the same question as "is the colour right".
     runs: list[int] = []
     run_owner: str | None = None
     for _, speaker, _ in final_order:

@@ -6,13 +6,7 @@ import {
   type StageLayoutInput,
 } from "./stage-layout.ts";
 
-/**
- * Every default here is MEASURED off the running studio, not chosen:
- * `.caption-feed` spans 93.6% of the stage's padding box, its horizontal clip
- * gutters total 3.50em and its vertical ones 1.06em, `max-height` is 92%, and a
- * light-stage row is 1.38em tall. The budget coefficients are fitted to the
- * measured worst-case rows. See `scratchpad` probes in CLAUDE.md.
- */
+/** Every default here is measured off the running studio, not chosen. */
 const base: StageLayoutInput = {
   feedWidthPx: 1001,
   stageHeightPx: 816,

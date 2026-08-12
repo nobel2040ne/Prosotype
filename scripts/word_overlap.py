@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
 """Does a swelling word grow INTO the word beside it? Polled through playback.
 
-The two existing geometry probes do not see this. `ink_collision.py` measures
-the clearance between adjacent ROWS, and `clip_probe.py` measures a row running
-off the stage. A word overlapping its neighbour is neither: the row's width is
-correct, the stage is not exceeded, and the text is destroyed anyway.
+Neither existing geometry probe sees this: `ink_collision.py` measures adjacent
+ROWS and `clip_probe.py` measures a row leaving the stage. Here the row's width
+is correct, the stage is not exceeded, and the text is destroyed anyway.
 
-It happens because `.word-glyph` is `position: absolute` -- out of flow, so it
-does not reserve its grown width -- and grows about its own centre, while the
-design system's own rule is that a swelling word does not PUSH its neighbours.
-Both halves are deliberate. What bounds them is the crest amplitude, and this
+It happens because `.word-glyph` is out of flow — so it reserves nothing — and
+grows about its own centre, while a swelling word does not push its neighbours.
+Both halves are deliberate; the crest amplitude is what bounds them, and this
 is the check on it.
 
     .venv/bin/python -m autocwi live --sample --lang en --no-open &
     .venv/bin/python scripts/word_overlap.py
     .venv/bin/python scripts/word_overlap.py --broken   # must FAIL
 
-MEASURED 2026-08-12, which is what sized `voice_scale_points_enhanced`: at a
-1.56x ceiling this reported 189 overlapping pair-samples, worst -23.8px
-("whatever|you", "do|whatever", "the|rescue"); at 1.46x it reports none.
-
-Sample fast. The crest's whole window is 424-1050ms and the overlap exists only
-near its peak, so a slow poll misses it and reports a clean stage.
+Sample fast: the overlap exists only near the crest's peak, so a slow poll
+misses it and reports a clean stage.
 """
 
 from __future__ import annotations
@@ -36,10 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from motion_trace import CHROME, wait_for_debugger  # noqa: E402
 
-# Adjacent glyph boxes within one row. Sorted by `left` rather than by DOM
-# order: the overlaid glyph is centred on its sizer, so a large word's box can
-# start left of the box before it, and comparing in DOM order would then
-# measure the wrong pair.
+# Adjacent glyph boxes within one row.
 PROBE = r"""
 (() => {
   const out = [];
@@ -60,10 +51,7 @@ PROBE = r"""
 })()
 """
 
-# The negative control. `--voice-scale` is NOT the lever here: the crest clamps
-# it at the stage ceiling, so forcing it larger changes almost nothing and the
-# control passed while proving nothing. Scale the glyph directly instead, which
-# is downstream of every clamp.
+# The negative control.
 BREAK = r"""
 (() => {
   const s = document.createElement('style');

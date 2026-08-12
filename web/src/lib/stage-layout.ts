@@ -1,44 +1,7 @@
-/**
- * Type size and words-per-row are ONE decision, so make it one calculation.
- *
- * Stage rows do not wrap, so the number of words in a row sets a hard ceiling on
- * the caption type size: `N` words need `rowBudgetEm(N)` of width, and whatever
- * is left over after the clip gutters decides how many pixels an em may be. Holding
- * `N` at a constant six therefore hands the type size to the stage's ASPECT
- * RATIO, which is not a design decision anyone made.
- *
- * Measured, that is exactly what went wrong. At 1440x900 the stage is 1072x816
- * and six words allow 47px type filling 86% of the stage height. At 862x998 --
- * the same studio with a narrower window -- the stage is 538x914, six words
- * allow only **23.6px**, and the stack fills **59.7%** of the stage. Same
- * captions, half the size, on a surface that is 40% empty.
- *
- * So `N` is chosen here instead: the largest type that still shows a usable
- * stack. Both terms are needed. Maximising type alone collapses to the minimum
- * words per row and wastes the width of a wide stage (three words at the 64px
- * ceiling used 65% of a 1440 row); requiring a row count alone is what produced
- * the 23.6px captions.
- */
+/** Type size and words-per-row are ONE decision, so make it one calculation. */
 
-/**
- * Worst-case width of a row of `words` words, in em.
- *
- * NOT `words * perWordEm`. The per-word cost RISES as rows get shorter, because
- * a short row cannot average a long word away. Measured by sliding a window over
- * the recognizer's real word order on docs/reference/pr-film.mp4, the widest English row
- * costs 2.93em per word at six words but **3.61em** at three -- so a constant
- * derived from six-word rows under-budgets a three-word row by 19%, which is
- * exactly how the first attempt at this produced rows that overflowed the stage.
- *
- * A sum of `N` word widths has mean `N*mu` and spread `~sigma*sqrt(N)`, so the
- * budget is `N * linear + spread * sqrt(N)`. Fitting the measured N=3 and N=6
- * worst cases gives linear 1.31 / spread 3.98, which predicts the (unfitted)
- * N=4 and N=5 rows to within 2%. The shipped coefficients carry ~8% on top.
- *
- * Do not replace this with IID sampling of the word-width distribution: real
- * text does not put three long words together at random, and sampling that way
- * predicted 15.5em for a three-word row against a measured 10.8em.
- */
+/** Worst-case width of a row of `words` words, in em. NOT `words *
+   perWordEm`. */
 export function rowBudgetEm(
   words: number,
   linear: number,

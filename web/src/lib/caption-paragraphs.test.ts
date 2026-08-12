@@ -10,13 +10,8 @@ import {
 } from "./caption-paragraphs.ts";
 import type {CaptionWord} from "./caption-store.ts";
 
-/*
- * `final: true` because these fixtures stand for text the viewer HAS READ --
- * which is what the row-stability tests below are about. The stage may still
- * re-break a row whose words are unsettled (they are read-ahead text nobody
- * has read yet); `final` is the moment that stops, and in the live pipeline it
- * precedes the playhead reaching a word by roughly a second.
- */
+/* `final: true`: these fixtures stand for text the viewer has already read,
+   which is what the row-identity rules are about. */
 function sentence(
   count: number,
   speaker = "S1",
@@ -574,31 +569,14 @@ test("a stale break is retired once the text that caused it changes", () => {
   assert.equal(healed.length, 1, "and the break goes when they shorten again");
 });
 
-/*
- * SCRIPT-AWARE ROW WIDTH.
- *
- * `charEm` was fitted on the English PR film and then applied to every script,
- * so a Hangul syllable was budgeted at 0.4343em against a real advance of
- * 0.9200em -- uniform, because Hangul is fixed-width. The chunker packed about
- * twice as many Korean words into a row as fit and `.caption-words` is
- * `nowrap`, so the overrun was cut silently.
- */
+/* SCRIPT-AWARE ROW WIDTH. */
 
 const KO_BUDGET = {...BUDGET, wideCharEm: 0.92};
 
 test("Latin widths are BIT-IDENTICAL with and without a wide-char width", () => {
-  /*
-   * THIS IS THE MOTION GATE, and it is why the fix is script-aware rather than
-   * a re-measurement of everything. A word that changes row is unmounted and
-   * REBUILT, and row-break frequency is what flipped the held "is" between
-   * 4 of 6 and 6 of 6 runs at fill 0.87 against 0.82 -- while every motion
-   * acceptance figure is measured on the ENGLISH film. If Latin widths do not
-   * move by a single bit, no English break decision can move, so English
-   * motion cannot move either.
-   *
-   * Exact equality, not `closeTo`: a last-bit difference is enough to flip a
-   * `rowEm + cost > ceiling` comparison, which is the whole failure mode.
-   */
+  /* THE MOTION GATE. A moved English break remounts words and puts the
+     motion acceptance figures at risk, which is why the wide-script fix is
+     script-aware rather than a re-measurement of every width. */
   for (const text of [
     "louder", "softer", "is", "synchronized", "precisely", "animation,",
     "Goddamnit", "a", "", "don't", "1640", "S1:",

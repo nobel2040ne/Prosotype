@@ -1,27 +1,17 @@
-# auto-CWI — pinned for Python 3.11 (macOS arm64 / Linux). All inference is local.
+# auto-CWI — Python 3.11 (macOS arm64 / Linux). All inference is local.
 numpy==1.26.4
 PyYAML==6.0.2
 pydantic==2.9.2
 
-# ASR (CTranslate2 backend; CPU int8 on Apple Silicon, CUDA where available)
+# ASR
 faster-whisper==1.1.1
 ctranslate2==4.5.0
-# Dual true-streaming live ASR (local Nemotron; prebuilt platform wheels)
-# BUILT FROM MASTER, NOT PyPI (2026-08-11). Multilingual Nemotron-3.5 streaming
-# (PR #3671, merged 2026-06-12) is what the `multi` bilingual capture profile
-# needs, and it is in NO released wheel: 1.13.4 is the newest on PyPI and on
-# k2-fsa's own nightly index, and its `OnlineStream` has no `set_option`.
-# Verified after installing: the English and Korean profiles both still load
-# and decode, and the 216-test suite is unchanged.
-# Pin back to `sherpa-onnx==1.13.4` to revert -- the bilingual profile is the
-# only thing that stops working.
-# Replace this with a plain version pin as soon as a release contains #3671.
-sherpa-onnx @ git+https://github.com/k2-fsa/sherpa-onnx@master  # -> 1.13.5
-# Optional first-phone onset sidecar. The checkpoint is fetched explicitly by
-# scripts/fetch_streaming_model.py; live inference remains fully local.
 transformers==4.48.3
+# From master, not PyPI: the `multi` bilingual profile needs PR #3671, which no
+# release contains. Pin back to 1.13.4 to revert — only that profile breaks.
+sherpa-onnx @ git+https://github.com/k2-fsa/sherpa-onnx@master  # -> 1.13.5
 
-# Diarization (weights are gated on Hugging Face -> HF_TOKEN, see README)
+# Diarization — pyannote weights are gated; see CONTRIBUTING.md for HF_TOKEN
 torch==2.5.1
 torchaudio==2.5.1
 pyannote.audio==3.3.2
@@ -31,17 +21,8 @@ librosa==0.10.2.post1
 soundfile==0.12.1
 praat-parselmouth==0.4.5
 
-# Burn-in renderer (optional path, still local)
-Pillow==11.0.0
-
-# Live caption mode (microphone capture)
+# Capture, rendering, probes, tests
 sounddevice==0.5.1
-
-# WebSocket client. Two uses, both outside the offline capture path:
-#   - scripts/studio_probe.py drives Chrome DevTools Protocol to read the Next
-#     studio's motion metrics (--dump-dom captures pre-hydration, so it cannot).
-#   - the opt-in Speechmatics/Soniox arms in scripts/asr_backends.py.
+Pillow==11.0.0
 websockets==17.0
-
-# Tests
 pytest==8.3.4

@@ -27,14 +27,7 @@ import {
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "demo";
 
-/**
- * Everything a word needs in order to animate itself, frozen at discovery.
- *
- * `turnAtMs` is the `performance.now()` moment the playhead reaches the word's
- * spoken onset; `durationMs` is its 2.2.3 window. Both are immutable for the
- * life of the word, so a verifier respelling, a speaker correction or a
- * reconnect replay can never restart, reshape or double-run its motion.
- */
+/** Everything a word needs in order to animate itself, frozen at discovery. */
 export interface WordSchedule {
   turnAtMs: number;
   durationMs: number;
@@ -74,13 +67,7 @@ export interface RuntimeConfig {
   stageWordsMin: number;
   /** Rows the stack must fit before a shorter row (larger type) is preferred. */
   stageMinRows: number;
-  /**
-   * CWI 2.2.1. How far the caption playhead runs behind the acoustic clock.
-   *
-   * This is what buys the white read-ahead: the recognizer delivers a word
-   * about 1.1 s after it is spoken, so a 2.5 s playhead leaves ~1.4 s of
-   * recognized-but-not-yet-coloured text on screen at all times.
-   */
+  /** CWI 2.2.1. How far the caption playhead runs behind the acoustic clock. */
   readAheadDelayMs: number;
   /** A word may not turn until it has been on screen this long. */
   minReadAheadMs: number;
@@ -146,11 +133,8 @@ export interface RuntimeConfig {
   widthRange: [number, number];
   /** Transient voice-size band around the baseline. CWI 2.3.6. */
   voiceScaleRange: [number, number];
-  /**
-   * How much of CWI 2.3.6's size excursion is used at the motion crest, applied
-   * about the 2.3.5 baseline so a normal speaking voice stays at exactly 1.
-   * 1 is the design system's literal 3%..12%.
-   */
+  /** How much of 2.3.6's excursion the crest uses, applied about 2.3.5's
+     baseline so the anchor stays exact at any value. */
   voiceScaleResponse: number;
   /** The same, below the baseline -- smaller, because shrinking costs legibility. */
   voiceScaleResponseQuiet: number;
@@ -249,31 +233,15 @@ const EMPTY_LEVEL: LevelEvent = {
   spectral_centroid_hz: 0,
 };
 
-/**
- * How often the playhead is published to React.
- *
- * Nothing about a word's own motion depends on this: colour and pop are CSS
- * animations the browser schedules from a frozen `animation-delay`. The tick
- * exists only for things that track WHERE speech currently is — the current-row
- * marking, and the diagnostics probe — so it is deliberately coarse.
- */
+/** How often the playhead is published to React. */
 const PLAYHEAD_TICK_MS = 66;
 
 interface StreamOptions {
   reducedMotion: boolean;
 }
 
-/**
- * The newest word the browser currently HOLDS -- the far edge of the
- * read-ahead.
- *
- * It has to be read off the live model rather than accumulated as a
- * high-water mark. The reducer deletes non-final hypothesis words routinely,
- * so a running maximum keeps counting text that is no longer on screen and
- * reports read-ahead the viewer cannot actually read. Measured, that
- * overstated it by roughly 1.5 s. `order` is time-sorted, so this is the last
- * entry.
- */
+/** The newest word the browser currently HOLDS -- the far edge of the read-
+   ahead. */
 function newestAcousticMs(model: CaptionModel): number {
   const newest = model.order.at(-1);
   return newest ? acousticTimeMs(model.words[newest]) : Number.NaN;
@@ -421,26 +389,7 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       setWaveform((values) => [...values.slice(-31), Number(incoming.rms_db)]);
       return;
     }
-    /*
-     * THE CAPTION INVARIANT, ENFORCED RATHER THAN MERELY DOCUMENTED.
-     *
-     * "Text may be revised only AHEAD of the playhead; once the colour turn
-     * passes a word it is frozen." That was true of hypothesis churn, which
-     * happens in the white zone, but NOT of endpoint verification, which
-     * arrives seconds later and rewrote words the viewer had already read.
-     * Measured on the bundled clip: 44 text changes over 74 words, 38 of them
-     * landing more than the read-ahead delay after the word's own onset --
-     * "sixteen" became "1640" 4.5 s after it was spoken, in place, on screen.
-     *
-     * A word whose turn has passed therefore keeps the text it was drawn with.
-     * Only the spelling is frozen: speaker colour, finality and timing still
-     * update, because a late attribution correction is a direct colour write
-     * and that is exactly what the design system asks for.
-     *
-     * The verifier is not being ignored -- it simply loses the race for words
-     * the viewer has already read. Raising `display.read_ahead_delay_s` widens
-     * the window in which it can still win.
-     */
+    /* THE CAPTION INVARIANT, ENFORCED RATHER THAN MERELY DOCUMENTED. */
     /** Same letters, differing only in punctuation or case. */
   const sameWordDifferentMarks = (a: string, b: string | undefined) => {
     if (typeof b !== "string") return false;
@@ -461,25 +410,7 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       const settled = settledTextRef.current.get(key);
       if (settled === undefined || settled === word.text) return word;
       /* ...BUT PUNCTUATION AND CASE ARE NOT A RESPELLING, AND REFUSING THEM
-         COST THE CAPTIONS THEIR SENTENCES (2026-08-03).
-         The invariant this freeze protects is that a word the viewer has READ
-         does not change under them. Adding a period to "spoken" or capitalising
-         "the" does not rewrite the word -- the glyphs already read are
-         untouched -- and it is the ONLY source of sentence structure the live
-         path has: the streaming Nemotron emits no punctuation at all (measured,
-         0 of 152 commits) while the Parakeet verifier supplies it, and Python
-         passes it through intact.
-         The verifier only fires at the UTTERANCE endpoint, and the bundled
-         film's first utterance runs 0.2s -> 27.5s, so essentially every word
-         had settled unpunctuated before its punctuated spelling arrived. That
-         is why the stage read "as each word is spoken intonation the system
-         brings in" where the recogniser had produced "as each word is spoken.
-         Intonation. The system brings in".
-         So compare on the same normalisation Python aligns with
-         (`_normalized_token` in live.py): if the two spellings differ only by
-         punctuation or case, the newer one wins. Anything that changes a
-         LETTER is still frozen, which is the case the measurement covered
-         ("tab" -> "tab." is allowed; a genuine respelling is not). */
+         COST THE CAPTIONS THEIR SENTENCES (2026-08-03). */
       if (sameWordDifferentMarks(settled, word.text)) return word;
       frozenTextRef.current += 1;
       return {...word, text: settled};
@@ -628,26 +559,8 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     return () => source.close();
   }, [backendOrigin, dispatch]);
 
-  /*
-   * SCHEDULING, IN FULL.
-   *
-   * A word is placed on the playhead once, by the word itself, in its own
-   * layout effect (see `MotionWord`). There is no queue, no concurrency cap,
-   * no reveal gap, no catch-up policy and no backlog ceiling, because none of
-   * those questions exist any more: a word's colour turn happens when the
-   * playhead reaches its recorded onset, and the browser owns that schedule as
-   * a single `animation-delay`.
-   *
-   * The old scheduler had to answer "when should this word appear?" from
-   * arrival order alone, which is why it grew slots, deadlines, an adaptive
-   * clock, a staleness ceiling and a watchdog for reservations that never
-   * painted. The playhead answers it from the recording itself.
-   *
-   * This callback is stable for the life of the hook, so passing it to every
-   * word costs no re-renders, and it is called from a layout effect in the
-   * SAME commit that first paints the word -- which is what makes the frozen
-   * turn moment exact rather than one frame late.
-   */
+  /* SCHEDULING, IN FULL. A word is placed on the playhead once, by the word
+     itself, in its own layout effect (see `MotionWord`). */
   const scheduleWord = useCallback((
     id: string,
     word: CaptionWord,
@@ -666,57 +579,23 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
     );
     const previous = scheduledRef.current.get(id);
     if (previous) {
-      /* Return the STORED moment, not a recomputed one. The floor below is
-         relative to when this word was first delivered, so recomputing it on
-         a remount would move the turn. Everything else about this path is
-         unchanged. */
+      /* Return the STORED moment, not a recomputed one. */
       rearmedWordsRef.current += 1;
       return {turnAtMs: previous.turnAtMs, epoch: clock.epoch};
     }
-    /*
-     * A WORD MUST BE READABLE BEFORE IT IS SPOKEN, AND A TIME DELAY ALONE
-     * CANNOT GUARANTEE THAT (2026-08-03).
-     *
-     * `read_ahead_delay_s` sets the MEAN lead and nothing about its spread.
-     * The recognizer blocks ~1.3 s at each endpoint and then releases a batch,
-     * so the read-ahead arrives in bursts: MEASURED at 1.75 s, the median lead
-     * is a healthy 700 ms, but the stage still shows **zero** words ahead of
-     * the playhead in 11% of frames and one word in another 18%, against 28
-     * words at p75. Between bursts there is nothing to read early, which is
-     * the whole of CWI 2.2.1 missing a third of the time. Raising the delay
-     * moves the mean and leaves the spread alone -- 1.2 -> 1.75 s took the
-     * median lead 170 -> 700 ms and the viewer still saw words appear already
-     * in motion.
-     * So the floor is per WORD, not per second: a word may not turn until it
-     * has been on screen for `minReadAheadMs`, whenever it happened to arrive.
-     * `scheduledRef` is keyed by word id and the remount path above returns
-     * the stored moment, so this is frozen at first sight exactly like the
-     * duration and the axes -- no reference to "now" survives into a re-arm.
-     * A word delivered LATE is unaffected: its acoustic turn is already in the
-     * past, the floor is the later of the two, and it still paints settled.
-     */
+    /* A WORD MUST BE READABLE BEFORE IT IS SPOKEN, AND A TIME DELAY ALONE
+       CANNOT GUARANTEE THAT (2026-08-03). */
     const floorMs = performance.now() + runtimeRef.current.minReadAheadMs;
     const turnAtMs = Math.max(acousticTurnMs, floorMs);
     scheduledRef.current.set(id, {turnAtMs, durationMs});
-    /*
-     * A word delivered after its own onset had already passed needs no special
-     * case: the negative delay puts both CSS animations past their end, so it
-     * paints settled and coloured, which is exactly right for history. Count
-     * it once per word, though -- a steadily rising figure is the signal that
-     * the read-ahead delay is shorter than the recognizer's real latency, i.e.
-     * that no read-ahead is being delivered at all.
-     */
+    /* A word delivered past its own onset needs no special case: the
+       negative delay leaves the animation finished, so it paints settled. */
     if (turnAtMs < performance.now()) lateWordsRef.current += 1;
     return {turnAtMs, epoch: clock.epoch};
   }, []);
 
-  /*
-   * Publish the playhead coarsely.
-   *
-   * No word's motion depends on this -- CSS runs those. It exists so
-   * `data-current` can mark the row speech has actually reached, and so the
-   * probe can report the read-ahead it is really delivering.
-   */
+  /* Publish the playhead coarsely. No word's motion depends on this -- CSS
+     runs those. */
   useEffect(() => {
     let frame = 0;
     let last = 0;
@@ -791,14 +670,8 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
           ).length,
           clockStarted: clock.started,
           readAheadDelayMs: delayMs,
-          /*
-           * THE NUMBER THAT MATTERS. Recognized text sitting on screen ahead of
-           * the colour, in ms. It should settle near
-           * `readAheadDelayMs - recognizerLatency` (~1.4 s at the shipped 2.5 s
-           * against the 1120 ms accurate stream). Zero means the caption is
-           * being coloured the instant it arrives -- i.e. CWI 2.2.1 is not
-           * actually being delivered, whatever the page looks like.
-           */
+          /* THE NUMBER THAT MATTERS. Recognized text sitting on screen ahead
+             of the colour, in ms. */
           readAheadMs: readAheadMs(
             clock,
             newestAcousticMs(modelRef.current),
@@ -814,11 +687,8 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
               now - item.turnAtMs < item.durationMs,
           ).length,
           scheduledWords: scheduled.length,
-          /*
-           * Words that arrived after their own onset had already passed and so
-           * could never animate. A steadily rising count means the read-ahead
-           * delay is shorter than the recognizer's real latency.
-           */
+          /* Words that arrived after their own onset had already passed and
+             so could never animate. */
           lateWords: lateWordsRef.current,
           // Revisions REJECTED because the playhead had already passed the
           // word. A healthy figure; zero would mean the invariant is unused.

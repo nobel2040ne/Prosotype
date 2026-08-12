@@ -200,11 +200,7 @@ def main() -> int:
     print(f"\n  peak correlation across words: {order:+.3f}"
           "   (1.0 = we emphasise exactly the words the film does,"
           "\n   0 = which word we grow is unrelated to which word it grows)")
-    # THE DIAGNOSTIC THAT DECIDES WHETHER THIS IS FIXABLE FROM AUDIO. If the
-    # film's own choices track the words' measured loudness, then a zero
-    # correlation above is OUR pipeline mis-measuring emphasis, and it can be
-    # fixed. If they do not, the film's sizes are a human transcriber's
-    # judgement and no acoustic measurement can reproduce them.
+    # THE DIAGNOSTIC THAT DECIDES WHETHER THIS IS FIXABLE FROM AUDIO.
     loud = np.array([r[4] for r in rows])
     ok = ~np.isnan(loud)
     if ok.sum() > 4:

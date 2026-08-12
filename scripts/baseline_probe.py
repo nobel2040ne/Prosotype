@@ -1,55 +1,31 @@
 """Does a swelling word stay on its baseline? Measured in pixels, every word.
 
-CWI grows a word FROM its baseline and never moves it. The design system's own
-measurements say so per word: regressing peak lift on peak size across the 48
-words with baked curves in ``assets/reference_specs/*.json`` gives a slope of
-**+0.043** -- lift is essentially independent of size -- and its single biggest
-word, "louder" at 2.21x, has a lift of exactly **0.000**. A held word at 1.32x
-has the largest lift in the whole reference. Size does not raise a word;
-waiting does.
+CWI grows a word FROM its baseline and never moves it. Measured across the
+reference's own baked curves, lift regresses on size at +0.043 and its biggest
+word has a lift of exactly 0.000. Size does not raise a word; waiting does.
 
-WHY THIS EXISTS AS A SEPARATE PROBE. The lift it catches is LAYOUT, not
-transform. ``studio_probe.py`` decides a word is moving from ``|matrix.f| > 0.5``
-on ``.word-glyph``, and a word whose baseline rides up because its own line box
-grew keeps ``matrix.f == 0`` throughout -- so that probe is structurally blind
-to it, and a real 0.24em lift shipped undetected through three attempts to find
-it. Nothing else in the repo compares a rendered ink bottom against anything.
+WHY IT IS A SEPARATE PROBE. The lift it catches is LAYOUT, not transform.
+``studio_probe.py`` decides a word is moving from ``|matrix.f| > 0.5``, and a
+word whose baseline rides up because its own line box grew keeps
+``matrix.f == 0`` throughout — so that probe is structurally blind to it, and a
+real 0.24em lift shipped undetected through three attempts to find it.
 
-WHY IT SEGMENTS WITH ``autocwi.refmeasure``. Both sides of any comparison with
-the recordings must run byte-identical segmentation; that module is the single
-home for it, and it already handles the trap that matters here -- thresholding
-each glyph RELATIVE TO ITS OWN peak luminance, because a fixed threshold
-measures a yellow glyph and a white one differently and fakes a size change
-exactly at the colour turn.
+It segments with ``autocwi.refmeasure`` so both sides of any comparison run
+identical segmentation, and because that module already thresholds each glyph
+relative to ITS OWN peak luminance — a fixed threshold measures a yellow glyph
+and a white one differently and fakes a size change exactly at the colour turn.
 
-WHY IT PINS THE CREST INSTEAD OF CHASING IT. Tracking a glyph across frames to
-recover its own rest is the textbook approach and it does not work here:
-``refmeasure.curves()`` assumes ONE caption line scrolling horizontally, while
-this stage is a vertical stack that re-flows whenever a word arrives, so runs
-break constantly. Measured, a 314-frame capture at 10 Hz yielded 42 tracked
-glyphs and **one** of them swelling -- nothing to regress. So this holds the
-crest still instead: it waits for the sample to finish, pins ``--voice-phase``
-and ``--voice-scale`` over CDP so the whole settled stage holds at one crest,
-and compares each word's ink bottom against ITS OWN ink bottom at rest.
+IT PINS THE CREST INSTEAD OF CHASING IT. Tracking a glyph across frames is the
+textbook approach and does not work here: the stage re-flows whenever a word
+arrives, so runs break constantly (a 314-frame capture yielded one swelling
+glyph). Instead it holds the settled stage at one crest over CDP and compares
+each word's ink bottom against its own at rest — same word, same pixels, so
+glyph shape cancels.
 
-Same word, same pixels, so glyph shape cancels exactly -- and it exercises the
-top of ``voice_scale_range`` directly instead of waiting for the sampler to
-find a word loud enough.
-
-WHAT THIS PROBE IS NOT GOOD AT, STATED UP FRONT.
-* **The max is not the verdict, the MEDIAN is.** At a 1.62x crest adjacent rows
-  overlap vertically, so for a minority of words no crop box separates a word
-  from the ascenders of the row below, and those readings land near 0.54em in
-  the FIXED build and the BROKEN one alike. That is this harness, not the
-  renderer. The median is immune and separates decisively: English measures
-  **+0.196em** at crest 1.62 with the old anchoring against **-0.025em** with
-  the fix.
-* **Korean is under-powered here.** The Korean sample puts ~14 words on the
-  stage, one in three is pinned, and Hangul has no descenders to exclude, so
-  n=5 -- a median that noisy cannot carry a threshold. It separated the right
-  way (0.093em broken vs 0.070em fixed) but not decisively. The robust Korean
-  evidence is the DOM sweep over a looping capture: 270 swelling samples,
-  crest-vs-rise correlation **+0.002**, slope **+0.02 px per 1.0x**.
+**The MEDIAN is the verdict, not the max.** At a high crest adjacent rows
+overlap, so a minority of words have no clean crop box and read the same in a
+fixed build and a broken one. That is the harness. Korean is under-powered
+here (n=5); its robust evidence is the DOM sweep instead.
 """
 
 from __future__ import annotations

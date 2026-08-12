@@ -1,48 +1,36 @@
 """Measure the PR film's per-word motion envelope, and ours, and difference them.
 
-THIS IS THE COMPARISON THE MOTION WORK KEPT LACKING. Four separate attempts to
-match `docs/reference/pr-film.mp4` failed the same way: the film was
-measured in isolation, a number was fitted, and whether the result actually
-matched was left to judgement. Every one of those judgements was wrong. This
-measures BOTH sides into the same shape and prints the gap.
-
-The shape is a per-word size envelope, normalised and turn-aligned:
+Four attempts to match the film failed the same way: it was measured in
+isolation, a number was fitted, and whether the result matched was left to
+judgement. Every one of those judgements was wrong. This measures BOTH sides
+into the same shape and prints the gap.
 
     for each word:  scale(t) = ink_height(t) / ink_height_at_rest
                     t        = seconds from that word's own colour turn
 
-Normalising by the word's own rest is what makes the two comparable at all --
-the film's captions are ~40px on a 720p frame and ours are ~16px in a paragraph,
-so absolute pixels compare nothing. Aligning on each word's own turn is what
-makes the curves stackable across words spoken at different times.
+Normalising by the word's own rest is what makes the two comparable — the
+film's captions are ~40px and ours ~16px — and aligning on each word's own turn
+is what makes the curves stackable.
 
-    # the film, straight from the mp4
     .venv/bin/python scripts/motion_diff.py --film --out /tmp/film.json
 
-    # ours, from a motion_trace capture of a running studio
     .venv/bin/python -m autocwi live --sample --lang en --loop --no-open &
     .venv/bin/python scripts/motion_trace.py --out /tmp/rows.json --seconds 40
     .venv/bin/python scripts/motion_diff.py --ours /tmp/rows.json --out /tmp/ours.json
-
     .venv/bin/python scripts/motion_diff.py --compare /tmp/film.json /tmp/ours.json
 
-WHY THE TWO SIDES ARE MEASURED DIFFERENTLY, and why that is not a cheat: the
-film exists only as pixels, so its envelope is segmented off the frames; ours
-exists as a DOM, where the same quantity is readable exactly and at 33Hz instead
-of 24. Both produce "size relative to this word's own rest, against time from
-this word's own turn". Measuring ours through screenshots as well would add
-sampling error to the side we can measure exactly.
+The film exists only as pixels so its envelope is segmented off the frames;
+ours exists as a DOM where the same quantity is readable exactly. Measuring
+ours through screenshots too would add sampling error to the side we can
+measure exactly.
 
-TRAPS ALREADY PAID FOR, do not re-introduce:
-  * A word swollen past ~2x merges with its neighbour under column-gap
-    segmentation, so word slots MUST come from a settled frame, never from a
-    frame with motion in it.
-  * Letters have different ink heights and only some have descenders, so a word
-    must be normalised by ITS OWN rest -- never by the line's median, which
-    steps to a different letter as words enter and leave and invents excursions
-    that are not there.
-  * The film cuts between captions. A shot boundary inside a tracked window
-    hands one slot two different words; shots are detected and cut.
+TRAPS ALREADY PAID FOR:
+  * Word slots MUST come from a settled frame — a word past ~2x merges with its
+    neighbour under column-gap segmentation.
+  * Normalise by the word's OWN rest, never the line's median, which steps to a
+    different letter as words enter and invents excursions.
+  * The film cuts between captions; a shot boundary inside a window hands one
+    slot two different words, so shots are detected and cut.
 """
 from __future__ import annotations
 

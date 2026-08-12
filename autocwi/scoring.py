@@ -1,17 +1,13 @@
 """Shared transcript scoring.
 
-Lives in the package, not in a script, because both benchmarks need it and a
-script importing another script was fragile. Korean scores by CHARACTER: word
-tokenization matches `[A-Z0-9']+` and drops every Hangul codepoint, which makes
-a Korean pair score as a perfect empty-vs-empty match.
+Korean scores by CHARACTER: word tokenization matches `[A-Z0-9']+` and drops
+every Hangul codepoint, so a Korean pair would otherwise score as a perfect
+empty-vs-empty match.
 
-Korean additionally canonicalizes before scoring -- see `canonical_korean`.
-FLEURS writes `2011년`, every Korean recognizer here says `이천십일년`, and
-scoring those as 4 substitutions measures a WRITING CONVENTION, not
-recognition. MEASURED on the 8-clip FLEURS ko slice: 26 of 44 edits (59%) sat
-within six characters of a digit. Without this, any provider or checkpoint A/B
-is decided by whose formatting matches the reference's, which is exactly the
-comparison the benchmark exists to avoid.
+Korean also canonicalizes first — see `canonical_korean`. FLEURS writes
+`2011년` where every recognizer here says `이천십일년`; scoring that as four
+substitutions measures a writing convention rather than recognition, and
+measured, 59% of edits sat within six characters of a digit.
 """
 
 from __future__ import annotations

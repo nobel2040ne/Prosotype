@@ -1,27 +1,16 @@
-"""Non-speech / paralinguistic sound detection for the caption non-speech lane.
+"""Non-speech sound detection for the caption non-speech lane.
 
-The recognizer stack transcribes SPEECH; a Deaf/HoH viewer also needs to know
-when the room laughs, applauds, when music plays, or a phone rings. An AudioSet
-audio-tagging model supplies the raw per-window class probabilities; this module
-is the model-FREE half that turns that stream into stable, de-bounced caption
-events — exactly the split `SpeakerTracker` uses (it takes an ``embed`` callable
-and owns only the windowing/clustering), so this stays unit-testable offline
-with a synthetic classifier and never imports sherpa-onnx.
+The recognizers transcribe SPEECH; a Deaf/HoH viewer also needs to know when
+the room laughs, applauds, when music plays or a phone rings. An AudioSet
+tagger supplies per-window class probabilities; this is the model-free half
+that turns them into stable caption events, so it stays unit-testable with a
+synthetic classifier and never imports sherpa-onnx.
 
-Two jobs:
-
-* **Categorise.** AudioSet has 527 leaf classes; the caption lane only needs a
-  handful of coarse buckets (``vocal`` / ``reaction`` / ``music`` /
-  ``environmental``). The mapping is data in ``config.yaml``
-  (``live.sound_events.categories``), matched as case-insensitive substrings,
-  with a ``suppress`` list for the Speech classes the ASR already owns.
-
-* **De-bounce into segments.** A tagger fires every hop (~0.5 s). Emitting a
-  chip per hop would strobe ``[music]`` a dozen times a second. Instead each
-  category runs an independent open/sustain/close state machine so laughter can
-  land ON TOP of running music, and each real sound produces exactly one
-  ``start`` (chip appears) and one ``end`` (chip finalises, duration known,
-  written to the durable log for haptics).
+Two jobs. **Categorise** AudioSet's 527 leaves into four buckets, mapped as
+data in `config.yaml` with a `suppress` list for the Speech classes the ASR
+owns. **De-bounce** into segments: the tagger fires every ~0.5s, so each
+category runs its own open/sustain/close machine — laughter can land on top of
+running music, and each real sound produces exactly one start and one end.
 """
 
 from __future__ import annotations

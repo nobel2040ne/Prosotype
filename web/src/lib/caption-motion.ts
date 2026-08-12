@@ -1,95 +1,25 @@
-/**
- * The one-shot caption motion described by CWI 2.2.3 and 2.3.
- *
- * The live adaptation has an explicit lifecycle:
- *
- *   normal type -> voice-shaped crest + synchronization pop -> normal type
- *
- * Normal type owns layout. The voice-shaped type is painted on an overlaid
- * glyph during the motion window, so changing size, weight, or width cannot
- * reflow the caption row and no DOM measurement is required.
- *
- * WHEN it runs is not decided here, and is no longer decided by a scheduler at
- * all. Because the playhead (`caption-clock.ts`) presents captions behind the
- * acoustic clock, every word's colour turn has a known future moment, which is
- * handed to the browser as one `animation-delay`. The reveal queue, its
- * concurrency slots, its catch-up policy and its unpainted-reservation
- * watchdog were all machinery for guessing that moment from arrival order;
- * none of it survives.
- */
+/** The one-shot caption motion described by CWI 2.2.3 and 2.3. */
 
 export interface VoiceTypeRanges {
   /** Reachable multiples of the 2.3.5 baseline. The PDF's span is 0.6..2.4. */
   scale: readonly [number, number];
   /** How much of the 2.3.6 excursion is used above the 2.3.5 baseline. */
   scaleResponse: number;
-  /**
-   * ...and below it. Deliberately smaller.
-   *
-   * The two directions are not symmetric in what they cost. Growing a word
-   * makes it easier to read and reads as emphasis; SHRINKING it makes it
-   * harder to read, and the speaker's own loudness percentiles put a great
-   * many ordinary words below the median. Measured on the bundled clip with a
-   * symmetric response, 48% of all words rendered smaller than normal, down to
-   * 0.75x -- ordinary unstressed speech drawn as if it were whispered, which
-   * reads as instability rather than as intonation.
-   */
+  /** ...and below it. Deliberately smaller. The two directions are not
+     symmetric in what they cost. */
   scaleResponseQuiet: number;
-  /**
-   * Fraction of each side's range where the size does not move at all.
-   *
-   * Ordinary speech lives near the speaker's median; without this band every
-   * unstressed word drifts smaller and the captions read as unstable.
-   */
+  /** Fraction of each side's range where the size does not move at all. */
   scaleDeadband: number;
-  /**
-   * Where the size mapping pivots, as a fraction of normalised loudness.
-   * Defaults to `LOUDNESS_PIVOT`. The ENHANCED clock passes 0, which turns the
-   * two-sided mapping into one continuous upward ramp -- see `voiceScale`.
-   */
+  /** Where the size mapping pivots, as a fraction of normalised loudness. */
   scalePivot?: number;
-  /**
-   * Exponent applied to the re-spanned deviation before the response. 1 is the
-   * straight mapping legacy uses. The ENHANCED clock raises it, because our
-   * normalised loudness compresses at the top: with a linear response our p75
-   * and p90 landed at 1.355x and 1.370x -- nearly touching -- against the
-   * film's 1.256x and 1.394x, i.e. most of the loud half saturating against the
-   * ceiling instead of spreading across it.
-   */
+  /** Exponent applied to the re-spanned deviation before the response. 1 is
+     the straight mapping legacy uses. */
   scaleCurve?: number;
-  /**
-   * Control points `[normalisedLoudness, crestAboveOne]`, ascending in both.
-   * When present this REPLACES the pivot/response/curve mapping entirely.
-   *
-   * It exists because no single power curve can pass through the three points
-   * the film requires. Measured, the film wants loudness 0.227 -> 1.064x,
-   * 0.577 -> 1.156x and 0.780 -> 1.283x; a power law fitted to the first pair
-   * gives an exponent of 0.955 and to the second 1.975, so any one exponent
-   * misses one end. Sweeping the exponent confirmed it: at 1.0 our p75 was
-   * 0.099 out, at 2.0 our p50 was 0.063 out, and nothing between fixed both.
-   */
+  /** Control points `[normalisedLoudness, crestAboveOne]`, ascending in both. */
   scalePoints?: Array<[number, number]>;
   /** Reachable `font-weight`. 400 is fixed at the 2.3.8 neutral band. */
   weight: readonly [number, number];
-  /**
-   * How much of the weight range an emphasised word takes, on top of 2.3.9.
-   *
-   * WITHOUT THIS THE WEIGHT CHANNEL ARGUES WITH THE VOLUME CHANNEL AND WINS.
-   * 2.3.9 maps high pitch to LIGHT, and a shout raises F0 -- the PR film's
-   * drill sergeant goes 140 Hz -> 278 Hz -- so the angriest voice in the film
-   * rendered here at weight 200, the configured Light floor: the thinnest text
-   * on the stage. The film does the opposite, unmistakably: crop its "louder"
-   * at peak (t=16.7 s) beside the same word settled (t=18.0 s) and it is
-   * Regular at rest and Black at 2.08x.
-   *
-   * The reconciliation is 2.3.7's own domain. "The frequency range of a
-   * typical human voice falls between 80 and 250 Hz", and the pitch->weight
-   * map describes a VOICE -- "lower voices ... are represented with a heavier
-   * weight", a property of who is speaking. A 278 Hz shout is not an airy
-   * voice, it is effort, and it leaves that domain entirely. So the Light half
-   * is withdrawn in proportion to emphasis, and emphasis adds weight of its
-   * own; ordinary speech, which is what 2.3.9 is about, is untouched.
-   */
+  /** How much of the weight range an emphasised word takes, on top of 2.3.9. */
   weightEmphasis: number;
   /** Reachable `font-stretch` %. 100 is the neutral width. */
   width: readonly [number, number];
@@ -106,14 +36,8 @@ export interface CaptionMotionPlan {
   rest: CaptionType;
   /** CWI 2.3 type at the expressive crest of the motion. */
   voice: CaptionType;
-  /**
-   * CWI 2.2.3's eye-guiding cue: ONE growth, anchored at the baseline.
-   *
-   * There is no elevation term. The diagram's "25% elevation" is what
-   * scaling about the glyph box's bottom does to the TOP of the word; as a
-   * separate translation it made the word hop instead of grow. See the
-   * `word-sync-pop` keyframe.
-   */
+  /** CWI 2.2.3's eye-guiding cue: ONE growth, anchored at the baseline. There
+     is no elevation term. */
   sync: {
     scale: number;
   };
@@ -139,12 +63,8 @@ const PITCH_CEILING_HZ = 250;
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.max(minimum, Math.min(maximum, value));
 
-/**
- * Low/rich (+1) through neutral (0) to high/thin (-1).
- *
- * The complete 160–200 Hz range is neutral. A missing/unvoiced 0 Hz reading is
- * also neutral rather than being treated as an impossibly low voice.
- */
+/** Low/rich (+1) through neutral (0) to high/thin (-1). The complete 160–200
+   Hz range is neutral. */
 export function voiceTone(pitchHz: number): number {
   if (!Number.isFinite(pitchHz) || pitchHz <= 0) return 0;
   if (pitchHz < PITCH_NEUTRAL_LOW_HZ) {
@@ -156,30 +76,12 @@ export function voiceTone(pitchHz: number): number {
     (PITCH_CEILING_HZ - PITCH_NEUTRAL_HIGH_HZ);
 }
 
-/**
- * Where the 2.3.5 baseline sits on the server's normalised 0..1 loudness.
- *
- * The server pivots each speaker's running median onto this point, so a word of
- * ordinary volume arrives here and renders at exactly 1.0.
- */
+/** Where the 2.3.5 baseline sits on the server's normalised 0..1 loudness. */
 const LOUDNESS_PIVOT =
   (SIZE_BASELINE_PCT - SIZE_MIN_PCT) / (SIZE_MAX_PCT - SIZE_MIN_PCT);
 
-/**
- * Volume -> type size, anchored on §2.3.5 and bounded by §2.3.6.
- *
- * THE DEADBAND IS WHAT MAKES THE QUIET HALF USABLE. Without one, every word
- * below the speaker's median shrinks a little: measured on the bundled clip,
- * 48% of ALL words rendered below normal, so ordinary unstressed speech was
- * drawn as if whispered. Weakening the response instead only made the whole
- * quiet channel invisible (a 10% floor that never reads on screen).
- *
- * A band around the median where the size does not move at all fixes both:
- * ordinary words sit at exactly 1.0, and everything outside the band gets the
- * FULL response, so a genuinely hushed word visibly shrinks. The band is a
- * fraction of each side's own range, because the pivot is not centred -- the
- * quiet half spans 0..0.22 and the loud half 0.22..1.
- */
+/** Volume -> type size, anchored on §2.3.5 and bounded by §2.3.6. THE
+   DEADBAND IS WHAT MAKES THE QUIET HALF USABLE. */
 export function voiceScale(
   loudness: number,
   ranges: VoiceTypeRanges,
@@ -203,16 +105,7 @@ export function voiceScale(
     }
     return clamp(above, ranges.scale[0], ranges.scale[1]);
   }
-  /*
-   * THE PIVOT IS WHY OUR DISTRIBUTION WAS TWO-HUMPED. Measured against the PR
-   * film, its per-word peaks climb smoothly (1.086 / 1.156 / 1.256 / 1.394)
-   * while ours clustered at two values -- the bare 2.2.3 pop, and a large
-   * crest, with nothing between. Most words sit BELOW this pivot, and on the
-   * enhanced clock the size cue is clamped upward-only, so all of them pinned
-   * to exactly 1.0. Passing `scalePivot: 0` makes the whole loudness range one
-   * continuous ramp, which is the shape the film actually has. Legacy keeps
-   * the two-sided mapping and its quiet half.
-   */
+  /* THE PIVOT IS WHY OUR DISTRIBUTION WAS TWO-HUMPED. */
   const pivot = clamp(ranges.scalePivot ?? LOUDNESS_PIVOT, 0, 0.99);
   const deviation = level - pivot;
   const sideRange = deviation >= 0 ? 1 - pivot : Math.max(1e-6, pivot);
@@ -225,22 +118,7 @@ export function voiceScale(
   const spanned = (Math.abs(deviation) - dead) / Math.max(1e-6, sideRange - dead);
   const shaped = Math.pow(clamp(spanned, 0, 1),
                           Math.max(0.1, ranges.scaleCurve ?? 1));
-  /* WHY `voice_scale_range[0]` DOES NOT MOVE THE QUIET FLOOR (2026-08-04).
-     The two sides are not symmetric. The loud limit (12%/5% = 2.40) sits
-     BEYOND `voice_scale_range`'s ceiling, so the clamp binds and the ceiling
-     is the real control. The quiet limit (3%/5% = 0.60) sits INSIDE its
-     floor, so the floor never binds -- moving it 0.72 -> 0.55 -> 0.46 was
-     measured as a complete no-op three times, because the mapping stops at
-     0.60 regardless. On screen that is 0.60 x the 1.15 pop = 0.73.
-     TAKING `min(0.60, floor)` HERE MAKES "softer" REACH 0.59 AND WAS TRIED
-     AND REVERTED. It works, but this expression is shared: `reachableScaleRange`
-     answers "how far from normal is this word, as a fraction of the possible"
-     for the character-wave suppression and `emphasisOf`, and the two must
-     move together or a word renders more extreme than the range claims is
-     reachable. Changing both perturbed the held word's motion, which is a
-     high price for one word's depth. If the quiet half must go below 2.3.6's
-     3% minimum, change BOTH functions together and re-verify the hold and the
-     wave, not just the word that prompted it. */
+  /* WHY `voice_scale_range[0]` DOES NOT MOVE THE QUIET FLOOR (2026-08-04). */
   const limit = deviation >= 0
     ? SIZE_MAX_PCT / SIZE_BASELINE_PCT
     : SIZE_MIN_PCT / SIZE_BASELINE_PCT;
@@ -250,34 +128,7 @@ export function voiceScale(
   return clamp(1 + response * shaped * (limit - 1), minimum, maximum);
 }
 
-/**
- * Pitch -> type weight, with §2.3.8's complete neutral band held at 400.
- *
- * `prominence` is how loud this word is for its speaker, 0..1, BEFORE the size
- * deadband. At 0 this is exactly the PDF's mapping.
- *
- * THE TWO HALVES USED TO BE SCALED AGAINST DIFFERENT WIDTHS, AND THAT ALONE
- * MADE SHOUTS THIN. The pitch term was scaled by the LIGHT half
- * (`400 - floor`) while the emphasis bonus was scaled by the BOLD half
- * (`ceiling - 400`). At the shipped [200, 760] those are 200 and 360, so for
- * any voice at or above 250 Hz -- where `voiceTone` saturates at -1 -- the
- * whole function collapsed to `200 + 398p`, crossing Regular only at p = 0.50.
- * `weightEmphasis` had to exceed `(400-floor)/(ceiling-400)` = 0.556 for a
- * fully-emphasised shout merely to RETURN to Regular, and the shipped value
- * was 0.55 -- under the threshold by 0.006. MEASURED consequence: 72 of the
- * film's 165 words (44%) rendered lighter than Regular, the drill sergeant
- * among them, where the reference lightens 5 of 48 and never past -53.
- * Both terms now scale against the same half, so `weightEmphasis` means what
- * its name says and no arithmetic accident can put an emphasised word below
- * Regular.
- *
- * IT ALSO TAKES PROMINENCE, NOT THE POST-DEADBAND SIZE. It used to read
- * `emphasisOf(voiceScale(loudness))`, and `voice_scale_deadband` pins that at
- * exactly 0 up to normalised loudness ~0.485 -- so every word inside the band,
- * which is most of them, got pure 2.3.9 and went to the floor if high-pitched.
- * The deadband exists so an ordinary word does not RESIZE; it was never meant
- * to silence the weight channel too.
- */
+/** Pitch -> type weight, with §2.3.8's complete neutral band held at 400. */
 export function voiceWeight(
   tone: number,
   ranges: VoiceTypeRanges,
@@ -298,11 +149,8 @@ export function voiceWeight(
   return Math.round(clamp(400 + shaped + pressed, floor, ceiling));
 }
 
-/**
- * Harmonics -> width, constrained to §2.3.10's heavy+wide / light+condensed
- * diagonal. The available texture estimate refines pitch but cannot contradict
- * it.
- */
+/** Harmonics -> width, constrained to §2.3.10's heavy+wide / light+condensed
+   diagonal. */
 export function voiceWidth(
   tone: number,
   texture: number,
@@ -321,18 +169,8 @@ export function voiceWidth(
   return Math.round(clamp(100 + shaped, floor, ceiling));
 }
 
-/**
- * The size band `voiceScale` can ACTUALLY produce, which is not `ranges.scale`.
- *
- * `scale` is a clamp; the response is what the mapping really reaches, and on
- * the quiet side the two differ a lot -- configured 0.72, reachable 0.78,
- * because `scaleResponseQuiet` is 0.55. Anything that asks "how far from
- * normal is this word, as a fraction of the possible" has to divide by the
- * REACHABLE extreme or it can never reach 1: measured, the most hushed word in
- * the film scored 0.786, so a wave suppression keyed on the configured range
- * left 21% of the wave running on "softer." -- a word the reference sets as
- * six glyphs held together, with no scatter at all.
- */
+/** The size band `voiceScale` can ACTUALLY produce, which is not
+   `ranges.scale`. */
 export function reachableScaleRange(
   ranges: VoiceTypeRanges,
 ): [number, number] {
@@ -348,15 +186,7 @@ export function reachableScaleRange(
   return [quiet, loud];
 }
 
-/**
- * How loud this word is for its speaker, 0..1, BEFORE the size deadband.
- *
- * `emphasisOf` reads the size the word ended up at, so it inherits
- * `voice_scale_deadband` and is exactly 0 for every word inside the band --
- * which is most of them. That is right for anything asking "how much did this
- * word GROW", and wrong for anything asking "how prominent is this word",
- * because the band exists only to stop ordinary words resizing.
- */
+/** How loud this word is for its speaker, 0..1, BEFORE the size deadband. */
 export function prominenceOf(loudness: number): number {
   const level = clamp(Number.isFinite(loudness) ? loudness : LOUDNESS_PIVOT, 0, 1);
   return clamp((level - LOUDNESS_PIVOT) / (1 - LOUDNESS_PIVOT), 0, 1);
@@ -368,12 +198,8 @@ export function emphasisOf(scale: number, ranges: VoiceTypeRanges): number {
   return clamp((scale - 1) / (top - 1), 0, 1);
 }
 
-/**
- * How far this word's size departs from normal, 0..1, on whichever side it is.
- *
- * A whisper and a shout both read as 1, so the character wave can trade off
- * against the word-level swell symmetrically.
- */
+/** How far this word's size departs from normal, 0..1, on whichever side it
+   is. */
 export function voiceDeviationOf(
   scale: number,
   ranges: VoiceTypeRanges,
@@ -394,20 +220,8 @@ export function voiceTypeFor(
   },
   ranges: VoiceTypeRanges,
 ): CaptionType {
-  /* THE REGISTER HALF IS A PROPERTY OF THE VOICE, NOT OF THE WORD (2026-08-03).
-     2.3.9 draws high pitch LIGHT, and taken per word that turns every shout
-     into the thinnest text on screen: a shout's F0 doubles (this film's
-     narration 140 Hz against 278 Hz shouting), so MEASURED, 20 words rendered
-     lighter than Regular including "damn" from "Goddamnit" -- a word the film
-     sets BLACK. 2.3.7 is what resolves it, and it is explicit that its domain
-     is a VOICE: "lower voices are represented with a heavier weight ... the
-     frequency range of a typical human voice". That is a statement about WHO
-     IS SPEAKING. Within one speaker, going high is EFFORT, not register.
-     So the register term reads the speaker's running median F0
-     (`pitch_register_hz`) and a word's own excursion above it can no longer
-     drive it toward Light. Pitch still varies the weight between speakers,
-     which is all 2.3.9 is actually about; falls back to the word's own pitch
-     when no register is known yet, which is the old behaviour. */
+  /* THE REGISTER HALF IS A PROPERTY OF THE VOICE, NOT OF THE WORD
+     (2026-08-03). */
   const register = typeof registerHz === "number" &&
     Number.isFinite(registerHz) && registerHz > 0 ? registerHz : pitchHz;
   const tone = voiceTone(register);
@@ -421,19 +235,9 @@ export function voiceTypeFor(
   };
 }
 
-/**
- * Build the whole motion without inspecting rendered geometry.
- *
- * Expression only interpolates the §2.3 voice target. The §2.2.3 cue remains
- * the same 15% / 25% on every word, as required by the PDF.
- */
-/**
- * The word's own intonation contour, sampled evenly across its spoken span.
- *
- * `loudness` is already on the 2.3.5-pivoted 0..1 scale (the server normalises
- * it through the same function as the word-level value), `pitch` is Hz, and
- * `texture` is 0..1 brightness, matching what `voiceWidth` already consumes.
- */
+/** Build the whole motion without inspecting rendered geometry. Expression
+   only interpolates the §2.3 voice target. */
+/** The word's own intonation contour, sampled evenly across its spoken span. */
 export interface VoiceEnvelope {
   loudness: readonly number[];
   pitch: readonly number[];
@@ -453,22 +257,7 @@ export function sampleContour(
   return values[low] + (values[high] - values[low]) * (at - low);
 }
 
-/**
- * CWI 2.3 IS PER CHARACTER. One `CaptionType` for each letter of the word.
- *
- * The design system's illustrations are the argument: p.34 sets "Put that
- * coffee dOWn!" beneath its own waveform with the `O` and `W` huge and the `d`
- * and `n!` small; p.38 varies weight across "neeee**eeeed**" under a pitch
- * curve; p.40 ramps one sentence from black to hairline. A single value per
- * word cannot express any of that, and collapsing to one is what made the
- * captions read as flat.
- *
- * Each character is placed at the centre of its share of the span and reads the
- * contour there. This is deliberately uniform rather than advance-weighted: the
- * recognizer gives no per-character alignment, so anything finer would be
- * invented rather than measured. Without an envelope every character falls back
- * to the word-level voice, which is exactly the previous behaviour.
- */
+/** CWI 2.3 IS PER CHARACTER. One `CaptionType` for each letter of the word. */
 export function characterVoiceTypes(
   characterCount: number,
   envelope: VoiceEnvelope | null | undefined,

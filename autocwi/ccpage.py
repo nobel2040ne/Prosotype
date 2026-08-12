@@ -1,71 +1,28 @@
 """Closed-caption renderer: the full CWI motion system, text known in advance.
 
-Live mode can only ever approximate CWI, because CWI 2.2.1 read-ahead assumes
-the line exists *before* it is spoken. This renderer takes a finished
-CaptionSpec (``spec.json``) and plays it against a clock, so every behaviour
-the live path has to fake or omit becomes exact:
+Live can only approximate CWI, because 2.2.1 read-ahead assumes the line exists
+before it is spoken. This takes a finished CaptionSpec and plays it against a
+clock, so read-ahead is real, the colour turn sweeps across a word over its own
+spoken span, and the travelling wave is safe — a closed caption plays through
+instead of accumulating under a reader.
 
-* **Read-ahead is real.** A line appears whole in white before its first word,
-  because we know the whole line.
-* **The colour turn sweeps across the word.** CWI says a word turns "as it is
-  spoken"; a word takes time to speak, so the boundary advances through its
-  letters over the word's own span. The official AE template drives a
-  *word*-index Range Selector but with Ease High/Low set, which smooths the
-  hand-off across characters — word-level timing, character-level appearance.
-  That is what this reproduces.
-* **The travelling wave is safe here.** ``motion.neighbor_bleed`` is disabled
-  live because displacing settled text disturbs a reader mid-transcript; a
-  closed caption plays through and is gone, so the wave is faithful.
+The motion comes from ``Academy_CI_Template.aep``, not from the reference
+recordings, which are a screen capture of the website and a different
+implementation. The template's four animators touch only Position 3D and Fill
+Color: no scale, tracking, size, rotation, skew or opacity animator exists in
+the file. ``Yellow`` drives the lift and the fill from ONE range selector, so a
+letter is at the top of its lift at the instant it turns. That is the bounce.
 
-The motion is taken from the original source — ``Academy_CI_Template.aep`` —
-not inferred from the reference recordings, which are a screen capture of the
-website and a different implementation. The template holds four text animators:
+The recordings are matched as three composable systems on different scopes,
+and they must not be collapsed into one generic text wave:
 
-===============  ==========================================================
-``Words``        ``fill = yellow`` (the settled state)
-``Up``           ``y = -5``
-``Yellow``       ``y = -amp``, ``fill = COLOR_01``
-``Antecipate``   ``y = +2``, one frame earlier (``framesToTime(1)``)
-===============  ==========================================================
-
-Between them they touch only ``ADBE Text Position 3D`` and
-``ADBE Text Fill Color`` — there is no scale/tracking/size/rotation/skew/
-opacity animator anywhere in the file, and the expressions return ``[x,y]``, so
-no Z either. ``Yellow`` drives the lift *and* the fill from one range selector,
-so the rise is exactly in phase with the colour turn: a letter is at the top of
-its lift at the instant it turns. That is the bounce; a lift that merely leads
-the colour and lands at rest as it arrives is smooth but dead.
-
-The template is the calm reading, and ``wave_reach: 0`` gives it. **The
-reference recordings in ``docs/`` are the website — a different implementation
-— and it does animate type.**
-
-Those recordings are matched as THREE SEPARATE, COMPOSABLE SYSTEMS. They must
-not be collapsed into one generic text wave; each is on a different scope:
-
-1. **Intonation**, on the WORD wrapper. A uniform scale/weight envelope over
-   every letter of the word: it begins to swell ~180 ms before the spoken
-   onset (while the word may still be white), peaks near the stressed portion,
-   holds while the word is being spoken, then decays back to the common
-   resting typography. Amplitude is prosody — a median word barely deforms, a
-   loud one clearly swells. Size/weight are NEVER sent through a word letter by
-   letter.
-2. **Synchronization**, on each CHARACTER span. A travelling two-phase bounce
-   around that letter's own colour turn: approaching, it crouches very
-   slightly while still white; after turning it rises, pops just past its
-   resting size, and settles. Only a few adjacent letters move at once.
+1. **Intonation**, on the WORD. One uniform envelope over every letter —
+   amplitude is prosody. Size and weight are never sent letter by letter.
+2. **Synchronization**, on each CHARACTER, around that letter's own turn.
 3. **Speaker identity**, colour only — never a reason to swell or lift.
 
-They compose rather than replace::
-
-    word-level scale  x  character-level scale  +  character-level lift
-
 Both scales are transforms, never font-size, so an emphasised word cannot
-reflow the line, wrap it, or shift it vertically. Everything returns to one
-resting size, weight and baseline, so a settled character is identical to its
-neighbours.
-
-This is the reference implementation. Live mode is the compromise.
+reflow the line. Everything returns to one resting size, weight and baseline.
 """
 
 from __future__ import annotations

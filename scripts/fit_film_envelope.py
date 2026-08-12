@@ -33,9 +33,8 @@ import numpy as np
 
 CSS = Path("web/src/app/globals.css")
 CONFIG = Path("config.yaml")
-# Where the envelope is considered to start and end, as a fraction of its peak.
-# Not zero: the measured tails are noise around rest, and chasing them would set
-# the window from the noise floor rather than from the motion.
+# Where the envelope is considered to start and end, as a fraction of its
+# peak.
 FOOT = 0.06
 
 

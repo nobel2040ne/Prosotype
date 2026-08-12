@@ -534,47 +534,29 @@ def _density(p):
 def word_curves(text, pairs, group, nsamp=80):
     """Per-word CURVES for size, weight and lift, each normalised to its rest.
 
-    This is the measurement the whole exercise turns on. ``emphasis`` and
-    ``weight_ratio`` each used to build a co-present, clip-rejected,
-    time-aligned matrix and then throw the curve away, keeping one scalar --
-    and ``refmeasure.curves`` does the same across every glyph in a recording,
-    medianing them into ONE average shape. A renderer handed only those scalars
-    can never do anything but give every word the average word's motion, which
-    is exactly why words that do not move in the reference were still lifting
-    here. Keep the curve.
+    Keep the CURVE, not a scalar. A renderer handed one number per word can
+    only give every word the average word's motion, which is why words that do
+    not move in the reference were still lifting here.
 
-    NORMALISE EACH GLYPH BY ITS OWN REST, THEN MEDIAN -- not the other way
-    round. Medianing raw pixel heights and baselines across a word's glyphs
-    looks equivalent and is not: letters have different intrinsic ink heights
-    ("o" against "l") and only some have descenders, so as glyphs enter and
-    leave the co-present set the median steps to a different letter and the
-    curve jumps. Measured, that composition artefact alone produced a 0.35x
-    "size" excursion on `Caption` and +-0.16 of phantom lift on words that
-    never moved. Per-track normalisation removes it: every track contributes
-    1.0 at rest whatever letter it is.
+    NORMALISE EACH GLYPH BY ITS OWN REST, THEN MEDIAN — not the other way
+    round. Letters have different intrinsic ink heights and only some have
+    descenders, so medianing raw pixels makes the median step to a different
+    letter as glyphs enter and leave. Measured, that artefact alone produced a
+    0.35x "size" excursion and ±0.16 of phantom lift on words that never moved.
 
-    Medianing across the word's CO-PRESENT glyphs is still the trick that
-    separates the two scopes: a per-character effect hits one letter at a time
-    and barely moves the median, while a word-level envelope moves every letter
-    together and moves it fully. Tracks must be compared AT THE SAME TIME --
-    they start on different frames, so indexing two by array position compares
-    different moments and reported the largest word on screen ("sizes,") as no
-    emphasis at all.
+    Medianing across CO-PRESENT glyphs is what separates the two scopes: a
+    per-character effect moves one letter and barely moves the median; a
+    word-level envelope moves every letter together. Compare tracks AT THE SAME
+    TIME — they start on different frames, and indexing by array position
+    reported the largest word on screen as no emphasis at all.
 
-    Rests differ per channel, on purpose:
-
-    * height and density rest BEFORE that glyph's own colour turn. Read-ahead
-      puts an unspoken word on screen at its resting size, while the TAIL is
-      unusable on a scrolling line -- there it is the word leaving the frame,
-      which made the last word of every line ("softer.") read as the most
-      emphasised on screen.
-    * baseline rests on the median over the glyph's WHOLE life. The lift is a
-      transient excursion that settles back (CWI's letters all return to one
-      baseline), so the median of a mostly-flat signal IS that baseline --
-      whereas the pre-turn window is precisely where the anticipation crouch
-      lives and would be absorbed into the reference, zeroing the very motion
-      we are trying to copy.
-    """
+    Rests differ per channel, deliberately: height and density rest BEFORE the
+    glyph's own turn (the tail is the word leaving a scrolling frame, which
+    made the last word of every line read as the most emphasised), while
+    baseline rests on the median over the glyph's whole life (the pre-turn
+    window is exactly where the anticipation crouch lives, and using it would
+    zero the motion being copied).
+"""
     obs_of = {}
     for oi, ci in pairs:
         obs_of.setdefault(ci, group[oi])
@@ -712,35 +694,26 @@ def frame_curves(per_frame, pairs, group, text, fps, boxes=None,
                  strict=True):
     """Per-word motion curves measured WITHOUT the word's own tracks surviving.
 
-    Tracking breaks on exactly the words that matter. Association gates on
-    ``abs(h - last_h) < 0.6*last_h`` and a 14 px step, and a word swelling past
-    3x while its letters merge violates both -- so the most emphasised word in
-    a recording yields the FEWEST tracks and reads as no emphasis at all
-    ("louder" measured 1.085 against a true ~3.1). Short words fare no better:
-    "as", "is" and "so" segment as a single merged run and drop out entirely.
+    Tracking breaks on exactly the words that matter: a word swelling past 3x
+    while its letters merge violates the association gates, so the most
+    emphasised word in a recording yields the FEWEST tracks and reads as no
+    emphasis at all. Short words merge into one run and drop out entirely.
 
-    The earlier attempt attributed each frame's tallest glyph to whichever word
-    the FITTED timings said was being spoken -- and the emphasis envelope LEADS
-    the spoken onset, so a peak landed one word early ("or" was credited with
-    "louder"'s swell), while widening the window let a word claim its
-    neighbour's peak outright. Attribute in SPACE instead, two ways:
-
-    * BY RANK, when the frame's ink splits into exactly as many runs as there
-      are words (`frame_words`): the k-th run is then the k-th word, whatever
-      size it has swollen to. This is the case that matters, because it is
-      exactly the swelling word whose own tracks have died.
-    * otherwise by interpolating the surviving tracks' x -> character-index map
-      and reading a glyph's own x through it.
+    Attributing each frame's tallest glyph to whichever word the fitted timings
+    said was being spoken does not work — the emphasis envelope LEADS the
+    onset, so a peak lands one word early. Attribute in SPACE instead: BY RANK
+    when the frame's ink splits into exactly as many runs as there are words
+    (the k-th run is the k-th word, whatever size it swelled to — and that is
+    the case that matters, since it is the swelling word whose tracks died),
+    otherwise by interpolating the surviving tracks' x -> index map.
 
     Rank-matching is what stops the smear: interpolating across the hole left
-    by "louder"'s dead tracks put its giant glyphs partly inside "or", which
-    then measured 1.85x on a word that never moved.
+    by a swollen word's dead tracks put its glyphs partly inside its neighbour,
+    which then measured 1.85x on a word that never moved.
 
-    Returns one record per word with ``t``; ``h`` and ``d`` as ratios against
-    the LINE's median glyph in that same frame (so a global size change or the
-    scroll cancels); and ``hp`` and ``b``, the same word's median ink height
-    and baseline in pixels, which is what the lift's unit needs. Rests are left
-    to the caller.
+    Returns one record per word: ``t``; ``h`` and ``d`` as ratios against the
+    LINE's median glyph in that frame, so a global size change or the scroll
+    cancels; and ``hp``/``b`` in pixels, which is what the lift's unit needs.
     """
     words = _words_of(text)
     ci_word = {}

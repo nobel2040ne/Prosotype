@@ -60,38 +60,20 @@ def _rms_db(x: np.ndarray) -> float:
 
 
 def _span_db(x: np.ndarray, percentile: float = 90.0, frame_s: float = 0.03) -> float:
-    """How loud a WORD was -- the level where the voice actually is.
+    """How loud a WORD was — the level where the voice actually is.
 
-    THE WHOLE-SPAN RMS CANNOT TELL A SHOUT FROM A WHISPER, AND THAT IS WHY
-    THE SIZE CHANNEL NEVER WORKED (2026-08-03). A word's span includes its
-    stops, its unvoiced consonants and the gaps between phones, and those are
-    near-silent whatever the speaker is doing; averaging over them buries the
-    difference. MEASURED on the PR film's own "so you can feel when my voice
-    gets louder or softer": by whole-span median "louder" reads -23.5 dB and
-    "my voice gets" -22.3, i.e. the emphasised word looks QUIETER, which is
-    what this repo concluded and wrote down as "the narrator never said
-    'louder' louder... the film's giant 'louder' is authored from MEANING".
-    That conclusion was an artefact of the statistic. Scored on the loud part
-    of each word instead, the same audio gives "louder" **-11.4 dB** and
-    "softer" **-23.6 dB** -- a 12.2 dB separation, in the right direction,
-    from plain level and nothing else.
-    **THE PERCENTILE STAYS 90. THE MEDIAN WAS TRIED AND MEASURED WORSE
-    (2026-08-03).** Within the drill-sergeant line the median looks strictly
-    better: it ranks "sole" first (-16.8, against "What's" -18.6 and "purpose"
-    -27.1) where p90 puts "What's" and "purpose" ABOVE it, and it separates
-    "louder" (-16.4) from "softer" (-32.3) by 15.9 dB where p90 gives 12.2. A
-    stressed word is loud SUSTAINED -- "sole" spans 3.2 dB from median to p90
-    while "purpose", a stop with silence inside it, spans 14.4 -- so on paper
-    the median is the right discriminator.
-    SHIPPED, IT IS NOT. On screen "louder" fell from **1.82x to 1.15x**, the
-    bare pop, and "sole" did not improve at all. A statistic that ranks better
-    WITHIN ONE LINE need not render better: the crest comes from a word's
-    position in the SPEAKER's running percentile window, and lowering every
-    word's dB moves that window with it. Rank order inside a sentence is not
-    what drives the size channel. Reverted.
-    This is the same correction `_vocal_effort` already makes for spectral
-    tilt ("the loudest half of the 30 ms frames measures the tilt where the
-    voice actually is"); level needed it for exactly the same reason.
+    THE WHOLE-SPAN RMS CANNOT TELL A SHOUT FROM A WHISPER, and that is why the
+    size channel never worked. A word's span includes its stops, its unvoiced
+    consonants and the gaps between phones, all near-silent whatever the
+    speaker is doing. Measured on the PR film, whole-span median makes the
+    emphasised "louder" read QUIETER than the calm words around it; scored on
+    each word's loud frames instead, the same audio separates "louder" from
+    "softer" by 12.2 dB, in the right direction, from level alone.
+
+    **The percentile stays 90.** The median ranks better within a single line
+    and shipped WORSE — the crest comes from a word's position in the
+    speaker's running percentile window, so lowering every word's dB moves the
+    window with it. "louder" fell to the bare pop. Reverted.
     """
     if not len(x):
         return -80.0
@@ -554,12 +536,11 @@ def sample_clip_path(language: str = "en") -> str:
             "bundled Korean sample not found: assets/sample-ko.wav"
         )
     candidates = [
-        # The PR film. It lives with the other reference recordings because that
-        # is what it IS -- the same file was checked in twice, once here and
-        # once in docs/, byte for byte, until 2026-08-13.
+        # The PR film: reference material AND the clip `--sample` streams. It
+        # was checked in twice, byte for byte, until 2026-08-13.
         root / "docs" / "reference" / "pr-film.mp4",
         root / "AE PROJECT" / "AE PROJECT" / "(Footage)" / "ASETS" / "Video"
-             / "cena-ci-template-v02a.mp4",
+             / "Cena_ref_CI_Template_v02a.mp4",
     ]
     for path in candidates:
         if path.exists():
@@ -1729,24 +1710,20 @@ SpeakerStatus = Literal["unknown", "provisional", "stable", "corrected"]
 class DirectionSpeakerMap:
     """Speakers from azimuth alone, the SpeechCompass way.
 
-    Voice evidence is slow: text lands at a median 0.62 s and durable identity
-    at 4.48 s, so a speaker who has just started renders grey for seconds. A
-    bearing is available on the word itself. Clustering bearings into slots
-    gives every word a colour immediately, and the endpoint embedding pass
-    still corrects it, so the claim stays revisable rather than final.
+    Voice evidence is slow — text at a median 0.62 s, durable identity at
+    4.48 s — so a new speaker renders grey for seconds. A bearing is available
+    on the word itself, and the endpoint pass still corrects it, so the claim
+    stays revisable.
 
-    **This trades a different error, it does not remove error.** Two people at
-    one bearing collapse into one slot; one person who crosses the tolerance
-    splits into two. SpeechCompass (CHI '25) accepts exactly this and measures
-    11-22 deg localization error, which is why the tolerance below is far
-    wider than that figure -- it must absorb the error without merging people
-    who are genuinely apart.
+    **This trades a different error, it does not remove one.** Two people at
+    one bearing collapse into one slot; one person crossing the tolerance
+    splits into two. The tolerance is far wider than the array's own 11-22 deg
+    error because it must absorb that without merging people genuinely apart.
 
     A `None` bearing keeps the CURRENT slot rather than inventing an angle:
-    absent direction means "no new evidence", and turn continuity is the
-    ordinary diarization prior. Half of all reads carry no bearing, so
-    without this the grey would simply come back.
-    """
+    absent direction is "no new evidence", and turn continuity is the ordinary
+    diarization prior. Half of all reads carry no bearing.
+"""
 
     def __init__(self, tolerance_deg: float = 35.0) -> None:
         self.tolerance_deg = float(tolerance_deg)
@@ -1790,31 +1767,21 @@ class DirectionSpeakerMap:
 class SpeakerBearingMap:
     """Where each DECIDED speaker has been heard from, for the compass ring.
 
-    ``DirectionSpeakerMap`` cannot answer this. It exists to colour a word the
-    voice lane has not decided yet, so `_colour_from_direction` stops feeding
-    it the moment attribution settles -- and attribution settles almost
-    immediately. Measured against the array over 22 s: the live bearing swept
-    37 deg and the voice lane labelled 343 words across S1 and S2, while the
-    slot map held **one** centroid the whole time. A ring fed from it marks one
-    position and then goes deaf, which is not "who is where".
+    ``DirectionSpeakerMap`` cannot answer this: it stops being fed the moment
+    attribution settles, which is almost immediately. Measured over 22 s, the
+    voice lane labelled 343 words while the slot map held ONE centroid — a ring
+    fed from it marks one position and goes deaf.
 
-    So this is a SEPARATE, purely descriptive map. It never returns an identity
-    and nothing reads it back into attribution: it takes decisions the voice
-    lane already made and remembers the bearing they were made at. Direction-
-    derived guesses are excluded by the caller, because feeding a geometric
-    identity back into a geometric position is circular -- it would report a
-    confident mark built out of its own prior.
+    So this is separate and purely descriptive. It never returns an identity,
+    and direction-derived guesses are excluded by the caller: feeding a
+    geometric identity back into a geometric position is circular.
 
-    Recent-window for the MEAN, lifetime for the MARK. A speaker who moves
-    should end up marked where they are now, and a bounded window is also what
-    lets concentration be computed honestly rather than washing a move out
-    against session history -- so the position keeps coming from the window.
-    But a speaker never LEAVES the ring once they have been placed: when the
-    window goes too scattered to give a mean, the last good mark is re-emitted
-    with ``stale: True`` instead of the speaker vanishing. Dropping them was
-    read as the compass forgetting people, and a viewer cannot tell "this
-    speaker left" from "this speaker's bearings got noisy for a moment".
-    """
+    Recent-window for the MEAN, lifetime for the MARK. The position comes from
+    the window so a speaker who moves is marked where they are now, but a
+    speaker never LEAVES the ring once placed — too scattered to average
+    re-emits the last good mark as ``stale`` instead. A viewer cannot tell
+    "this speaker left" from "their bearings got noisy for a moment".
+"""
 
     # A speaker's bearings must point more together than apart before their
     # mean is a place anyone stood. Same threshold and same reasoning as
@@ -1909,27 +1876,22 @@ class SpeakerBearingMap:
         """Which PLACED speaker best explains this bearing, and how well.
 
         Returns ``(speaker_id, z)`` where ``z`` is the separation in units of
-        that speaker's own bearing spread -- so a talker the array has pinned
-        tightly is matched strictly and a loosely-placed one leniently. ``None``
-        when nothing is close enough, which must stay a real outcome: a bearing
-        from somewhere nobody has ever spoken is evidence of a NEW speaker, not
-        of the nearest old one.
+        that speaker's OWN spread, so a tightly-pinned talker is matched
+        strictly. ``None`` when nothing is close enough must stay a real
+        outcome: a bearing from where nobody has spoken is evidence of a NEW
+        speaker, not of the nearest old one.
 
-        This is the difference between direction as a fallback and direction as
-        evidence. ``DirectionSpeakerMap`` invents geometric slots and can only
-        ever say "the 2nd distinct direction"; this names a speaker the VOICE
-        lane identified, because the positions it reads were learned from
-        voice-attributed words only.
+        This is direction as evidence rather than as a fallback.
+        ``DirectionSpeakerMap`` can only say "the 2nd distinct direction"; this
+        names a speaker the VOICE lane identified.
 
         **The circularity guard upstream is what makes it sound.**
         ``_record_speaker_bearing`` refuses to record a bearing under a
-        direction-derived identity, so this map is never confirming its own
-        guesses. If that guard is ever relaxed, this becomes a feedback loop
-        that will look like a confident, self-reinforcing answer.
+        direction-derived identity, so this never confirms its own guesses.
+        Relax that guard and it becomes a self-reinforcing feedback loop.
 
-        ``floor_deg`` keeps a speaker seen from one exact angle from having a
-        zero-width band that nothing can ever match, and is well under the
-        array's own 11-22 deg localization error.
+        ``floor_deg`` stops a speaker seen from one exact angle having a
+        zero-width band nothing can match.
         """
         if bearing is None:
             return None
@@ -3114,30 +3076,20 @@ class SpeakerTracker:
     ) -> list[SpeakerAttribution]:
         """A LONE WORD MAY NOT CHANGE SPEAKER IN THE MIDDLE OF AN UTTERANCE.
 
-        Everything upstream of this decides identity per SEGMENT, and a segment
-        may legally be one word long (`min_assignment_duration_s` is 0.25 s, and
-        terminal punctuation forces a boundary at every sentence-final word).
-        Three separate paths then hand a single word a fully-saturated
-        ``stable`` label with no persistence check at all -- ``accepted-short-
-        stable``, the per-word Sortformer decision, and one-word segments -- and
-        ``switch_hysteresis_s`` guards none of them because it measures
-        observation TIME, not word RUNS. There is no run-length guard anywhere
-        upstream.
+        Identity is decided per SEGMENT, and a segment may be one word long.
+        Three paths hand a single word a saturated `stable` label with no
+        persistence check, and `switch_hysteresis_s` guards none of them —
+        it measures observation TIME, not word runs.
 
-        MEASURED on the studio: of 11 colour runs across 104 settled words,
-        **4 were exactly one word**, including ``seen``(green) ``Forrest``(olive)
-        ``many``(green) -- three consecutive single-word flips inside one
-        narrator's sentence. CWI 2.1 makes colour the speaker signal, so a false
-        flip is worse than neutral: it actively lies about who is talking.
+        Measured: of 11 colour runs across 104 settled words, four were exactly
+        one word, including three consecutive single-word flips inside one
+        narrator's sentence. CWI 2.1 makes colour the speaker signal, so a
+        false flip is worse than neutral — it lies about who is talking.
 
-        The rule the user chose is boundary-aware. Real turn-taking happens at
-        the EDGES of an utterance, so the first and last word are left alone and
-        stay instant. Inside the utterance a switch must be corroborated by
-        ``speaker_min_run_words`` neighbours; an isolated dissenter inherits the
-        speaker surrounding it. This runs after attribution and mutates no
-        centroid, so enrollment and every per-segment test are untouched -- a
-        word whose colour is corrected here still taught the tracker whatever it
-        taught it.
+        The rule is boundary-aware: real turn-taking happens at the EDGES of an
+        utterance, so the first and last word stay instant. Inside, a switch
+        needs `speaker_min_run_words` neighbours to corroborate it. Runs after
+        attribution and mutates no centroid, so enrollment is untouched.
         """
         run = max(1, int(self.speaker_min_run_words))
         if run <= 1 or len(labels) < 3:
@@ -3726,48 +3678,28 @@ class StreamingCaptioner:
     ) -> list[float]:
         """Effort + pitch excursion + lengthening, in the tilt's own dB units.
 
-        TILT ALONE CANNOT SEE THE EMPHASIS THE PR FILM DRAWS BIGGEST. Its
-        narrator says "so you can feel when my voice gets **louder** or
-        softer", and the film sets `louder` at 2.08x its own settled height in
-        Black. Measured on that audio the word is only ~1 dB above the words
-        either side of it, so LEVEL cannot see it; what can: its own tilt runs
-        +1.64 dB against a -9.51 dB median (the strongest word in its
-        neighbourhood), its F0 is 259.7 Hz, and it is held 0.12 s per character
-        against a 0.08 s median. Pitch excursion and lengthening are the other
-        two acoustic correlates of prosodic prominence, they survive mastering
-        exactly as tilt does, and both are already measured here.
+        TILT ALONE CANNOT SEE THE EMPHASIS THE FILM DRAWS BIGGEST. The film
+        sets "louder" at 2.08x its settled height, and measured, that word is
+        only ~1 dB above its neighbours — level cannot see it. Its tilt, its
+        F0 and its per-character duration all can, and all three survive
+        mastering.
 
-        THE SMOOTHING IS WHAT ERASED IT, AND THE TWO SCOPES ARE DIFFERENT
-        THINGS. `smoothing_words` exists because sustained pressed phonation is
-        a speaking STYLE and a causal mean reads it far better than one word
-        does (measured AUC 0.801 -> 0.905 on the drill sergeant). A single
-        stressed word is an EVENT, and that same mean is exactly what deletes
-        it: the six words before "louder" are calm narration (-7.5, -13.6,
-        -20.8, -14.7, -18.5), so the mean lands at -12.2 -- BELOW the median --
-        and the lift computes to 0.000 no matter how the rest is tuned.
-        `emphasis_blend` is how much of the word's OWN tilt survives the mean.
-        Measured over the film (own-tilt blend / pitch gain / length gain):
+        THE SMOOTHING IS WHAT ERASED IT. `smoothing_words` exists because
+        sustained pressed phonation is a speaking STYLE that a causal mean
+        reads far better than one word does. A single stressed word is an
+        EVENT, and that same mean deletes it: the calm narration before
+        "louder" drags the mean below the median and the lift computes to
+        exactly 0.000 however the rest is tuned. `emphasis_blend` is how much
+        of the word's OWN tilt survives the mean; pitch is what buys the
+        detector's AUC back.
 
-            blend  pitch  len | "louder"  shout lifted  narration  AUC
-             0.00   0.8   0.5 |    0.000       42%          2%    0.925
-             0.40   0.8   0.5 |    0.149       63%          5%    0.936
-             0.60   0.8   0.5 |    0.246       63%          5%    0.936
-             0.75   1.0   0.5 |    0.31        60%          5%    0.93
-             1.00   0.8   0.5 |    0.396       58%          5%    0.906
+        Lengthening is per CHARACTER, not per word, for the same reason tilt is
+        energy-weighted: raw duration mostly measures syllable count. All three
+        terms are ratios against the speaker's own running median, in dB, so
+        they add. No voiced pitch, or no baseline yet, contributes nothing
+        rather than a guess.
 
-        Pitch is what buys the AUC back: at blend 0 it lifts 0.882 -> 0.958.
-
-        Lengthening is measured per CHARACTER, not per word, for the same
-        reason tilt is energy-weighted: raw duration mostly measures how many
-        syllables a word has, so "identification." would outrank every shout in
-        the film. Both extra terms are RATIOS against the speaker's own running
-        median, in dB, so they are dimensionally the same quantity as the tilt
-        and the three simply add. A word with no voiced pitch, or a speaker
-        with no baseline yet, contributes nothing rather than a guess.
-
-        Takes the whole sequence because the blend needs each word's causal
-        neighbours: scoring one word against a differently-scored history is
-        how a percentile window ends up measuring two different quantities.
+        Takes the whole sequence because the blend needs causal neighbours.
         """
         med_pitch, med_span = baseline
         blend = float(np.clip(cfg.get("emphasis_blend", 1.0), 0.0, 1.0))

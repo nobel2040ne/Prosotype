@@ -24,8 +24,7 @@ import numpy as np
 SR = 16_000
 
 # A phone cannot determine English spelling in general ("phone", "hour",
-# "knife").  These are intentionally conservative *display guesses*: the
-# authoritative ASR corrects the same node in place and never replays motion.
+# "knife").
 PHONE_GRAPHEMES = {
     "aa": "A",
     "ae": "A",

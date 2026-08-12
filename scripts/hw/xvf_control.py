@@ -1,23 +1,17 @@
 """Read direction of arrival off a stock ReSpeaker XVF3800.
 
-No host binary, no firmware change: the board's control interface is a
-vendor-specific USB interface in its shipped descriptors, and every value
-below is a control transfer on EP0. Seeed's `host_control/<platform>/xvf_host`
-is one way to reach it; this is the same protocol issued directly, which
-removes a per-read subprocess from the node's hot path.
+No host binary and no firmware change: every value here is a USB control
+transfer on EP0, the same protocol `xvf_host` speaks.
 
-Two details this file exists to get right:
+Two things this file exists to get right:
 
-**`DOA_VALUE` is a little-endian uint16, not a byte.** The vendor sample reads
-it as `response[1]`, which wraps at 256 and cannot express 0..359. That is
-invisible at the ~133 deg a board reports at rest and renders a talker behind
-the array as in front once the bearing passes 255.
-
-**A bearing is only a fact while speech is detected.** The board holds its last
-bearing when the room goes quiet rather than blanking it, so a reader that
-ignores the speech flag reports a confident direction at whoever spoke last,
-indefinitely. `read_bearing()` returns None instead, because "never fabricate
-direction -- omit it" is the rule this module is here to satisfy.
+- **`DOA_VALUE` is a little-endian uint16, not a byte.** Read as one byte it
+  wraps at 256, which looks correct at the ~133 deg a board reports at rest
+  and puts a talker behind the array in front of it past 255.
+- **A bearing is only a fact while speech is detected.** The board holds its
+  last bearing when the room goes quiet, so ignoring the speech flag reports a
+  confident direction at whoever spoke last, indefinitely. `read_bearing()`
+  returns None: never fabricate direction.
 """
 
 from __future__ import annotations
@@ -28,13 +22,7 @@ VID = 0x2886
 PID = 0x001A
 TIMEOUT_MS = 5000
 
-# name -> (resid, cmdid, payload_bytes, kind)
-#
-# Payload is in BYTES here. Seeed's two sample files disagree on this -- their
-# `xvf_host.py` counts VALUES and `respeaker_get_doa.py` counts BYTES for the
-# same commands -- so read either sample carefully before adding a row.
-#
-# Beam order for every 4-wide value: beam 1, beam 2, free-running, auto-select.
+# name -> (resid, cmdid, payload_bytes, kind) Payload is in BYTES here.
 PARAMETERS = {
     "VERSION": (48, 0, 3, "u8"),
     # payload[0] = bearing 0..359, payload[1] = 1 if speech detected

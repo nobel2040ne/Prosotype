@@ -1,35 +1,28 @@
-"""Does a word that has already settled MOVE AGAIN?  (run it with a live server)
+"""Does a word that has already settled MOVE AGAIN?
 
     .venv/bin/python -m autocwi live --sample --lang en --no-open &
     .venv/bin/python scripts/word_remotion.py 34
 
-CAUGHT A REAL DEFECT 2026-08-12, which is why it is kept: the 2.3 voice axes
-were recomputed on every render, and the speaker's RUNNING REGISTER keeps
-moving, so a word that had finished animating was re-derived minutes later.
-Measured, "like" settled at scale 1.000 / weight 400 and became 1.460 / 860 at
-+7.3s, which also flipped `--voice-envelope` from `voice-phase-film` to
-`voice-phase-hold` -- an animation-NAME change, so the word visibly re-ran its
-whole motion. Fixed by freezing them in `WordMemo.voice`.
+Everything is frozen at first sight by rule — duration, axes, sweep, hold gap
+and turn moment — so a settled word must stay settled. Restarting one is the
+bug this project re-commits most.
 
-TWO TRAPS, both of which produced confident wrong answers here first:
+It caught a real defect: the 2.3 voice axes were recomputed on every render,
+and the speaker's running register keeps moving, so a finished word was
+re-derived minutes later and visibly re-ran its motion.
+
+TWO TRAPS, both of which gave confident wrong answers first:
 
   A PRE-TURN REMOUNT IS NOT A RE-MOTION. A word waiting to turn sits at rest in
-  its `backwards` fill, and a row re-break rebuilds it there -- which looks
-  identical to a settled word moving. Filtering on a NEGATIVE `--turn-delay`
-  (the word has actually turned) took 14 false positives to 1 real one.
+  its `backwards` fill, and a row re-break rebuilds it there. Filtering on a
+  negative `--turn-delay` took 14 false positives to 1 real one.
 
   READ THE ANIMATION INPUTS, not just the geometry. Knowing a word moved says
-  nothing about why; capturing `--voice-envelope`, `--voice-scale`, `--sync-pop`
-  and `--voice-weight` at the moment it moved named the cause on the first run.
+  nothing about why; capturing the phase, scale, pop and weight at that moment
+  named the cause on the first run.
 
-Everything is frozen at first sight by rule -- duration, axes, sweep, hold gap
-and turn moment -- so a settled word must stay settled. Restarting one is the
-bug this project re-commits most, and it has never had a check.
-
-A word counts as having settled once it has been at rest (transform identity,
-font-size back to its own minimum) for several consecutive samples AFTER having
-moved. Any movement after that is a re-motion, and the word's own id is what
-identifies it -- keying by text would merge repeats of the same word.
+A word counts as settled once it has been at rest for several consecutive
+samples AFTER having moved. Keyed by word id — keying by text merges repeats.
 """
 import json, subprocess, sys, time
 from pathlib import Path
@@ -102,11 +95,6 @@ finally:
     proc.terminate()
 
 # HOW LONG A WORD MUST BE STILL BEFORE A SECOND MOVE COUNTS AS A RE-MOTION.
-# It was 8 (~0.24s), and that MISSED a real defect the user saw: a word whose
-# animation-name changed while it was still in its own return re-fired within a
-# few frames, so it was never still for 8 samples and never got counted. 3 is
-# ~0.09s, comfortably longer than a sampling gap and shorter than any real
-# pause between the two halves of a double motion.
 REST_RUN = 3
 offenders = []
 for wid, samples in hist.items():
@@ -125,11 +113,7 @@ for wid, samples in hist.items():
                 peak = max(s["sy"] * s["fs"] / base for s in samples[i:i + 12])
                 remount = samples[i]["stamp"] != samples[settled_at]["stamp"]
                 a, b = samples[settled_at]["vars"], samples[i]["vars"]
-                # ONLY A WORD THAT HAS ALREADY TURNED CAN RE-MOTION. A positive
-                # `--turn-delay` means the word is still in its `backwards`
-                # fill waiting to turn -- at rest because it has not started,
-                # not because it finished -- and a remount there is the layout
-                # working. Counting those put 14 false positives in this list.
+                # ONLY A WORD THAT HAS ALREADY TURNED CAN RE-MOTION.
                 def turned(v):
                     d = (v.get('--turn-delay') or '0ms').replace('ms', '')
                     try: return float(d) < 0
@@ -146,11 +130,7 @@ for wid, samples in hist.items():
             run += 1
             if run >= REST_RUN and settled_at is None and any(flags[:i]):
                 settled_at = i
-# A WORD THAT PLAYS BACKWARDS. Its size must rise from rest to a peak and then
-# return; a word that is at its LARGEST on the first frame it moves, and only
-# ever shrinks from there, never rose -- it started at the peak. That is what a
-# `forwards` fill holding the peak looks like when the rise is skipped, and it
-# reads on screen as the motion running in reverse.
+# A WORD THAT PLAYS BACKWARDS.
 backwards = []
 for wid, samples in hist.items():
     if len(samples) < 12:

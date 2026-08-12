@@ -1,28 +1,17 @@
 """Wire protocol for the hardware node (ReSpeaker array + Pi Zero 2 W).
 
-The Pi Zero 2 W has 512 MB of RAM and cannot host the recognizers, so with the
-array plugged into the Pi the capture path has to cross the network: the Pi
-captures and ships audio, the Mac runs the pipeline, and haptic cues come back
-the other way. This module is the framing both ends share.
+The Pi cannot host the recognizers, so the capture path crosses the network:
+the Pi captures and ships audio, the Mac runs the pipeline, haptic cues come
+back. This module is the framing both ends share.
 
-Three decisions worth keeping:
-
-**Audio travels as float32, not int16.** int16 would halve the bandwidth and at
-these rates the saving is meaningless (64 KB/s vs 32 KB/s at 16 kHz), while
-`AudioChunk.samples` is required to stay at the true captured level because
-prosody measures `loudness_db` from it and that drives the CWI volume -> size
-channel. Quantizing the capture path to buy nothing is exactly the kind of
-subtle prosody regression this project keeps re-committing, so it does not.
-
-**A sequence gap is a real capture gap.** TCP does not lose data mid-stream, so
-a jump in `seq` can only mean the SENDER dropped blocks -- its own queue
-overflowed, or the link broke and reconnected. Both are genuine device gaps,
-which is precisely what `AudioChunk.discontinuity` is reserved for. Live capture
-is lossless by rule, so the gap is surfaced rather than papered over.
-
-**One connection carries everything.** Audio, direction-of-arrival and haptic
-cues share a socket, so DoA needs no clock of its own: it references the audio
-sequence number it was observed against.
+- **Audio is float32.** int16 would halve a bandwidth that is already trivial,
+  and `AudioChunk.samples` must stay at the true captured level — prosody
+  measures `loudness_db` from it and that drives the volume -> size channel.
+- **A sequence gap is a real capture gap.** TCP does not lose data mid-stream,
+  so a jump in `seq` means the SENDER dropped blocks. Capture is lossless by
+  rule, so it surfaces as `AudioChunk.discontinuity` rather than being hidden.
+- **One connection carries everything**, so DoA needs no clock of its own: it
+  references the audio sequence number it was observed against.
 """
 
 from __future__ import annotations
@@ -46,9 +35,7 @@ KIND_CUE = 4     # host -> node, one haptic actuation
 _HEADER = struct.Struct("!4sBII")   # magic, kind, seq, payload length
 HEADER_SIZE = _HEADER.size          # 13 bytes
 
-# A frame larger than this is a framing error, not a big frame. The largest
-# legitimate payload is one audio block (1024 float32 = 4 KB), so this is three
-# orders of magnitude of headroom and still bounds a bad read.
+# A frame larger than this is a framing error, not a big frame.
 MAX_PAYLOAD = 1 << 20
 
 

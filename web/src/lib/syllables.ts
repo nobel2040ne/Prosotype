@@ -1,29 +1,4 @@
-/**
- * WHICH LETTERS OF A WORD MOVE TOGETHER.
- *
- * The film does not lift a word's glyphs one at a time, and it does not lift
- * them as one block either: it lifts them in SYLLABLES. Read back frame by
- * frame from 28s on (`docs/reference/pr-film-annotated.txt`, annotated):
- *
- *     seen     ->  se | en
- *     Gump     ->  Gu | mp
- *     button   ->  but | ton
- *     because  ->  be | cause
- *     saying   ->  say | ing
- *     rescue!  ->  res | cue!
- *
- * and of the short words -- "I've", "many", "times", "but", "now", "I'm",
- * "like" -- the note is "all both lift", i.e. two halves, both leaving the
- * line. So even a monosyllable splits, at its nucleus.
- *
- * A fixed pair (`floor(index / 2)`) gets "se|en" and "Gu|mp" right and
- * "button" wrong (bu|tt|on), which is why this exists instead. Every split
- * above comes out of the rules below unchanged.
- *
- * This is TEXT structure, not audio: it is the same for a word however it was
- * spoken, so it is frozen with the word and cannot be re-derived under a
- * running animation.
- */
+/** WHICH LETTERS OF A WORD MOVE TOGETHER. */
 
 const VOWELS = new Set(["a", "e", "i", "o", "u"]);
 
@@ -46,15 +21,7 @@ function nuclei(word: string): Array<[number, number]> {
       start = null;
     }
   }
-  /* SILENT FINAL E. "times" and "because" both end on an `e` that carries no
-     syllable, and counting it produces "tim|es" and "be|caus|e" -- neither of
-     which the film shows. Dropped when it is a lone `e` with an earlier
-     nucleus and NOTHING but a plural `s` after it.
-     The tail test is this narrow on purpose: allowing any consonant after it
-     also swallowed the real nucleus in "whatever" (-> "wha|tever"), because
-     `e`-consonant-end looks identical from here whether the `e` is silent or
-     not. Erring toward keeping it costs a boundary; erring the other way
-     costs a whole group on every longer word. */
+  /* SILENT FINAL E. */
   if (out.length > 1) {
     const [s, e] = out[out.length - 1];
     const tail = word.slice(e);
@@ -66,12 +33,7 @@ function nuclei(word: string): Array<[number, number]> {
   return out;
 }
 
-/**
- * The group index of every character, 0-based and contiguous.
- *
- * `maxGroups` caps how finely a long word divides -- watched, the film never
- * shows more than three or four moving parts in one word.
- */
+/** The group index of every character, 0-based and contiguous. */
 export function syllableGroups(word: string, maxGroups = 4): number[] {
   const chars = [...word];
   const groups = new Array<number>(chars.length).fill(0);
@@ -81,10 +43,9 @@ export function syllableGroups(word: string, maxGroups = 4): number[] {
   const runs = nuclei(word);
 
   if (runs.length >= 2) {
-    /* BETWEEN TWO NUCLEI, the consonants decide where the boundary falls:
-       none -> at the next vowel ("say|ing"); one -> before it, leaving the
-       first syllable open ("be|cause"); two or more -> inside the cluster,
-       which is what closes the first syllable ("but|ton", "res|cue!"). */
+    /* Between two nuclei the consonants decide the boundary: none -> at the
+       next vowel ("say|ing"); one -> before it ("be|cause"); two or more ->
+       inside the cluster, which closes the first syllable ("but|ton"). */
     for (let i = 0; i + 1 < runs.length; i += 1) {
       const clusterStart = runs[i][1];
       const clusterEnd = runs[i + 1][0];
@@ -92,9 +53,7 @@ export function syllableGroups(word: string, maxGroups = 4): number[] {
       cuts.push(span >= 2 ? clusterStart + 1 : clusterStart);
     }
   } else if (runs.length === 1) {
-    /* A MONOSYLLABLE STILL SPLITS -- at its nucleus. A long nucleus divides
-       inside itself ("se|en"); a short one hands the coda to the second group
-       ("Gu|mp"). */
+    /* A MONOSYLLABLE STILL SPLITS -- at its nucleus. */
     const [s, e] = runs[0];
     cuts.push(e - s >= 2 ? s + Math.ceil((e - s) / 2) : e);
   }
@@ -115,19 +74,7 @@ export function syllableGroups(word: string, maxGroups = 4): number[] {
   return groups;
 }
 
-/**
- * Does this word lift SYLLABLE BY SYLLABLE, rather than as one piece?
- *
- * The grouping above is finer than this on purpose: it is the wave's CLOCK,
- * and the film staggers `se|en` and `Gu|mp` at four letters. What it does not
- * do at four letters is visibly raise the halves independently -- those read
- * as one word leaving the line. From six letters up it does, which is where
- * `but|ton`, `say|ing`, `be|cause` and `res|cue!` all sit.
- *
- * So the timing splits early and the LIFT splits late, and this is the second
- * question. A word under the threshold still lifts -- as a whole word, on
- * `--word-lift-em`.
- */
+/** Does this word lift SYLLABLE BY SYLLABLE, rather than as one piece? */
 export function liftsInGroups(word: string, minChars = 6): boolean {
   const chars = [...word];
   if (chars.length < minChars) return false;

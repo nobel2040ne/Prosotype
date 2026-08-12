@@ -57,10 +57,7 @@ def main() -> None:
             w["speaker"] = f"{prefix}_{w['speaker']}"
             w["start"] = round(w["start"] + shift, 3)
             w["end"] = round(w["end"] + shift, 3)
-            # Motion is on the same absolute clock as start/end. Shifting only
-            # the spoken span made every section after the first replay its
-            # curves several seconds early, so the united demo appeared flat
-            # even though each source spec was correct on its own.
+            # Motion is on the same absolute clock as start/end.
             if w.get("motion"):
                 w["motion"] = dict(w["motion"])
                 w["motion"]["t0"] = round(w["motion"]["t0"] + shift, 3)

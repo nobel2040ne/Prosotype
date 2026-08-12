@@ -14,18 +14,10 @@
   font-display: swap;
 }
 
-/* TWO DESIGN SYSTEMS, ONE SCREEN. The studio CHROME follows the Apple analysis
-   in `.claude/skills` -- Action Blue as the only accent, ink/parchment surfaces,
-   the 0/5/8/11/18/pill radius scale, a 300/400/600/700 weight ladder, and no
-   shadows or gradients on UI. The CAPTIONS follow the CWI Design System V1.0,
-   which outranks it: Roboto Flex / Noto Sans KR with live variable axes, the CI
-   speaker palette, and the 2.2.3 motion cue. Chrome recedes so the captions can
-   speak -- which is exactly what both systems ask for. Never let Apple tokens
-   reach `.caption-word` and never let CWI tokens style a button. */
+/* TWO DESIGN SYSTEMS, ONE SCREEN. */
 :root {
-  /* Dark: Apple's near-black tile ladder (#272729 / #2a2a2c / #252527) over
-     true black, with Sky Link Blue -- Action Blue measures 2.68:1 on a dark
-     tile, which is why the analysis reserves a separate on-dark accent. */
+  /* Apple's near-black tile ladder over true black. Sky Link Blue rather than
+     Action Blue: Action Blue measures 2.68:1 on a dark tile. */
   --bg: #000000;
   --surface: #272729;
   --surface-raised: #2a2a2c;
@@ -44,14 +36,7 @@
      one token inverts all of them for the light stage. Alphas stay per-rule. */
   --tint: 255 255 255;
   /* THE CHROME IS ONE FRAME, AND THE STAGE IS THE DARK THING INSIDE IT
-     (2026-08-13). The ladder used to run the other way -- topbar pure black,
-     rail #1d1d1f, stage #272729 -- so the lightest surface on screen was the
-     one the captions sit on, and the chrome was darker than the product. With
-     §2.4.1's plate replaced by rules, the stage IS the caption's ground and
-     has to carry the contrast the box used to.
-     Apple reserves pure black for true void (video, the nav bar) and frames it
-     with the near-black tile ladder; the caption stage is this product's video
-     surface, so it takes the void and the chrome takes the tiles. */
+     (2026-08-13). */
   --rail-bg: #1d1d1f;
   --workspace-bg: #101012;
   /* Box mode keeps a tile: the CWI captions box is black at 94% and needs
@@ -72,87 +57,26 @@
   /* Apple radius scale. Nothing in between these steps. */
   --r-xs: 5px;
   --r-sm: 8px;
-  /* `--r-md` is the analysis's RARE Pearl Button step and has no caller here on
-     purpose: mixing it into dense rail cards was the "mixed radii grammar" the
-     Don'ts name. Compact chrome is `--r-sm`, large surfaces are `--r-lg`. */
+  /* The rare Pearl Button step. Deliberately uncalled -- mixing radii
+     grammars is what the analysis warns against. */
   --r-md: 11px;
   --r-lg: 18px;
   --r-pill: 9999px;
-  /* Row-width budget coefficients: worst-case row = N*linear + spread*sqrt(N) em.
-     See `rowBudgetEm` -- the per-word cost RISES as rows shorten, so a single
-     per-word constant is wrong. Fitted to the measured English worst cases
-     (2.93em/word at six words, 3.61em at three) plus ~8%. Korean is separate: a
-     Hangul 어절 is close to full-width.
-     RAISED 2026-08-01, 1.40/4.30 -> 1.45/4.45. The fit was made by sliding a
-     window over one clip's word order, and live text beat it: MEASURED on the
-     running studio, the widest real row reached 19.49em against an 18.93em
-     budget at N=6 -- a 3% under-prediction. The row spilled into the right clip
-     gutter (then sized for the voice orb, which no longer exists), and a
-     row-final word caught mid-pop then pushed 43px past the clip edge and was
-     cut off. It went
-     unnoticed for as long as it did because the old reveal queue capped
-     concurrency at three, so the row's LAST word was rarely mid-motion when a
-     probe sampled; the playhead animates every word at its own onset and peak
-     concurrency measured 6. Costs ~3% of type size (46.7 -> 45.3px at
-     1440x900) and takes the budget to 19.60em, clear of the observation.
-     SPREAD RAISED AGAIN 2026-08-01, 4.45 -> 6.60, when the 2.3 voice band was
-     opened from [0.90,1.20] to [0.72,1.62]. Only the SPREAD term moves: a row's
-     width is the sum of its words' crest footprints, whose MEAN is unchanged
-     (the voice scale still centres on 1.0 at the median loudness) -- what grew
-     is the variance, which is exactly what `spread*sqrt(N)` is for. Raising
-     `linear` instead would have over-budgeted every ordinary row. */
-  /* THIS KNOB CANNOT FIX ROW CLIPPING -- TRIED AND MEASURED (2026-08-03).
-     `.caption-words` is `nowrap`, so an over-long row is silently CUT: no
-     error, no visual warning, and a check on a SETTLED stage cannot see it
-     (one passed by sampling a lucky instant). Polled through live playback
-     with `clip_probe.py`, rows overflow by up to 58px on 497 of 3277
-     row-samples at 8 words/row and 46px on 603 of 3577 at 11. It is
-     PRE-EXISTING and slightly WORSE at the larger type, so it is not a
-     consequence of denser rows.
-     Raising this from 1.45 to 1.72 to cover the measured shortfall changed
-     nothing (47px, 531 samples) and was reverted. The reason is structural:
-     this budget DERIVES THE TYPE SIZE, so inflating it shrinks the type by the
-     same proportion and a row's overflow in `em` is invariant under it.
-     The cause was that rows were chunked by WORD COUNT while a row's width is
-     set by its CHARACTERS -- the offender was always a row carrying
-     "synchronized" or "precisely". FIXED 2026-08-06 by a character budget in
-     `selectStableCaptionStack`'s chunker, not by a bigger per-word estimate;
-     this knob now only sizes the TYPE. Re-check clipping with
-     `scripts/clip_probe.py` through live playback, never on a settled stage. */
+  /* Row-width budget coefficients: worst-case row = N*linear +
+     spread*sqrt(N) em. */
+  /* THIS KNOB CANNOT FIX ROW CLIPPING -- TRIED AND MEASURED (2026-08-03). */
   --word-em-linear: 1.45;
   --word-em-spread: 6.60;
-  /* The resolved budget for the current row width. `planStageLayout` writes this
-     and `--stack-words` together; these are only what renders before the first
-     measurement (six words: 6*1.45 + 6.60*sqrt(6)). */
+  /* The resolved budget for the current row width. */
   --row-budget-em: 24.87;
   --stack-words: 6;
-  /* Ceiling on the caption type size as a fraction of the STAGE width, because
-     Stage rows do not wrap and an oversized row is clipped, not wrapped. This is
-     the term that BINDS -- it is what "fill the stage" means.
-     `.caption-feed` spans 93.6% of the stage's padding box and spends
-     `--caption-gutter-em` of that on its clip gutters, so a row fits exactly
-     when `--row-budget-em + --caption-gutter-em` ems cover it. Keep
-     `--caption-gutter-em` equal to the feed's own `padding-left + padding-right`;
-     `planStageLayout` measures the real padding, so a drift between them shows up
-     as a row-count/type-size mismatch in the CDP probe.
-     Motion never changes the row budget: normal type owns layout and the
-     transient glyph is overlaid. The gutter covers visual overhang only -- it
-     also had to clear the trailing voice orb until that was removed on
-     2026-08-04, and it has NOT been reclaimed since. Doing so is a real gain in
-     caption width, but the last time this number moved it was because a
-     row-final word mid-pop was being CLIPPED, silently, on 15% of row-samples;
-     shrinking it wants `clip_probe.py` through live playback first, not
-     arithmetic. */
+  /* The gutter a row-final word's mid-pop overhang falls into. Measured up
+     to .842em; shrinking it silently clipped ~15% of row-samples. */
   --caption-gutter-em: 2.50;
   /* `--caption-width-cap` is NOT declared here -- see `.studio-shell`. */
 }
 
-/* Light stage. A DOCUMENTED DEVIATION from CWI 2.4.1 (90% black captions box)
-   and 2.1.1/2.1.2 (the CI speaker palette), toggled in Presentation settings so
-   the compliant dark stage stays one click away. Measured, the CI palette is
-   unreadable here -- #E5E517 is 1.19:1 on this surface, #17E517 1.52:1 -- so the
-   speaker colours come from `palette_light` in config.yaml, which preserves each
-   hue and darkens its value to >=4.5:1. See CLAUDE.md. */
+/* Light stage. */
 :root[data-theme="light"] {
   /* Apple parchment page / white canvas. The alternation IS the divider -- the
      stage needs no border or shadow to read as a distinct surface. */
@@ -164,9 +88,8 @@
   --line-strong: #d2d2d7;
   --text: #1d1d1f;
   --muted: #333333;
-  /* #7a7a7a is the analysis's fine-print/disabled tone and measures 3.94:1 on
-     parchment. Secondary LABELS have to stay legible in a captioning tool, so
-     they use Apple's #6e6e73 (4.66:1) instead. */
+  /* #7a7a7a is the analysis's fine-print/disabled tone and measures 3.94:1
+     on parchment. */
   --muted-2: #6e6e73;
   --accent: #0066cc;
   --focus: #0071e3;
@@ -188,21 +111,9 @@
 }
 
 /* Registered so it computes to a real length that `planStageLayout` can read
-   back. An unregistered custom property is a raw token, so `getComputedStyle`
-   would hand JS the literal string "clamp(20px, 16cqh, 64px)" and the layout
-   planner would have to duplicate the constant to use it. */
-/* ONE CLOCK FOR EVERY CHARACTER OF A WORD.
-   Each character used to run its own `font-size` animation. They share a
-   `--turn-delay`, but `animation-delay` counts from when the animation was
-   APPLIED to that element -- and live words grow as the recognizer extends a
-   hypothesis, so a span appended a moment later started its clock a moment
-   later and ran behind its neighbours. Measured, half a Korean word sat at rest
-   while the other half was at its crest, and the width reservation (which
-   animated in lockstep with the early characters) under-read by 23px.
-   Animating a single registered number on the WORD removes the failure mode
-   rather than compensating for it: there is one animation, one origin, and a
-   newly appended character reads the current phase on its first frame.
-   `@property` is what makes a custom property interpolable at all. */
+   back. */
+/* ONE CLOCK FOR EVERY CHARACTER OF A WORD. Each character used to run its
+   own `font-size` animation. */
 @property --voice-phase {
   syntax: "<number>";
   inherits: true;
@@ -266,39 +177,14 @@ button {
   button:active { transform: none; }
 }
 
-/* Two columns, not three. The nav rail held "Live" (a button for the view you
-   are already in), "Legacy" (a diagnostics link, still reachable at /legacy) and
-   "Setup" (the topbar's own settings button), and charged 72px of stage width
-   for it. */
+/* Two columns, not three. */
 .studio-shell {
-  /* DECLARED HERE, NOT ON `:root`, AND THAT IS LOAD-BEARING. A custom property
-     resolves its own `var()` references at computed-value time ON THE ELEMENT
-     THAT DECLARES IT -- only the relative UNITS (`cqw`) stay unresolved until
-     the value is used in a real property. Declared on `:root` this baked in
-     `:root`'s `--stack-words: 6`, so React's per-stage override on this element
-     changed the row width and left the type size at the six-word value: measured,
-     three-word rows still rendered at 24.2px instead of 44px and the stage stayed
-     half empty. This element is the one React writes `--stack-words` and
-     `--row-budget-em` onto.
-     Korean is NOT handled by a per-language variable here. `--per-word-em` used
-     to be one, and when the 2026-08-06 width budget replaced it the Korean case
-     was simply dropped -- a Hangul syllable was charged the English 0.4343em
-     against a real 0.9078em, so rows carried about twice the words that fit and
-     `nowrap` cut the rest. It is per CHARACTER now (`wideCharEm`, measured off
-     the live face in `useWideCharEm`), because a language switch cannot price
-     `2011년`, where the digits are narrow and the syllable is not. */
+  /* DECLARED HERE, NOT ON `:root`, AND THAT IS LOAD-BEARING. */
   --caption-width-cap: calc(
     93.6cqw / (var(--row-budget-em) + var(--caption-gutter-em))
   );
   --topbar-height: 56px;
-  /* THE RAIL YIELDS BEFORE THE CAPTIONS DO (2026-08-13).
-     336px was a fixed column, so every pixel the window lost came out of the
-     stage -- and the stage is where the product is. `--caption-width-cap`
-     above is derived from the workspace's own container width, so squeezing
-     that column directly shrinks the type and re-breaks every row.
-     `clamp` makes the rail the elastic one: it gives up width down to 248px
-     before the caption area is touched at all, and never takes more than a
-     quarter of a wide window. */
+  /* THE RAIL YIELDS BEFORE THE CAPTIONS DO (2026-08-13). */
   --rail-width: clamp(248px, 26vw, 336px);
   width: 100%;
   height: 100dvh;
@@ -316,36 +202,15 @@ button {
 }
 
 .studio-shell[data-language="ko"] {
-  /* Roboto Flex has no Hangul outlines. Noto Sans KR supplies a real wght
-     axis, so Korean pitch-driven weight changes animate continuously instead
-     of snapping between the static weights exposed by a system fallback. */
+  /* Roboto Flex has no Hangul outlines. */
   --font-caption: "Noto Sans KR Variable Local", "Apple SD Gothic Neo",
     "Noto Sans KR", "Malgun Gothic", "Arial Unicode MS", sans-serif;
-  /* Re-measured 2026-07-30 on the bundled ko sample: the widest six-어절 row is
-     20.9em -> 3.49em per 어절, not the ~18.6em recorded back when the height term
-     was smaller than the cap and it never had to be right. Hangul syllable blocks
-     are close to full-width, so the budget stays a per-language measurement
-     rather than a constant: sliding a window over the ko sample's real 어절 order
-     gives worst-case rows of 12.73 / 16.50 / 18.50 / 21.53 em at N = 3..6, which
-     fits linear 2.01 / spread 3.87. Shipped with ~10% on top (min slack 6% at
-     N=4) -- more than English's, because the Korean sample is only 65 어절 and its
-     worst cases are correspondingly less settled. */
+  /* Measured off the Korean sample: the widest six-어절 row is 20.9em. */
   --word-em-linear: 2.20;
   --word-em-spread: 4.35;
 }
 
-/* BILINGUAL CAPTURE (2026-08-11). One model, both scripts, so the caption face
-   has to cover both -- and font fallback is PER GLYPH, which is exactly what is
-   wanted here: Latin resolves to Roboto Flex and keeps the variable axes CWI
-   drives, while Hangul falls through to Noto Sans KR, which is the only one of
-   the two with Hangul outlines and a real wght axis. Listing Roboto Flex first
-   is therefore not a preference, it is what keeps English identical to the
-   English profile.
-   The row budget takes KOREAN's coefficients, not English's. A bilingual row's
-   worst case is a Korean-heavy one (a Hangul block is ~0.91em against Latin's
-   ~0.43em), and over-budgeting costs a slightly under-full row while
-   under-budgeting CLIPS -- `.caption-words` is `nowrap`. Under-full is the
-   survivable error. */
+/* BILINGUAL CAPTURE (2026-08-11). */
 .studio-shell[data-language="multi"] {
   --font-caption: "Roboto Flex Local", "Noto Sans KR Variable Local",
     "Apple SD Gothic Neo", "Noto Sans KR", "Arial Variable", Arial, sans-serif;
@@ -516,20 +381,9 @@ button {
   border-color: var(--line-strong);
 }
 
-/* Nothing but the stage lives here now. The workspace header ("CAPTURE 01 ›
-   FAST", a title repeating the Stage tab, and word/speaker/signal counts the
-   rail already reports) and the transport bar together cost ~135px of stage
-   height for text that duplicated other text. */
+/* Nothing but the stage lives here now. */
 /* THE STAGE'S BORDER BOX IS THE WORKSPACE BOX (2026-08-06, at the user's
-   request). It used to be a rounded card inset 14px/16px inside the workspace,
-   which meant the studio carried TWO framing systems at once: a full-bleed
-   hairline grid (the topbar's bottom rule, the rail's left rule, the window
-   edges) and a floating panel that repeated the same boundary 16px inside it.
-   Flush, the stage's edges ARE those rules, so the frame is drawn once.
-   It is also stage: measured at 1440x900 the stage goes 1072x729 -> 1104x757,
-   and `--caption-width-cap` follows the container (`cqw`), so the caption type
-   grows with it -- the same reasoning that removed the nav rail, the workspace
-   header and the transport bar on 2026-07-30. */
+   request). */
 .workspace {
   grid-area: workspace;
   display: flex;
@@ -547,33 +401,18 @@ button {
   /* No border and no radius: flush against the topbar rule, the rail rule and
      the window, a border here would double every one of them. */
   background: var(--stage-bg);
-  /* The caption size is bounded by this box in BOTH axes -- see `.caption-feed`.
-     `cqw`/`cqh` are the only units that track it: the signal rail toggles, so no
-     `vw` follows the width, and the stage no longer spans the window, so no `vh`
-     follows the height either.
-     `size`, not `inline-size`: `cqh` needs both axes. Safe here because every
-     child is absolutely positioned, so nothing inside contributes to the stage's
-     own size in the first place -- its height comes from `flex: 1` above. */
+  /* The caption size is bounded by this box in BOTH axes -- see `.caption-
+     feed`. */
   container-type: size;
 }
 
-/* Removed 2026-07-30: the framing grid, the four corner brackets and the
-   AUDIENCE VIEW / VOICE-SHAPED MOTION label. The light stage already hid the
-   first two -- with no captions box they were the thing still penning the text
-   in -- and the label named the view the topbar switcher already names. The
-   stage is now the captions and nothing else, in both themes. */
+/* The framing grid, the corner brackets and the stage label are gone: the
+   stage's border box IS the workspace box. Do not re-add them. */
 
 /* Sits below the caption block: it is a non-speech cue, and the top of the
    stage now belongs to the first caption row. */
 /* CWI 2.4.4: "Sound effects always appear in white and within brackets [ ],
-   similar to classic caption systems. However, they still follow the rules of
-   Caption with Intention's animation and design system... the sound effects
-   inside the brackets will increase in size and 'pop' in sync with the sound."
-
-   So this is a CAPTION, not chrome: caption face, white, no pill, no border,
-   no blur. It sits below the caption block because the stack owns the stage.
-   The size follows the live input level, which is the honest analogue of the
-   thunder example -- it is the loudness of the sound being described. */
+   similar to classic caption systems. */
 .sound-caption {
   position: absolute;
   z-index: 8;
@@ -595,47 +434,32 @@ button {
     opacity 240ms ease;
 }
 
-/* CWI 2.4.4/2.4.5: a sound label yields to speech. The reference film never
-   shows one beside an active dialogue caption; the component sets this while
-   the playhead is inside displayed speech (plus a short linger). The label
-   fades rather than unmounting, so the model keeps tracking the sound. */
+/* CWI 2.4.4/2.4.5: a sound label yields to speech. */
 .sound-caption[data-suppressed="true"] {
   opacity: 0;
 }
 
 /* The light stage has no captions box, and pure white on near-white would
-   vanish. 2.4.1's box is what makes white legible, so where the box is absent
-   the sound effect takes the stage's own ink instead. */
+   vanish. */
 :root[data-theme="light"] .sound-caption {
   color: var(--caption-unknown);
 }
 
 /* CWI 2.4.5: music descriptors "don't need to be animated and don't change
-   color". The ♫ symbol on either side is added by the component. The
-   suppression fade is not animation of the descriptor, so it stays. */
+   color". */
 .sound-caption[data-category="music"] {
   transform: translateX(-50%);
   transition: opacity 240ms ease;
 }
 
-/* A SOUND LABEL VIBRATES FOR AS LONG AS IT IS UP. Both of the film's -- "[Toy
-   music]" at 38s and "[Beep]" at 49s -- shake in place rather than popping
-   once, which is what tells them apart from speech at a glance: a word's
-   motion is an event, a sound's is a state.
-   Amplitude is deliberately sub-pixel-ish at the shipped label size (~16px):
-   large enough to read as alive, small enough not to blur the type. The
-   `--sound-level` scale still rides on the parent, so a loud sound is a bigger
-   label that shakes the same, exactly as 2.4.4 asks.
-   Two frequencies, deliberately coprime periods, so the shake never settles
-   into a visible loop the way a single sine does. */
+/* A SOUND LABEL VIBRATES FOR AS LONG AS IT IS UP. */
 .sound-caption-shake {
   display: inline-block;
   animation: sound-vibrate 190ms linear infinite;
 }
 
-/* Music keeps its own exception from 2.4.5 on COLOUR and SIZE; the film still
-   vibrates it, and that is the whole reason this rule is not folded into the
-   one above. */
+/* Music keeps 2.4.5's exception on colour and size, but the film still
+   vibrates it -- which is why this is not folded into the rule above. */
 @keyframes sound-vibrate {
   0%   { transform: translate(0, 0) rotate(0deg); }
   20%  { transform: translate(.6px, -.4px) rotate(.22deg); }
@@ -690,17 +514,9 @@ button {
   font-size: 12px;
 }
 
-/* Top-anchored: the block starts below the stage label and fills downward, so
-   the newest caption sits at eye level instead of hugging the bottom edge. The
-   six-block cap in selectStableCaptionStack bounds its height; `top`/`bottom`
-   bound the box. */
-/* Top-anchored while there is room, then it scrolls.
-   `height: auto` + `max-height` means the box hugs its content and stays pinned
-   at `top`, so a short stack sits high. Once the content exceeds `max-height`
-   the box stops growing and `justify-content: flex-end` puts the negative free
-   space at the TOP, so the OLDEST caption is what leaves the screen.
-   A plain `top`/`bottom` box with `flex-start` clipped the other end and ate
-   the newest caption the moment the stage filled. */
+/* Top-anchored while there is room, then it scrolls. `top` + `max-height` +
+   `justify-content` are all load-bearing: get one wrong and the NEWEST
+   caption is what vanishes. */
 .caption-feed {
   position: absolute;
   z-index: 5;
@@ -713,51 +529,14 @@ button {
   flex-direction: column;
   align-items: flex-start;
   justify-content: flex-end;
-  /* THREE OF THESE FOUR PADDINGS ARE CLIP GUTTERS, NOT SPACING. `overflow`
-     clips at the PADDING box, so a padding strip is room INSIDE the clip that
-     layout does not consume -- which is the only way to keep a transform from
-     being cut off without letting it change where the words sit.
-     - right: a row-final word's own transient overhang. Its scale channel grows
-       the ink by (scale-1)/2 of the word's width, measured up to .842em past
-       the row edge mid-motion. (This gutter also used to clear the trailing
-       voice orb, removed 2026-08-04; the value is unchanged -- see
-       `--caption-gutter-em`.)
-     - left: the overlaid first word grows about `transform-origin: 50% 100%`,
-       so the clip needs room for the configured voice shape and 15% pop.
-     - top: the same scale grows upward, and the word carries up to .25em of
-       transient lift on top of that, which is more than the 1.38 line box's
-       leading. Without this the TOP row's motion was clipped flat.
-     - bottom: the box hugs its content, so the newest row's bottom edge IS the
-       content edge -- and the Stage FLIP entry starts that row at
-       `translateY(0.58em)`. Measured, the entering row was cut off for the
-       whole 620 ms entry. Raised .66 -> .84em on
-       2026-08-01: the cue now grows a word about its BASELINE, so a crest
-       scales the descenders downward as well and the bottom row clipped by a
-       measured 1.3px. This gutter is the one the eviction path never uses:
-       `justify-content: flex-end` sends overflow to the TOP, so the bottom
-       strip stays free.
-     Keep `--caption-gutter-em` equal to left + right. */
+  /* THREE OF THESE FOUR PADDINGS ARE CLIP GUTTERS, NOT SPACING. */
   padding: .40em 1.90em .84em .60em;
   /* No gap: consecutive blocks are one continuous read, spaced only by the
-     caption's own leading. A gap turned every speaker turn and utterance
-     boundary into a visible section break, which is segmentation the reader
-     did not ask for -- speaker identity is already carried by colour. */
+     caption's own leading. */
   gap: 0;
   overflow: hidden;
   font-family: var(--font-caption);
-  /* THE WIDTH TERM IS THE ONE THAT BINDS, AND THAT IS THE POINT. Rows do not
-     wrap, so the widest a row of `--stack-words` words may be is what decides the
-     type size -- `--caption-width-cap` is that budget, expressed against the
-     stage's own width. Above it `nowrap` does not wrap an oversized row, it
-     CLIPS it. Because words-per-row is itself chosen from the stage size
-     (`planStageLayout`), this is a real answer on any stage shape, not just a
-     wide one: the narrow window that produced 23.6px captions with six words per
-     row gets 44px with three.
-     The HEIGHT term is the ceiling on a single row (`cqh`, so it follows the
-     stage box rather than the viewport -- the stage no longer spans the window).
-     It used to be `4.6vh`, and it BOUND: measured at 1440x900 it asked for
-     37.4px against a width budget of 44.8px, so the captions ran 20% smaller
-     than the stage could carry and left a quarter of the row width unused. */
+  /* THE WIDTH TERM IS THE ONE THAT BINDS, AND THAT IS THE POINT. */
   --caption-height-cap: clamp(20px, 16cqh, 64px);
   font-size: min(
     calc(var(--caption-height-cap) * var(--caption-scale, 1)),
@@ -783,10 +562,8 @@ button {
   opacity: 1;
 }
 
-/* Stage is the audience view, and CWI 2.1 identifies a character by COLOUR --
-   the text label is a studio affordance, not part of the caption. Above every
-   block it read as five rows of "SPEAKER TRANSITION" competing with the words.
-   Transcript (the operator view) keeps it, with its timestamp. */
+/* The stage is the audience view, and 2.1 identifies a speaker by COLOUR.
+   The text label is a studio affordance; Transcript keeps it. */
 .caption-feed .caption-paragraph header {
   display: none;
 }
@@ -822,12 +599,8 @@ button {
   font-size: 10px;
 }
 
-/* CWI 2.4.1 specifies a captions box at 90% black, and the dark stage renders
-   it. The light stage deliberately has NO box: on a light surface the plate
-   added an edge and a shadow around every line without adding contrast, and
-   what carries the caption there is the typography. Both come from
-   `--caption-box`/`--caption-box-shadow`, so the toggle restores the compliant
-   box. */
+/* CWI 2.4.1 specifies a captions box at 90% black, and the dark stage
+   renders it. */
 .caption-surface {
   display: flex;
   align-items: center;
@@ -869,9 +642,7 @@ button {
   border-bottom: 1px solid var(--caption-rule, rgba(255, 255, 255, .22));
 }
 
-/* The rules belong to the line that is live. Older rows keep their text and
-   drop the rules, or a full stage reads as a stack of boxes -- which is what
-   this was meant to get away from. */
+/* The rules belong to the line that is live. */
 .studio-shell[data-plate="rules"] .caption-paragraph:not([data-current="true"])
   .caption-surface {
   border-color: transparent;
@@ -882,26 +653,7 @@ button {
 }
 
 /* THE BOX GROWS SIDEWAYS AS WORDS ARRIVE (2026-08-13, at the user's request:
-   "블록이 유튜브처럼 옆으로 확장되면서").
-   `.caption-words` is sized by its content, so appending a word snapped the
-   2.4.1 black box to its new width in one frame.
-
-   IT IS A CLIP, NOT A WIDTH ANIMATION, and the first attempt here was the
-   latter. `transition: width` on an intrinsic width is silently inert -- the
-   SPECIFIED value stays `auto` and never becomes a transition endpoint, so
-   nothing fires; `interpolate-size: allow-keywords` does not help, because it
-   makes `auto` interpolable but there is still no second endpoint. Measured,
-   the box kept 23 single-frame jumps of up to 255px with that CSS in place.
-   Animating the used width from JS would work and would relayout the row on
-   every frame, which puts row breaking and the motion clock at risk for a
-   cosmetic effect.
-   So the row is CLIPPED from the right and the clip opens: no layout is
-   touched at all, and what a viewer sees is the box and the new word arriving
-   together, left to right. `CaptionFeed`'s layout effect drives it.
-
-   KEPT SHORT ON PURPOSE: while the clip opens it hides the word that caused
-   it, which is a progressive appearance, and 2.2.1's read-ahead is exactly
-   what progressive appearance destroys. See `ROW_GROW_DURATION_MS`. */
+   "블록이 유튜브처럼 옆으로 확장되면서"). */
 .caption-words {
   position: relative;
   display: flex;
@@ -911,23 +663,7 @@ button {
   max-width: 100%;
   padding: .08em .16em .14em .18em;
   row-gap: .12em;
-  /* LEADING CARRIES THE CREST. The cue grows a word upward from its fixed
-     baseline (CWI moves no word vertically), so the ink top rises by
-     `(scale - 1) * capHeight` -- ~0.61em at the 1.863x maximum crest -- and the
-     leading is the only thing between a loud word and the row above it.
-     KEPT AT 1.38, AND THE ARITHMETIC THAT SAID OTHERWISE WAS WRONG (2026-08-01).
-     `lineHeight >= capHeight * maxScale + descent` predicted 1.56 and it was
-     raised to 1.58 on that basis. Forcing the true worst case -- injecting a
-     maximum-loudness word so the crest actually reaches 1.863x, rather than
-     waiting for the sampler to stumble on one -- measured the clear gap to the
-     row above as 10.5px at 1.38 and 11.5px at 1.58. One pixel, because taller
-     lines also shrink the type. The estimate ignored that a descender has to be
-     directly above the swelling word for any of it to matter.
-     Re-check with `scratchpad/ink_collision.py` if `voice_scale_range` grows:
-     it reads PIXELS. Line-box geometry cannot answer this question -- a scaled
-     box overlaps its neighbour long before any letter does, and that overlap
-     grows WITH the leading even as the real ink gap improves.
-     Motion is painted on an overlay and never participates in layout. */
+  /* LEADING CARRIES THE CREST. */
   line-height: 1.38;
   white-space: normal;
 }
@@ -938,69 +674,20 @@ button {
   padding: 0;
 }
 
-/* STAGE ROWS DO NOT WRAP. A Stage block is already a fixed-width row of
-   `display.studio_stack_words_per_block` (six) words, so a second visual line
-   inside one block is a wrap accident, not a caption decision -- and it moved
-   every row below it whenever a verifier respelling changed a word's width.
-   Six words leave ~25% slack at the shipped type size, so the row fits on one
-   line at every scale the slider offers. Transcript still wraps: it is readable
-   history, where viewport width legitimately chooses the visual lines. */
+/* STAGE ROWS DO NOT WRAP. */
 .caption-feed .caption-words {
   flex-wrap: nowrap;
   white-space: nowrap;
-  /* THE BOX MUST HUG ITS CONTENT, OR ITS WIDTH IS A LIE. Both declarations
-     below exist for that and are load-bearing for MEASUREMENT, which is why
-     they outlived the trailing orb they were originally added for.
-     The inherited `max-width: 100%` capped the box while the words overflowed
-     it. `flex: 0 0 auto` is the SAME BUG BY ANOTHER ROUTE and survived that
-     fix: this box is a flex ITEM of `.caption-surface`, so it inherited
-     `flex-shrink: 1` and was squeezed to the surface width whenever the row was
-     wider, while its own children (`flex: 0 0 auto`) refused to shrink and
-     simply overflowed it. Either way every probe that measured this box
-     under-reported the true row width, which is how an over-wide row read as
-     fitting. (It also dragged the orb, then positioned off this box's right
-     edge, onto the last word -- measured 84px of overlap.) */
+  /* THE BOX MUST HUG ITS CONTENT, OR ITS WIDTH IS A LIE. */
   flex: 0 0 auto;
   max-width: none;
 }
 
-/* NORMAL TYPE OWNS LAYOUT.
-   The invisible `.word-sizer` stays at 5% / Regular 400 / width 100. The
-   visible glyph is absolutely overlaid and may follow CWI 2.3 during its one
-   motion window without changing this box. This replaces the old
-   getBoundingClientRect -> inline-width freeze: the return state is structural,
-   not something recovered by measuring pixels.
-
-   ONE DELAY DRIVES THE WHOLE CAPTION. `--turn-delay` is how long until the
-   playhead reaches this word's spoken onset, written once by the component and
-   never rewritten. Every caption animation -- the 2.2.2 colour turn here, the
-   2.2.3 pop on `.word-glyph`, the 2.3 crest on `.word-ink` -- takes it as its
-   `animation-delay`, so the browser schedules all three off the recording's own
-   timing. There is no JavaScript timer, no reveal queue and no per-frame work.
-
-   The default is large and positive on purpose: an unscheduled word (the clock
-   has not started, or it arrived in the same tick) sits in read-ahead type
-   rather than flashing coloured. */
+/* NORMAL TYPE OWNS LAYOUT. */
 .caption-word {
   --turn-delay: 600000ms;
-  /* THE 2.3 CREST AS A PLAIN MULTIPLIER, DEFINED ONCE.
-     The crest is carried as a FONT-SIZE (on `.word-ink`), which makes it the
-     one voice channel that changes a BOX rather than only its paint — so four
-     different rules need this exact number: the visible ink, the width
-     reservation, and both halves of the baseline anchoring on `.word-glyph`.
-     Four hand-copied instances of the same expression is precisely the drift
-     this file keeps getting caught by, so there is one. */
-  /* ...AND A HELD WORD SHOWS NO CREST. `(1 - --hold-spring)` is the gate.
-     The reference is explicit: its "is" floats at EXACTLY its resting size for
-     0.67s and is never bolder than its neighbours -- the whole of its motion
-     is the lift and the spring. Withdrawing size/weight in the COMPONENT (via
-     `holdAmount`) was not enough, because the spring and the crest run on
-     different clocks: `word-hold-spring` starts `--hold-pre` BEFORE the turn
-     while `voice-phase` starts AT it, so the crest fired exactly as the word
-     landed. MEASURED: aloft at weight 400 / 28.3px for 0.42s, then on landing
-     weight jumped to 837 and size to 39.8px in one step -- reported as "when
-     it lands, it gets black". Gating here is declarative and cannot be
-     defeated by when React last computed the style. */
+  /* THE 2.3 CREST AS A PLAIN MULTIPLIER, DEFINED ONCE. */
+  /* ...AND A HELD WORD SHOWS NO CREST. `(1 - --hold-spring)` is the gate. */
   --crest-scale: calc(
     1 + var(--voice-phase) * (var(--voice-scale, 1) - 1)
       * (1 - var(--hold-gate, 0))
@@ -1017,42 +704,16 @@ button {
   font-weight: 400;
   font-stretch: 100%;
   opacity: 1;
-  /* THE TURN IS A WIPE ACROSS THE WORD; THE VOICE BELONGS TO THE WORD.
-     `Caption With Intention PR FILM.mp4` puts the colour boundary INSIDE a word
-     constantly, in ordinary captions, not as an effect: "I like i|t" (88.15s),
-     "dynamic te|xt" (42.0s), "brings in|" (49.3s), "weigh|ts" (51.35s),
-     "character|s," (60.4s), "instantly kn|ow" (62.1s). So the 2.2.2 COLOUR
-     turn lives on `.caption-character`, each letter on its own delay.
-     The 2.3 phase must NOT move down with it: its consumers -- the crest calc
-     on `.word-ink`, the push reservation on `.word-sizer-crest` -- are
-     ANCESTORS of the characters, and a custom property animated on a child
-     never reaches a parent. Moving `voice-phase` onto the characters silenced
-     every voice channel at once (measured before this note: font-weight sat at
-     exactly 400 for 100 words across 525 samples, and the crest/push never
-     fired -- "there is just flowing motion"). One phase per word is also what
-     2.3 specifies: every glyph of "louder" is one size. The film's "weigh"
-     turning big-and-bold while "ts" is still small is the accepted compromise
-     here -- size and weight rise word-uniform under the travelling colour. */
-  /* The crest gets its own window (`--crest-duration`, >= the natural one) so
-     its 28% rise finishes with the colour wipe instead of leading it — the
-     film's "weigh" is big and bold exactly as far as its sweep has reached.
-     The 2.2.3 pop and the wave stay on the natural `--motion-duration`. */
-  /* THE CREST STARTS ON THE TURN AND PEAKS AFTER IT. An earlier attempt
-     anticipated the crest so its peak landed ON the turn; tracked per word on
-     the film, the reference does the opposite -- a word goes to its speaker
-     colour FIRST and peaks in size ~0.1 s later (sole +0.08, purpose +0.08,
-     in +0.12). Anticipating it made the word swell while still in read-ahead
-     white, which is visibly wrong on screen. Do not reintroduce a pre-roll
-     here without re-running that turn-vs-peak measurement. */
+  /* THE TURN IS A WIPE ACROSS THE WORD; THE VOICE BELONGS TO THE WORD. */
+  /* The crest takes its own window so its rise finishes with the wipe rather
+     than ahead of it -- the film never moves a word before its colour. */
+  /* THE CREST STARTS ON THE TURN AND PEAKS AFTER IT. */
   animation: var(--voice-envelope, voice-phase)
     var(--crest-duration, var(--motion-duration)) linear
     calc(var(--turn-delay) + var(--crest-lag, 0ms));
 }
 
-/* THE SPLIT ENVELOPE. `data-tail="extended"` is set only when the word is on
-   the enhanced clock, is NOT running the hold envelope, and its next
-   neighbour's onset is actually known -- so anything else keeps the single
-   animation above, unchanged. See `@keyframes voice-phase-film-rise`. */
+/* THE SPLIT ENVELOPE. */
 .caption-word[data-tail="extended"] {
   animation:
     voice-phase-film-rise var(--rise-ms) linear
@@ -1074,13 +735,7 @@ button {
   color: var(--caption-unknown);
 }
 
-/* THE TURN LANDS AT FULL COLOUR. The colour-mix washes that used to live here
-   (62% on dark, 55% on light) muted the wipe for every provisional word — and
-   the `word-color-turn` keyframe has no `to`, so the wipe animates TOWARD this
-   computed colour: a washed computed colour means a washed turn, which is not
-   what the PR film shows anywhere. "Still revisable" is already signalled
-   before the turn by the read-ahead paint (the keyframe's `backwards` fill),
-   and after it by the dotted rule on the dark stage. */
+/* THE TURN LANDS AT FULL COLOUR. */
 .caption-word[data-status="provisional"] {
   color: var(--speaker-color);
   text-decoration: underline dotted rgb(var(--tint) / .42) .045em;
@@ -1099,24 +754,10 @@ button {
   white-space: pre;
 }
 
-/* THE PUSH. A SWELLING WORD MOVES ITS NEIGHBOURS ASIDE.
-   This is the motion the studio was missing, and it is the one that reads as
-   alive. Watch the NEIGHBOURS in the reference, not the word:
-   `intonation.mov` frames 352 -> 396, "feel when my voice gets" slides left as
-   "louder" balloons; `character_identification.mov`, "will distinguish chara"
-   slides right as "colors" turns. The line re-flows around the word being
-   spoken. Without it there is only a pop, which is exactly what it looked like.
-   The visible glyph is absolutely positioned and cannot move anything, so the
-   push has to come from this in-flow sizer: the grid track is
-   max(normal sizer, crest sizer), and animating the crest on the SAME clock
-   grows and shrinks the word's cell, which the row's flex layout turns into a
-   shove. It reserves nothing at rest -- at 0% and 100% it is identical to the
-   normal sizer, so a settled row is exactly as wide as its words.
-   `line-height: 0` keeps this a width-only channel; row height never moves. */
-/* Reserves the word's crest footprint on the same clock as the visible ink,
-   so a swelling word pushes its neighbours and a settled row is exactly as wide
-   as its words. Word-level, matching the type above; the character wave is a
-   transform and needs no room. */
+/* THE PUSH. A SWELLING WORD MOVES ITS NEIGHBOURS ASIDE. This is the motion
+   the studio was missing, and it is the one that reads as alive. */
+/* Reserves the crest's footprint on the same clock as the visible ink, so a
+   swelling word shoves its neighbours instead of overlapping them. */
 .word-sizer-crest {
   font-size: calc(
     1em * var(--crest-scale)
@@ -1130,72 +771,12 @@ button {
   line-height: 0;
 }
 
-/* THE PUSH, AND THE RESERVATION, ARE THE SAME ANIMATION.
-   The visible glyph is absolutely positioned and moves nothing, so the shove a
-   swelling word gives its neighbours has to come from these in-flow sizers: the
-   grid track is max(normal sizer, crest sizer), so growing these grows the
-   word's cell, and the row's flex layout turns that into a push.
-
-   IT MUST TRACK THE VISIBLE CURVE, NOT JUST ITS PEAK. This previously animated
-   the wrapper's font-size 0 -> 1em while the visible letters went 1em -> crest,
-   and two different curves through the same window do not agree in between:
-   measured, the glyph ran up to 18px outside the cell it had been given and
-   neighbouring words touched. Interpolating 1em -> (char crest x 2.2.3 pop) is
-   the same shape the viewer sees, exact at both rest and peak. (A single eased
-   curve slightly OVER-reserves mid-flight versus the product of the two curves
-   the visible glyph composes, which is the safe direction.) */
-/* NO PUSH — the enhanced system (2026-08-11).
-   MEASURED on the PR film, and this is the one the legacy comment above got
-   wrong. The reference does NOT re-flow a line around a swelling word:
-     - post-0:28, CWI applied to actual film, the caption line width is
-       EXACTLY constant (577px) for the whole line while words turn;
-     - in the demo section the line grows 1134 -> 1159px, about 2%, while
-       "louder" swells 220%. A real push would widen the line by roughly the
-       word's own width gain, ~200px. It also grows SYMMETRICALLY (left -17,
-       right +8), which is a centred line slightly exceeding its slot, not a
-       shove;
-     - the word before "louder" never moves: its left edge is pinned at 761px
-       through the entire swell.
-   So a word owns a fixed slot and the crest overflows it. The legacy rule
-   below reserved `max(normal, crest)`, which is what produced the re-flow the
-   user has reported repeatedly.
-   Freezing the reservation at REST is all that is needed, because the visible
-   `.word-glyph` is absolutely positioned and already moves nothing. The
-   inter-word gap (.30em) and `.caption-feed`'s gutter absorb the overhang --
-   the same gutter that already exists for mid-pop overhang, measured up to
-   .842em. */
-/* MATCH THE REFERENCE'S AMPLITUDE, NOT JUST ITS BEHAVIOUR (2026-08-11).
-   With the slot frozen at rest, a swell overflows -- which is what the film
-   does -- but ours overflowed far enough to collide ("caption with|intentio
-   usdynamic|text", caught on screen). The cause is amplitude, not the
-   reservation: MEASURED on the film, the emphasised word grows 203 -> 295px,
-   a total peak of **1.45x** including the 2.2.3 pop. Ours reaches
-   `voice_scale_range` 1.62 x pop 1.15 = **1.86x**, so it overflows roughly
-   twice as far into the neighbouring gap.
-   THE CEILING WAS FITTED AGAINST A BROKEN MEASUREMENT ONCE. `_band` in
-   `motion_diff.py` padded the caption band 6px, so any word growing past its
-   neighbours was truncated at the band edge -- the film's "louder" caption
-   really runs 1.03x..2.86x and came back as a whole-film p90 of 1.394x. A
-   ceiling fitted to that capped our loud half and flattened the range, which
-   is what "the motion's diversity decreased" was.
-
-   1.55 IS A STAGE LIMIT, NOT THE FILM'S. Re-measured, the film's 28s+ words run
-   1.04..1.59 and the drill-sergeant line reaches 1.80. At 1.70 our rows CLIP --
-   `clip_probe.py` caught a 25-word row overflowing by 413px, because the
-   caption gutter absorbs about .84em of a row-final word's overhang and a 1.7x
-   crest is far past that. The film sets one line with margins; this stage packs
-   a paragraph. 1.55 is the largest that does not cut text, verified over three
-   runs. Raising it needs the gutter widened first.
-   */
+/* THE PUSH, AND THE RESERVATION, ARE THE SAME ANIMATION. */
+/* NO PUSH — the enhanced system (2026-08-11). MEASURED on the PR film, and
+   this is the one the legacy comment above got wrong. */
+/* MATCH THE REFERENCE'S AMPLITUDE, NOT JUST ITS BEHAVIOUR (2026-08-11). */
 /* UPWARD ONLY on the enhanced clock, and this is the film's own architecture
-   rather than a preference. Measured per word, the film's quietest words still
-   POP -- its peak p25 is 1.107x -- while ours sat at 1.004x, because our voice
-   scale runs DOWN to 0.72 for a quiet word and the shrink cancels the pop. The
-   film does not animate a word smaller: 2.3's "softer" is a smaller RESTING
-   size, authored into the caption, with the same upward cue running on top of
-   it. Clamping the low side reproduces that without making resting size a
-   layout input, which is the change that risks re-breaking rows.
-   Legacy keeps the full 0.72..1.86 excursion. */
+   rather than a preference. */
 .studio-shell[data-motion="enhanced"] .caption-word {
   --crest-scale: calc(
     1 + var(--voice-phase) * (clamp(1, var(--voice-scale, 1), 1.55) - 1)
@@ -1204,27 +785,7 @@ button {
 }
 
 .studio-shell[data-motion="enhanced"] .word-sizer-crest {
-  /* RESERVE THE PEAK, CONSTANTLY -- do not reserve the RESTING width.
-     Freezing this at 1em was tried first and is wrong in the other direction:
-     it kills the push, but a swelling word then has no slot to grow into and
-     COLLIDES with its neighbours ("answer they answer?Shift`it's helping",
-     caught on screen, not by a probe). The film has neither a push nor an
-     overlap, which is only possible if the slot is sized for the word's
-     LARGEST state and simply does not change.
-     RESERVING THE PEAK WAS ALSO TRIED, AND IS ALSO WRONG. It removes the push
-     and the overlap, but every slot becomes ~1.9x the resting width, which
-     re-composes the rows and leaves a line that is visibly gappy at rest.
-     MEASURED on the film, that is not what happens either: the emphasised word
-     grows ~45% in WIDTH (203 -> 295px) while the whole line grows 2%
-     (1134 -> 1159px). A 45% wider word inside a line that does not widen means
-     the word ENCROACHES on the space beside it. It is also left-anchored --
-     its left edge is pinned at 752px through the swell while the right edge
-     extends.
-     So: reserve the RESTING width, constant, and let the crest overflow. The
-     .30em inter-word gap absorbs a modest swell; a large one encroaches, which
-     is what the reference does. Residual overlap on the very largest crests is
-     a symptom of OUR crest amplitude (up to 1.86x) exceeding the film's
-     (~1.45x), which is `voice_scale_range`'s business, not this rule's. */
+  /* RESERVE THE PEAK, CONSTANTLY -- do not reserve the RESTING width. */
   font-size: 1em;
   font-weight: 400;
   font-stretch: 100%;
@@ -1235,49 +796,18 @@ button {
   vertical-align: baseline;
   line-height: 0;
   white-space: pre;
-  /* No animation of its own: the reservation is `.word-sizer-crest`'s font
-     calc, driven by the word's inherited `--voice-phase` -- the same value the
-     visible `.word-ink` reads, so the footprint tracks the ink exactly. */
+  /* No animation of its own; `.word-sizer-crest` owns the reservation. */
 }
 
 .word-glyph {
   position: absolute;
   /* CENTRED, AND LEFT-ANCHORING IT WAS TRIED AND TOTALLY BROKE THE STAGE
-     (2026-08-04). `left: 0` + `translate3d(0,0,0)` + `transform-origin: 0`
-     looks equivalent to `left: 50%` + `translate3d(-50%,0,0)` -- it is not.
-     The glyph is out of flow and this pairing is what keeps it registered on
-     the in-flow `.character-sizer` cell that owns the width; moving the anchor
-     desynchronised the two and words overlapped and clipped off the left edge
-     ("Synchronization" rendered as "ronization", "with intention" as
-     "witlhtention"). A screenshot showed it instantly where three numeric
-     probes had not.
-     If left-baseline anchoring is wanted again, it has to move the SIZER with
-     the glyph, not just the glyph. Do not change one of these three lines
-     alone. */
+     (2026-08-04). */
   left: 50%;
   bottom: 0;
   display: block;
   width: max-content;
-  /* THE PIVOT IS THE BASELINE, NOT THE BOX BOTTOM. `50% 100%` is the bottom of
-     the LINE BOX, which sits a descender plus half-leading below the baseline,
-     so scaling about it lifts the whole word by `(scale - 1) * that offset` --
-     and because the scale carries the voice, louder words lifted further. That
-     is a word-level lift, and CWI has none: in `docs/reference/intonation.mov`
-     the word "louder" reaches roughly FOUR times the text beside it with its
-     ink bottom exactly on the shared baseline.
-     `--glyph-baseline-em` is measured off the live caption face by
-     `useGlyphBaseline` (measured .3799em for Roboto Flex and .2598em for Noto
-     Sans KR at this line-height -- the two faces genuinely differ, so this
-     cannot be a constant). The fallback is the Roboto value and covers only the
-     frame before the measurement resolves.
-
-     ...AND IT HAS TO FOLLOW THE BASELINE THE CREST IS AT, NOT THE RESTING ONE
-     (2026-08-03). `100%` is this element's line box, which the crest INFLATES,
-     but `--glyph-baseline-em` resolves against THIS element's font-size, which
-     stays 1em. So during a crest the pivot sat `0.38 * (S - 1) em` below the
-     real baseline and `word-sync-pop`'s 1.15 scale about that wrong point added
-     a further lift of its own. `max(1, S)` because below 1 the strut, not the
-     ink, is what sets the box depth. */
+  /* THE PIVOT IS THE BASELINE, NOT THE BOX BOTTOM. */
   transform-origin: 50% calc(
     100% - var(--glyph-baseline-em, .38em) * max(1, var(--crest-scale))
   );
@@ -1307,42 +837,15 @@ button {
   transform: translate3d(-50%, 0, 0) scale(1);
   white-space: nowrap;
   will-change: transform, translate;
-  /* CWI 2.2.3. `animation-fill-mode` stays at its default `none`, so the word
-     rests here BOTH before the delay elapses and after the cue completes. A
-     word whose onset is already past arrives with a delay negative enough that
-     the browser treats the animation as finished, and it simply paints
-     settled -- which is exactly what a late/replayed word should do. */
-  /* ON THE CREST CLOCK, NOT THE POP'S OWN. Both are SIZE, and splitting the
-     clocks decoupled them: the pop finished long before the crest peaked, so
-     the two stopped compounding and the visible peak fell well under
-     `voice-scale x sync-pop`. Watching our own capture beside the film, an
-     emphatic word reached ~1.3x where the film's "louder" reaches ~2x. The
-     speech-rate clock keeps the character wave, which is what it is for. */
+  /* CWI 2.2.3. */
+  /* ON THE CREST CLOCK, NOT THE POP'S OWN. */
   animation: var(--sync-envelope, word-sync-pop)
     var(--crest-duration, var(--motion-duration))
     cubic-bezier(.42,0,.22,1) calc(var(--turn-delay) + var(--crest-lag, 0ms));
 }
 
-/* THE GLYPH'S OWN ANIMATION, split on the same boundary.
-
-   SPECIFICITY IS LOAD-BEARING HERE. `.studio-shell[data-motion="enhanced"]
-   .word-glyph` sets `animation-name: word-sync-pop-lift`, and a rule that only
-   out-specifies it on `animation` as a whole does NOT win the name back -- the
-   longhand from the more specific selector survives, so the element ended up
-   with one animation name and this rule's TWO durations. The first duration
-   then applied to the whole pop and it ran at the rise's length: 151ms where
-   it should have been 424ms. Measured in the DOM, not guessed. So this
-   selector carries the shell attribute too.
-
-   AND IT IS THE LIFT THAT IS SPLIT, not the size. Extending the crest's tail
-   does nothing for the ~75% of words that do not pop -- their size amplitude
-   is exactly zero, so a longer decay of zero is still zero. The lift is the
-   channel EVERY word carries, so it is the one that has to reach the next
-   word. `word-sync-pop-lift-rise` / `-fall` carry both the lift and the scale,
-   so an emphatic word gets the extended tail on both at once.
-
-   The fall runs LINEAR: an ease-out compressed into a long tail spends most of
-   it visually stationary, which is the dead stage this exists to remove. */
+/* THE GLYPH'S OWN ANIMATION, split on the same boundary. SPECIFICITY IS
+   LOAD-BEARING HERE. */
 .studio-shell[data-motion="enhanced"] .caption-word[data-tail="extended"] .word-glyph {
   animation-name: word-sync-pop-lift-rise, word-sync-pop-lift-fall;
   animation-duration: var(--rise-ms), var(--fall-ms);
@@ -1353,57 +856,14 @@ button {
   animation-fill-mode: forwards, forwards;
 }
 
-/* REMOVED 2026-07-31 (user request): the `textured` delivery family drew a
-   blurred `currentColor` ellipse behind the word for the length of its motion.
-   It was the only shadow anywhere inside `.caption-word`, and CWI gives the
-   caption no glow -- the design system's word cue is size and position, and
-   colour belongs to speaker identity. Texture still reaches the screen through
-   the weight/width axes and the `textured` motion family's own timing. */
-
-/* CWI 2.3 IS A WORD-LEVEL PROPERTY. In `intonation.mov` every glyph of
-   "louder" is the same size and the same weight, and every glyph of "softer" is
-   uniformly small -- the voice shapes the WORD, not its letters one by one.
-   Driving size/weight/width per character (from the intra-word envelope) is
-   what made ours read as "very character-level". The letters get the wave
-   below instead, which is what the reference actually varies per glyph. */
-/* A WORD THAT WAITED CROUCHES, SPRINGS, FLOATS, AND LANDS AS IT TURNS.
-   Re-measured 2026-08-02 off `Caption With Intention PR FILM.mp4` at 24 fps,
-   tracking "is" in "precisely as each word is spoken." against the static
-   yellow "word" beside it (t=6.45..8.05, font-size ~49.5px):
-
-     6.45-6.62  at rest on the line, size 1.000, lift 0
-     6.66-6.78  CROUCH -- size 0.714, and 0.14em BELOW the baseline
-     6.83-6.91  launch, overshooting to size 1.314 on the way up
-     6.95-7.03  apex, lift 0.40em
-     7.03-7.70  floats: size decays back to 1.000 while the lift creeps
-                on up to 0.525em
-     7.75-8.04  lands, eased out, over ~290ms, starting ON the colour turn
-
-   Two things were missing and the user asked for both: the lift was 0.382em
-   (measured off the lower-resolution synchronization.mov) and there was no
-   anticipation at all -- the word simply appeared aloft. The crouch and the
-   overshoot are what make it read as a spring rather than a lift.
-
-   ONE ANIMATION, ENDING ON THE TURN. `--hold-pre` is the whole pre-roll, so
-   the delay is `--turn-delay` MINUS it and `backwards` fill paints the resting
-   0% keyframe for as long as the read-ahead lasts. A word that arrives later
-   than its own pre-roll gets a negative delay and simply joins the spring
-   part-way through, which is the same mechanism every other caption animation
-   here uses for late arrivals.
-   `--hold-lift` is 0 for ordinary speech, so nothing moves unless the speaker
-   actually paused -- and at 0 the scale keyframes below still run, which is
-   why they are all written as `calc(1 + k * var(--hold-spring))`: the spring
-   amplitude is gated by the same wait. */
+/* CWI 2.3 IS A WORD-LEVEL PROPERTY. */
+/* A WORD THAT WAITED CROUCHES, SPRINGS, FLOATS, AND LANDS AS IT TURNS. */
 .word-ink {
   animation: word-hold-spring
     calc(var(--hold-pre, 260ms) + var(--hold-hold, 420ms) + var(--hold-land, 290ms))
     linear calc(var(--turn-delay) - var(--hold-pre, 260ms)) backwards;
   /* THE SQUASH AND THE STRETCH PIVOT ON THE BASELINE, exactly like the 2.2.3
-     pop -- see `.word-glyph`. The box bottom is a descender plus half-leading
-     BELOW the baseline, so scaling about it would lift the word off the line
-     in proportion to the stretch. This element's own `em` equals the caption's
-     base em for the whole spring, because `--voice-phase` is still 0 until the
-     turn and the crest is what changes this font-size. */
+     pop -- see `.word-glyph`. */
   transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
   display: inline-block;
   font-size: calc(1em * var(--crest-scale));
@@ -1415,37 +875,14 @@ button {
   will-change: font-size, font-weight, font-stretch, transform;
 }
 
-/* THE CHEWY BIT: A TRAVELLING STRETCH, PER CHARACTER, ON EVERY MOTION.
-   Watch "animation," in intonation.mov f194-f216 or "spo|ken" in
-   synchronization.mov f282: as the colour passes through a word the letters
-   stretch — mostly UP AND DOWN, a little in width — scatter off the line, and
-   close back up. That elastic open-and-close is what reads as chewy, and it is
-   the one thing the reference genuinely varies per glyph.
-   It is a TRANSFORM, so it cannot disturb layout: the row's width is owned by
-   the word-level sizer, which is why this needs no reservation of its own and
-   cannot desynchronise from it.
-   Each letter is offset by `--char-turn-delay` so the stretch travels rather than
-   pulsing the word as a block, and `--char-wave` scales its amplitude with that
-   letter's own loudness, so the wave still rides the audio. */
+/* THE CHEWY BIT: A TRAVELLING STRETCH, PER CHARACTER, ON EVERY MOTION. */
 .caption-character {
   display: inline-block;
   vertical-align: baseline;
   white-space: pre;
   transform-origin: 50% calc(100% - var(--glyph-baseline-em, .38em));
   will-change: transform;
-  /* A LATER SPEAKER CORRECTION EASES; THE TURN ITSELF DOES NOT.
-     `word-color-turn` has no `forwards` fill, so once it has run the character
-     paints from its base `color` -- and that base is `--speaker-color`, which
-     the endpoint pass can revise seconds later. It changed in one frame, which
-     is a colour snapping on already-read text.
-     A transition fixes exactly that and cannot touch the turn: while an
-     animation is filling or running it owns the property outright, so this
-     applies only to changes made after the turn is over. It is also why this
-     must NOT gain a `forwards` fill -- that would hand `color` back to the
-     animation permanently and this would never fire.
-     CWI 2.1 is about the colour being READABLE as an identity claim, and a
-     correction is a change of claim; easing it says "this is being revised"
-     where a snap says "this was always so". */
+  /* A LATER SPEAKER CORRECTION EASES; THE TURN ITSELF DOES NOT. */
   transition: color 300ms cubic-bezier(.33, 0, .2, 1);
   animation:
     word-color-turn var(--color-turn-ms, 90ms) linear
@@ -1467,15 +904,8 @@ button {
   transform-origin: 0 50%;
 }
 
-/* `.line-voice-orb` LIVED HERE AND IS GONE (2026-08-04, at the user's request).
-   It was a .82em sphere positioned 1.66em past the right edge of whichever row
-   the playhead was inside, mapping volume to its radius, F0 to a bead and
-   periodicity/brightness to an inner ring. Every one of those channels is still
-   published on `level` and still rendered, at a readable size, by
-   `.voice-compass` in the side rail -- what went is the copy that sat INSIDE the
-   caption surface. The stage holds captions and nothing else.
-   The right clip gutter it needed is deliberately unchanged: see the note on
-   `.caption-feed`'s padding. */
+/* `.line-voice-orb` LIVED HERE AND IS GONE (2026-08-04, at the user's
+   request). */
 
 .caption-stage.is-transcript {
   background: var(--surface);
@@ -1517,28 +947,7 @@ button {
 
 /* The one live reading the removed transport bar carried, now a topbar chip. */
 /* ─────────────────────────────────────────────────────────────────────────
-   THE CHROME RECEDES (2026-08-13, at the user's direction).
-
-   Measured against the Apple design analysis, the studio had it backwards: the
-   rail was three bordered cards of headings, badges, numbers and bars, and the
-   header four bordered pills of equal weight, while the captions -- the
-   product -- sat in the largest area doing the least. "UI recedes so the
-   product can speak" is the whole principle, and this is the pass that applies
-   it.
-
-   Two rules carry all of it:
-     1. A READING IS NOT A CONTROL. `-22.9 dBFS`, `LIVE`, `00:01` and `GOOD`
-        are things the studio is telling you; none is a button, so none gets a
-        button's border and pill. They become type.
-     2. ONE ACCENT, AND IT BELONGS TO THE CAPTIONS. Speaker colour is CWI 2.1 --
-        the identity claim, and the only colour here that means anything. Chrome
-        giving itself a green GOOD badge competes with it for no information.
-        Colour in the chrome is now reserved for a state needing attention; the
-        healthy state is simply quiet.
-
-   NOT touched: anything inside `.caption-word`, and the compass, whose glow is
-   a data channel rather than decoration.
-   ───────────────────────────────────────────────────────────────────────── */
+   THE CHROME RECEDES (2026-08-13, at the user's direction). */
 .mic-state {
   display: inline-flex;
   align-items: center;
@@ -1571,14 +980,7 @@ button {
   scrollbar-color: var(--line-strong) transparent;
 }
 
-/* THE RAIL MEETS THE READER WHERE THEY ARE LOOKING (2026-08-13).
-   In the rolling layout the live caption sits at the BOTTOM of the stage, so a
-   rail whose contents are packed against the top puts the two things a viewer
-   needs -- the words and who is speaking from where -- at opposite corners of
-   a 1280px screen. Bottom-aligning the rail puts the compass beside the line
-   being read instead of a screen away from it.
-   Top-anchored stack is unchanged: there the newest caption is at the top and
-   the rail is already beside it. */
+/* THE RAIL MEETS THE READER WHERE THEY ARE LOOKING (2026-08-13). */
 .studio-shell[data-layout="rolling"] .signal-rail {
   display: flex;
   flex-direction: column;
@@ -1591,33 +993,18 @@ button {
   pointer-events: none;
 }
 
-/* SEPARATED BY AIR, NOT BY EDGES. Three hairline-bounded blocks read as three
-   cards competing with the stage; the same three separated by whitespace read
-   as one column of information. Apple's rule -- alternate surface or add space
-   before adding chrome -- with the space coming from the padding the borders
-   used to justify. */
+/* SEPARATED BY AIR, NOT BY EDGES. */
 .rail-section {
   padding: 26px 22px 30px;
 }
 
-/* One hairline, at the top of the LAST section only, because the speaker list
-   is a different kind of thing from the two meters above it -- it names people
-   rather than reporting a number. Everything else divides by space. */
+/* One hairline only, above the last section: naming people is a different
+   kind of thing from reporting a number. Everything else divides by space. */
 .rail-section + .rail-section + .rail-section {
   border-top: 1px solid var(--line);
 }
 
-/* THE SECTION TITLES ARE OFF SCREEN (2026-08-13, at the user's direction).
-   A waveform is a waveform, and a dial with `231°` beneath it is a compass --
-   the headings were the chrome introducing itself, which is the opposite of
-   receding. What is left in this row is the status word, so it aligns right on
-   its own.
-
-   THEY ARE STILL IN THE DOCUMENT. `h2` is how a screen reader navigates
-   between regions, and the rail is `aria-label`led as one; deleting the
-   headings outright would have removed the only structure inside it. Hidden
-   the standard way -- clipped to a 1px box rather than `display: none`, which
-   would take them out of the accessibility tree too. */
+/* THE SECTION TITLES ARE OFF SCREEN (2026-08-13, at the user's direction). */
 .rail-heading {
   display: flex;
   align-items: start;
@@ -1639,8 +1026,7 @@ button {
 }
 
 /* 10px at weight 700 with .14em tracking is a shout at the smallest size on
-   screen. Apple sets its 10px tier at weight 400; this keeps a little more so
-   it still reads as a label, and drops the rest. */
+   screen. */
 .eyebrow {
   color: var(--muted-2);
   font-size: 10px;
@@ -1660,9 +1046,7 @@ button {
   letter-spacing: -.374px;
 }
 
-/* GOOD is the expected state. A green bordered pill announcing it competed
-   with the speaker colours for attention while carrying no information the
-   absence of a warning does not already carry. */
+/* GOOD is the expected state. */
 .health-badge {
   padding: 4px 0;
   color: var(--muted-2);
@@ -1723,11 +1107,7 @@ button {
   letter-spacing: .06em;
 }
 
-/* THE DIAL GETS THE RAIL'S FULL WIDTH, and the readout sits under it.
-   Side by side, a 132px column left the dial competing with the bearing for
-   the rail's ~300px; enlarging the dial to 152px simply overlapped them.
-   Stacking is what actually buys the size, and it puts the bearing directly
-   beneath the thing it labels. */
+/* THE DIAL GETS THE RAIL'S FULL WIDTH, and the readout sits under it. */
 .compass-layout {
   display: grid;
   justify-items: center;
@@ -1737,30 +1117,12 @@ button {
 .voice-compass {
   --orb-color: var(--active-color);
   position: relative;
-  /* THE DIAL TAKES THE ROOM IT IS GIVEN (2026-08-13). 124 -> 152 -> 176 were
-     three fixed values, and a fixed value cannot respond to a rail that is
-     itself elastic (`--rail-width` is a clamp) -- so the dial stayed one size
-     while the space around it moved, which is the opposite of flexible.
-     A percentage of its own column with a floor and a ceiling: it fills the
-     rail at any width, stops shrinking before it stops being readable, and
-     stops growing before it out-scales the type beside it.
-     THE TICKS ARE NOW SIZE-RELATIVE TOO. They were placed with
-     `calc(50% + 78px)`, a hard-coded half of 176 -- at any other diameter they
-     landed off the rim, which is why the size could not move in the first
-     place. */
-  /* MEASURED: at 96%/212px the dial sat on its ceiling at every window width
-     tested (1024, 1280, 1680) and never flexed at all -- the ceiling was doing
-     all the work and the percentage none of it.
-     THE DIAL CAN BE BIG OR IT CAN PULSE HARD, NOT BOTH. `--orb-scale` is a
-     transform, so it paints outside the layout box and the rail clips it; the
-     two have to be sized together. 70% with a 224px ceiling leaves room for a
-     1.24 pulse inside the section's own padding at the widest rail, and gives a
-     real 143px -> 204px range across the rail's clamp. */
+  /* THE DIAL TAKES THE ROOM IT IS GIVEN. It can be big or it can pulse hard,
+     not both: `--orb-scale` is a transform, so it paints outside the layout
+     box and the rail clips it. 70%/224px leaves room for a 1.24 pulse. */
   width: clamp(132px, 70%, 224px);
-  /* So the label inside can be sized against the DIAL rather than against the
-     page. The dial is a clamp, so a fixed 12px label was 9% of it at the floor
-     and 5% at the ceiling -- the same text reading as two different weights
-     depending on the window. */
+  /* So the label inside can be sized against the DIAL rather than against
+     the page. */
   container-type: inline-size;
   aspect-ratio: 1;
   margin: 4px;
@@ -1768,63 +1130,26 @@ button {
   border-radius: 50%;
   color: var(--orb-color);
   transform: scale(var(--orb-scale));
-  /* The halo is a DATA channel (periodicity), which is why a shadow is allowed
-     here at all. The second, inset shadow was decorative depth on chrome -- and
-     it was hardcoded black, so on the light stage it dropped a grey smudge
-     inside the dial instead of inverting with `--tint`. The border and the
-     radar rings carry the dimension. */
+  /* The halo is a DATA channel (periodicity), which is why a shadow is
+     allowed here at all. */
   box-shadow:
     0 0 var(--orb-halo) color-mix(in srgb, var(--orb-color) 44%, transparent);
-  /* SMOOTHED, NOT SHRUNK (2026-08-13). The pulse range is right; what read as
-     the dial jumping was the CLOCK. Level events arrive every 120ms
-     (`level_event_period_s`) and this eased over 140ms, so each step was still
-     in flight when the next one landed -- the dial never settled and never
-     completed a move, which is what makes a meter look nervous rather than
-     alive.
-     At 340ms each sample is a slow blend into the next and consecutive frames
-     low-pass into one continuous breath. The dial lags the audio by about a
-     third of a second as a result, which is the right trade here: the waveform
-     directly below it already carries the fast detail, and this is the channel
-     that answers "how loud, roughly". */
+  /* SMOOTHED, NOT SHRUNK (2026-08-13). The pulse range is right; what read
+     as the dial jumping was the CLOCK. */
   transition:
     transform 340ms cubic-bezier(.28,.55,.28,1),
     box-shadow 340ms cubic-bezier(.28,.55,.28,1),
     color 180ms ease;
 }
 
-/* FOUR TICKS INSTEAD OF A RADAR SET (2026-08-13). Two concentric rings and a
-   full crosshair were drawing a radar display: none of it was data, and at
-   152px they were the busiest thing in a rail that had just been emptied for
-   this dial's benefit.
-   A bearing is unreadable without a frame of reference and needs nothing more
-   than one -- front, both sides, behind. The ticks sit inside the ring so the
-   speaker arcs, which ride ON the ring, stay outermost and never collide.
-   THE FRONT TICK IS LONGER AND BRIGHTER, because "which way is the case
-   pointing" is the fact a viewer needs before any bearing means anything --
-   and it is the one this project has NOT yet measured against the real case
-   (docs/HARDWARE.md, "Not yet recorded: where 0 deg points"). */
-/* THE SOUND LABEL, IN THE MIDDLE OF THE DIAL. Centred on the instrument that
-   describes the room, because a non-speech sound is an event around the
-   listener rather than a word in a line. It takes the CAPTION face -- it is a
-   caption, per CWI 2.4.4, just placed here as well as on the stage -- but not
-   the CWI motion: the dial is chrome, and a label that popped would compete
-   with the words.
-   White and bracketed, per 2.4.4. Music is the documented exception on colour
-   and motion (2.4.5) and reads the same here. */
+/* FOUR TICKS INSTEAD OF A RADAR SET (2026-08-13). */
+/* THE SOUND LABEL, IN THE MIDDLE OF THE DIAL. */
 .compass-sound {
   position: absolute;
   left: 50%;
   top: 50%;
   z-index: 4;
-  /* SIZED AGAINST THE DIAL, and given the plate CWI 2.4.1 exists for.
-     The needle and the speaker arcs run underneath this text -- a bearing
-     line crossing the middle of a word is exactly the case §2.4.1's box was
-     written for, and it is the one place in the chrome where that device is
-     the right answer rather than a lozenge. Kept tight to the glyphs so the
-     dial still reads as a dial with a label in it, not a dial with a card
-     dropped on top.
-     `opsz` tracks the size: this is the caption face, and its optical size
-     axis is what keeps a 10px label from rendering as shrunken 16px type. */
+  /* SIZED AGAINST THE DIAL, and given the plate CWI 2.4.1 exists for. */
   max-width: 74%;
   padding: .18em .42em .24em;
   border-radius: var(--r-xs);
@@ -1840,21 +1165,15 @@ button {
   transform: translate(-50%, -50%);
 }
 
-/* Music is the documented exception on colour and motion (CWI 2.4.5), and the
-   ♫ the stage used to wrap it in went with the stage label -- so the plate is
-   what distinguishes it here. Lighter, because a music bed is a state rather
-   than an event. */
+/* Music is 2.4.5's exception on colour and motion, and the ♫ that used to
+   carry it went with the stage label -- so the plate distinguishes it here. */
 .compass-sound[data-category="music"] {
   background: rgba(0, 0, 0, .62);
   font-variation-settings: "opsz" 14, "wght" 380, "wdth" 100;
 }
 
-/* THE SHAKE GOES ON AN INNER SPAN, and this is the second time that has had to
-   be true. An animation OWNS the property it animates, so `sound-vibrate` on
-   this element replaced the `translate(-50%, -50%)` that centres it -- measured
-   in the DOM, the computed transform came back as the identity matrix and the
-   label sat 24px right of the dial's centre, which is exactly half its own
-   width. `.sound-caption` already splits them for the same reason. */
+/* THE SHAKE GOES ON AN INNER SPAN, and this is the second time that has had
+   to be true. */
 .compass-sound i {
   display: inline-block;
   font-style: normal;
@@ -1878,11 +1197,7 @@ button {
   animation: none;
 }
 
-/* AN UNMEASURED BEARING IS DRAWN, BUT NOT CLAIMED. `data-direction` is now
-   always `known` -- the dial falls back to front/0° rather than going inert --
-   so `data-measured` is what says whether anything was actually observed. The
-   needle and the rim hold back at half strength until they are reporting a
-   real reading. */
+/* AN UNMEASURED BEARING IS DRAWN, BUT NOT CLAIMED. */
 .voice-compass[data-measured="false"] .compass-direction b,
 .voice-compass[data-measured="false"] .compass-direction i {
   opacity: .34;
@@ -1891,12 +1206,9 @@ button {
 .voice-compass[data-measured="false"] {
   box-shadow: none;
 }
-/* EACH TICK IS A FULL-SIZE LAYER THAT ROTATES, with the mark drawn at its top
-   edge -- the same construction `.compass-slot` uses, and what makes the scale
-   independent of the diameter. A tick placed at a px offset from the centre has
-   to be re-derived every time the dial resizes, and was, twice.
-   The mark's LENGTH stays in px on purpose: a hairline that scaled with the
-   dial would stop being a tick and become a wedge. */
+/* EACH TICK IS A FULL-SIZE ROTATING LAYER with the mark at its top edge, so
+   the scale follows the diameter. A tick placed at a px offset from the
+   centre has to be re-derived every time the dial resizes, and was, twice. */
 .compass-tick {
   position: absolute;
   inset: 0;
@@ -1934,41 +1246,20 @@ button {
   transition: transform 180ms cubic-bezier(.2,.72,.24,1);
 }
 
-/* Standing speaker positions, after SpeechCompass's minimap (CHI '25). One
-   mark per slot, in that speaker's caption colour, so the ring answers "who is
-   where" in the same vocabulary as the text. Deliberately quieter than
-   `.compass-direction`: that dot is where sound is arriving NOW and must stay
-   the brightest thing on the ring, while these are standing positions that
-   should read as context. Same rotate-a-wrapper idiom as the live dot, so both
-   sit on one circle and cannot drift apart. */
+/* Standing speaker positions, after SpeechCompass's minimap (CHI '25). */
 .compass-slot {
   position: absolute;
-  /* `inset: 0` puts the rotation circle on the dial's own border -- the ring
-     you actually see -- rather than the 5px-inset circle `.compass-direction`
-     rides. The slots are meant to read as marks ON the ring; the live dot sits
-     just inside it, which is what keeps the two layers distinguishable. */
+  /* `inset: 0` puts the arc on the dial's own border, which is the ring you
+     actually see. */
   inset: 0;
   border-radius: 50%;
-  /* NOT `transform: rotate()` any more. The mark is an arc painted by a conic
-     gradient, so the angle lives in the gradient and the element stays put;
-     rotating it as well would turn the mask with it, which is invisible on a
-     circle right up until the mask is ever made non-circular. */
+  /* NOT `transform: rotate()` any more. */
   transition: background 260ms cubic-bezier(.2,.72,.24,1), opacity 180ms ease;
   pointer-events: none;
 }
 
 /* THE SPEAKER'S TERRITORY, drawn as an arc of the ring in their caption
-   colour. `--slot-angle` centres it and `--slot-span` is two circular standard
-   deviations of that speaker's own bearings, so the WIDTH is the uncertainty.
-   A conic gradient painted onto the ring, masked to an annulus: the gradient
-   starts half a span before the bearing so the arc is centred on it rather
-   than beginning at it, which would put every speaker a half-width clockwise
-   of where they actually are.
-   `from 0deg` is 12 o'clock and runs clockwise, which is the bearing
-   convention the array reports and the same origin `.compass-slot`'s rotation
-   used, so nothing about where 0 points has changed.
-   The mask is what makes this a ring rather than a pie -- without it the arc
-   fills the dial and buries the pitch and texture channels underneath it. */
+   colour. */
 .compass-slot {
   background: conic-gradient(
     from calc(var(--slot-angle) - var(--slot-span) / 2),
@@ -1978,16 +1269,12 @@ button {
   -webkit-mask: radial-gradient(closest-side, transparent 0 84%, #000 85%);
   mask: radial-gradient(closest-side, transparent 0 84%, #000 85%);
   opacity: .88;
-  /* A SETTLED SPEAKER'S ARC IS NARROW -- the floor is 8deg -- so the glow has
-     to stay tighter than the band or it reads as a smudge instead of a mark.
-     At 4px it swallowed an 18deg arc whole. */
+  /* A settled speaker's arc is narrow (floor 8deg), so the glow has to stay
+     tighter than the band or it reads as a smudge. */
   filter: drop-shadow(0 0 2px color-mix(in srgb, var(--slot-color) 45%, transparent));
 }
 
-/* REMEMBERED, NOT LIVE. The speaker is still on the ring at the last place
-   they were actually seen, but their bearings are scattered now, so the arc
-   must not read as a current position. Dimmed and de-glowed rather than
-   removed -- a mark that vanishes reads as the compass forgetting somebody. */
+/* REMEMBERED, NOT LIVE. */
 /* Reduced motion keeps the colour turn -- that is the standing rule -- but a
    300ms ease on a correction is geometry-free motion nobody asked for. */
 @media (prefers-reduced-motion: reduce) {
@@ -2003,12 +1290,7 @@ button {
   filter: none;
 }
 
-/* THE NEEDLE: centre to rim, in the active speaker's colour. A 9px dot on the
-   rim asked the viewer to find it and then work out which way it lay; a line
-   from the middle states the bearing the way a compass always has.
-   Drawn from the centre out so its LENGTH is constant and only its ANGLE
-   carries meaning -- nothing here measures distance, and a needle that grew
-   and shrank would be claiming it does. */
+/* THE NEEDLE: centre to rim, in the active speaker's colour. */
 .compass-direction b {
   position: absolute;
   left: 50%;
@@ -2080,13 +1362,7 @@ button {
     filter 130ms ease;
 }
 
-/* THE BEARING IS THE POINT OF THIS SECTION, so it is sized like one. With the
-   speaker list and the Hz readings gone, direction is the one thing in the
-   whole rail a viewer cannot get from the captions themselves -- everything
-   else there restates what the words are already showing.
-   Tabular figures so a talker crossing the room does not make the number
-   jitter its own width. The `Awaiting array` fallback is the same element, so
-   it drops back to the readout's own size rather than shouting an absence. */
+/* THE BEARING IS THE POINT OF THIS SECTION, so it is sized like one. */
 .level-line {
   display: flex;
   align-items: baseline;
@@ -2107,10 +1383,6 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-/* `.compass-bearing` and `.voice-compass-block` are gone with the numeric
-   readout -- the dial states the bearing itself. Kept out rather than left
-   inert: an unused selector here reads as a channel that exists. */
-
 .section-count {
   display: grid;
   place-items: center;
@@ -2128,12 +1400,7 @@ button {
   gap: 4px;
 }
 
-/* THE SPEAKER'S OWN COLOUR IS THE ONLY MARK IT NEEDS. Each row carried a
-   border, a filled surface, a colour chip AND a colour bar -- four devices
-   naming one person. The chip is the same number and colour the compass and
-   the captions already use, so it stays and everything around it goes.
-   This is the one place in the chrome where colour is allowed to be loud: it
-   is not decoration, it is the CWI 2.1 identity claim rendered small. */
+/* THE SPEAKER'S OWN COLOUR IS THE ONLY MARK IT NEEDS. */
 .speaker-card {
   display: grid;
   grid-template-columns: 34px 1fr;
@@ -2339,36 +1606,12 @@ button {
   line-height: 1.5;
 }
 
-/* THE READ-AHEAD LAYER -- CWI 2.2.1 and 2.2.2.
-   2.2.1: "Every line of dialogue should first appear in white as a complete
-   sentence... This allows the Deaf community to read ahead at their own pace.
-   The read-ahead text should be displayed in full white at 90% opacity."
-   2.2.2: the word turns "as soon as the sound of the word begins to be
-   pronounced, not after" -- when "In" is spoken, not when "ble" is.
-
-   THERE IS NO `to` KEYFRAME, AND THAT IS THE WHOLE TRICK. An omitted endpoint
-   makes the browser use the element's OWN computed value, so this one rule
-   turns each word into whatever colour it is actually entitled to -- the
-   speaker's CI hue, the neutral `--caption-unknown` while attribution is
-   pending, the receded provisional mix -- without any of that being restated
-   here. A later speaker correction rewrites `--speaker-color` on a word whose
-   animation has already finished, so it lands as a direct colour write, which
-   is exactly the documented rule for late attribution.
-
-   `backwards` fill is what actually paints the read-ahead: it applies the
-   `from` keyframe for the entire delay, which may be many seconds. */
+/* THE READ-AHEAD LAYER -- CWI 2.2.1 and 2.2.2. */
 /* Normal -> the character's own 2.3 crest -> normal, exactly the shape the
    2026-07-31 return-to-normal correction requires, expressed once per word. */
-/* THE SWELL HOLDS; IT DOES NOT JUST PEAK. In intonation.mov "louder" is up by
-   f388 and still up at f430, back to normal by f442 -- roughly a 0.35 s sustain
-   inside a 0.73 s swell. A single symmetric crest read as a twitch, which is
-   not how a loud word sounds. `--voice-attack` / `--voice-release` are where
-   the voice reaches and leaves its crest, as fractions of the motion window. */
+/* THE SWELL HOLDS; IT DOES NOT JUST PEAK. */
 @keyframes voice-phase {
-  /* THE ORDINARY WORD: a smooth hump, no plateau. `(1-cos(2*pi*t))/2` every
-     10%, `linear` between the stops. Across the 43 reference words the shape
-     statistic (time-above-90% / time-above-50%) is 0.40 and a raised cosine is
-     0.41 -- but that median is carried by the 37 words that barely move. */
+  /* THE ORDINARY WORD: a smooth hump, no plateau. */
   0%, 100% { --voice-phase: 0; }
   10% { --voice-phase: .095; }
   20% { --voice-phase: .345; }
@@ -2382,52 +1625,18 @@ button {
 }
 
 @keyframes voice-phase-hold {
-  /* THE EMPHATIC WORD OVERSHOOTS, SETTLES, SUSTAINS, THEN RELEASES.
-     Read off the film as a continuous curve -- per frame, the tallest caption
-     cluster's ink height over the median cluster's, which needs no tracking
-     and so cannot be broken by the line re-flowing. On "louder" (16.46-17.46):
-
-        16.46  1.15   at rest
-        16.71  3.12   PEAK, reached in 0.25s
-        16.92  2.52   settled back over 0.21s
-        17.25  2.52   sustained flat for 0.33s
-        17.46  1.15   released over 0.21s
-
-     A single-peak envelope cannot express that, and neither can a plateau:
-     the word goes PAST where it ends up and then holds lower. In phase terms
-     the sustain is (2.52-1.15)/(3.12-1.15) = 0.70 of the peak, and the four
-     legs are 25% / 21% / 33% / 21% of a 1.0s window. */
+  /* THE EMPHATIC WORD OVERSHOOTS, SETTLES, SUSTAINS, THEN RELEASES. */
   0%, 100% { --voice-phase: 0; }
   8%  { --voice-phase: .30; }
   16% { --voice-phase: .78; }
   25% { --voice-phase: 1; }
   33% { --voice-phase: .84; }
   46% { --voice-phase: .70; }
-  /* THE RELEASE IS SHORTER THAN THE FILM'S, DELIBERATELY (2026-08-03, user:
-     "bolded thing's turning into normal font's returning speed is too slow").
-     The film releases over 0.21s of a 1.0s window (21%); reported on screen
-     that reads as the weight hanging on. Weight is the channel that shows it
-     -- a 900 -> 400 fall is a far larger perceptual step than 1.8x -> 1.0x --
-     and both ride this one phase.
-     DELAYING THE SUSTAIN INSTEAD WAS TRIED AND MADE IT WORSE: running the
-     hold to 85% and falling over the last 15% MEASURED as a LONGER motion
-     (time above half-peak 0.68s -> 0.74s), because the word simply stayed up
-     longer before letting go. The sustain still ends at 79%, exactly where
-     the film's does; what changed is the SHAPE of the fall, which now sheds
-     two thirds of the phase in its first 5% and is essentially home by 89%
-     (~105ms at the 1050ms ceiling) instead of easing out to 100%. Rise,
-     overshoot and hold are untouched. */
+  /* The release is shorter than the film's, deliberately: weight is where a
+     slow release shows, and 900 -> 400 is a bigger step than 1.8x -> 1.0x. */
   79% { --voice-phase: .70; }
   86% { --voice-phase: .22; }
-  /* LAND ON ZERO AND STAY THERE. The previous stops fell to .07 at 89% and
-     then let the browser interpolate that last sliver across the remaining
-     11% of the window (~115ms at the 1050ms ceiling) -- so the word shed most
-     of its swell quickly and then SAT visibly-still-enlarged, creeping home.
-     Reported as "the motion of the font getting bigger, it gets normal so
-     slowly", which is precisely the tail and not the fall. A keyframe that
-     ends at a non-zero value hands the remainder to the longest, slowest,
-     least visible part of the curve; end AT zero instead, with the last 8%
-     already settled. */
+  /* LAND ON ZERO AND STAY THERE. */
   92% { --voice-phase: 0; }
 }
 
@@ -2439,25 +1648,8 @@ button {
   }
 }
 
-/* THE CONTINUOUS WIPE — WIDE SCRIPT ONLY (2026-08-11).
-   CWI 2.2.2's boundary is supposed to TRAVEL through a word. Per glyph, that
-   granularity is the glyph's width, which is fine for Latin and is not for
-   Hangul: MEASURED, a Korean step moves the boundary 0.91em against English's
-   0.43em, and 46% of Korean words have <=2 steps, i.e. a switch. Since Korean's
-   median peak size is 1.14x -- the ordinary word carried almost entirely by the
-   per-character channel -- that is most of what "Korean does not feel
-   expressive" was.
-   The mechanism is a second ink layer in the speaker colour, clipped from the
-   left. Both layers carry the SAME character spans, so the wave stretches them
-   identically and they stay registered; a `background-clip: text` gradient
-   cannot do that, because the gradient sits in the ancestor's coordinate space
-   while the wave is a transform on the descendants.
-   THE SETTLED STATE IS THE DECLARED VALUE, AND THERE IS NO `to` -- the same
-   trick `word-color-turn` uses one rule above. `--wipe` rests at 100%, the
-   keyframe supplies only `from`, and `backwards` fill paints 0% (nothing
-   revealed, so pure read-ahead ink) for the whole delay. A word delivered after
-   its own onset gets a negative delay, the browser treats the animation as
-   finished, and it falls back to the declared 100% -- settled, no branch. */
+/* THE CONTINUOUS WIPE — WIDE SCRIPT ONLY (2026-08-11). CWI 2.2.2's boundary
+   is supposed to TRAVEL through a word. */
 @property --wipe {
   syntax: "<percentage>";
   inherits: false;
@@ -2481,10 +1673,9 @@ button {
     word-wipe var(--sweep-duration, 240ms) linear var(--turn-delay) backwards;
 }
 
-/* The base layer stays read-ahead ink for the whole life of a wide word: the
-   overlay is what carries the speaker colour, so turning the base too would
-   colour the tail before the boundary reached it. The wave still runs here --
-   it must, or the two layers stop matching. */
+/* The base layer stays read-ahead ink for a wide word's whole life -- the
+   overlay carries the colour, so turning the base too would colour the tail
+   before the boundary reached it. The wave still runs on both. */
 .caption-word[data-script="wide"] .word-ink:not(.word-ink-turned) .caption-character {
   color: var(--read-ahead-color, #fff);
   opacity: var(--read-ahead-opacity, .9);
@@ -2492,81 +1683,20 @@ button {
     var(--char-wave-delay, var(--char-turn-delay, 600000ms));
 }
 
-/* On the overlay the colour is inherited from `.caption-word`, so it needs no
-   colour animation at all -- and must not have one, or it would fade in
-   independently of the clip that is already revealing it. */
+/* The overlay inherits its colour, so it needs no colour animation -- and
+   must not have one, or it would fade in independently of the clip. */
 .caption-word[data-script="wide"] .word-ink-turned .caption-character {
   animation: character-wave var(--wave-span, 240ms) cubic-bezier(.34,0,.28,1)
     var(--char-wave-delay, var(--char-turn-delay, 600000ms));
 }
 
-/* THE SYNCHRONIZATION LAYER -- CWI 2.2.3, verbatim:
-   "Caption with Intention adds a motion element to each word as it changes
-   color. Each word should undergo a 15% increase in type size before returning
-   to its original size, creating a 'pop' motion effect."
-   THE WORD GROWS FROM ITS BASELINE. IT DOES NOT MOVE. (Corrected twice, finally
-   2026-08-01, by LOOKING at all three recordings in `docs/reference/`.)
-   Take a baseline guide PER FRAME from a static neighbouring word -- the
-   reference re-fits its whole line while a word swells, so a guide drawn once
-   from the first frame drifts and fabricates an apparent rise, which is exactly
-   how the previous two answers here went wrong. Done properly:
-   `intonation.mov` shows "louder" reaching roughly FOUR times the text beside
-   it with its ink bottom exactly on the shared baseline, and
-   `character_identification.mov` shows read-ahead and spoken words at visibly
-   different sizes all sitting on one line. Zero vertical displacement, at any
-   size.
-   So there is no `translateY` (removed earlier) AND no box-bottom pivot: see
-   `.word-glyph`'s `transform-origin` for why the latter was still lifting the
-   word, and lifting it further the louder it was.
-   The diagram's "25% elevation" is simply where the TOP of the word ends up
-   when it grows from a fixed baseline.
-   One path, on the whole word, once. `transform`, not `font-size`, keeps the cue
-   transient and out of layout. The permanent -50% X translation centres the
-   overlaid glyph on the normal-type sizer beneath it. */
-/* THE CHEWY BIT. Up and down hard, sideways only a little -- the proportions
-   the reference shows when the colour passes through a word ("animation," in
-   intonation.mov f194-216, "spo|ken" in synchronization.mov f282). Each letter
-   is offset by `--char-turn-delay`, so the stretch TRAVELS instead of pulsing the
-   word as one block, and `--char-wave` scales its amplitude with that letter's
-   own loudness. Both endpoints are identity, so a settled row is plain type,
-   and because it is a transform it cannot disturb the row's layout. */
-/* Stops are the film's own frames as a fraction of `--hold-pre` + `--hold-land`
-   at the shipped 420ms + 290ms: crouch bottom 100ms (14%), back through the
-   line 165ms (23%), apex 245ms (35%), settled aloft 340ms (48%), floating
-   until the turn (59%), landed (100%).
-   THE PRE-ROLL IS BOUNDED BY HOW LONG A WORD ACTUALLY EXISTS BEFORE ITS TURN,
-   not by the film. The film crouches ~1.05s ahead; MEASURED on the sample by
-   CDP, the gap between a word entering the DOM and its colour turn is a median
-   of **0.30s** (p75 0.49, p90 0.67) -- the playhead runs 1.2s behind the
-   acoustic clock, but ASR delivers a word a median 0.62s after it was spoken,
-   and the endpoint holds the newest word back. At the film's 1050ms the spring
-   was invisible: ZERO of the words that earned a hold had the lead for it, one
-   joined during the float, and the rest joined during the LANDING. 420ms is
-   sized so a typical word joins at the LAUNCH -- entering stretched and
-   rising, which reads -- rather than already on its way down.
-   `--hold-spring` gates the squash/stretch on the same wait the lift uses, so
-   an ordinary word -- which is nearly all of them -- runs this animation as a
-   flat identity and costs nothing. */
+/* THE SYNCHRONIZATION LAYER -- CWI 2.2.3, verbatim: "Caption with Intention
+   adds a motion element to each word as it changes color. */
+/* THE CHEWY BIT. */
+/* Stops are the film's own frames. The pre-roll is bounded by how long a
+   word actually exists before its turn, not by the film's ~1.05s. */
 @keyframes word-hold-spring {
-  /* A HELD WORD STAYS UP, AND STRETCHES ON THE WAY (2026-08-03).
-     Stops are fractions of `--hold-pre` + `--hold-hold` + `--hold-land`
-     (260 + 420 + 290 = 970ms): crouch bottom 70ms (7%), back through the
-     line 110ms (11%), the launch overshoot 165ms (17%), settled aloft 220ms
-     (23%), AT THE TURN and at full lift 260ms (27%), still up at 680ms (70%),
-     landed (100%).
-     THE PEAK IS AT THE TURN, NOT THE LANDING. The After Effects template
-     drives the -amp position and the fill from ONE selector, so a letter is at
-     the top of its lift the instant it turns and comes back down behind the
-     colour boundary -- "that is the bounce". A lift that merely LEADS the
-     colour, landing at rest as it arrives, is what the template's own notes
-     call smooth but dead.
-     ...AND IT HOLDS THERE. `--hold-hold` is the plateau between the turn and
-     the descent; without it the word started falling the moment it turned and
-     never read as held.
-     The stretch is bigger than the first attempt: the crouch squashes to .72
-     and the launch stretches to 1.32, because at .78/1.24 it was not visible
-     against the caption's own size change. `--hold-spring` gates all of it on
-     the wait, so an ordinary word runs this as a flat identity. */
+  /* A HELD WORD STAYS UP, AND STRETCHES ON THE WAY (2026-08-03). */
   0% {
     transform: translateY(0) scale(1, 1);
     animation-timing-function: cubic-bezier(.4, 0, .7, .3);
@@ -2603,17 +1733,8 @@ button {
     transform: translateY(calc(-1 * var(--hold-lift, 0em))) scale(1, 1);
     animation-timing-function: cubic-bezier(.32, 0, .24, 1);
   }
-  /* THE STRETCH LIVES IN THE LANDING, BUT THE LANDING DOES NOT BOUNCE.
-     Two separate findings, and I had only acted on the first.
-     (a) The crouch and launch are scheduled BEFORE the turn, and measured,
-     that is off screen: read-ahead lead is a median 0.06s, so a held word
-     mounts essentially AT its turn and the browser starts the animation
-     already past 27%. Traced over the film, "is", "spoken" and "intonation"
-     were seen only from the plateau onward, at a peak stretch of exactly 1.00.
-     (b) But the film's own landing is a plain ease-out over ~290ms with NO
-     rebound and NO squash -- "is" floats down and stops. A damped bounce was
-     added here and read as weird, correctly, because the reference has none.
-     So: one taut stretch on the way down, and a clean stop. */
+  /* THE STRETCH LIVES IN THE LANDING, BUT THE LANDING DOES NOT BOUNCE. Two
+     separate findings, and I had only acted on the first. */
   84% {
     transform:
       translateY(calc(-.30 * var(--hold-lift, 0em)))
@@ -2627,46 +1748,13 @@ button {
 }
 
 @keyframes character-wave {
-  /* LETTERS LIFT IN PAIRS, EACH AT A SLIGHTLY DIFFERENT ANGLE.
-
-     From a frame-by-frame reading of the film: "seen" lifts as `se` + `en`,
-     "Gump" as `Gu` + `mp`, and within a pair the two glyphs sit at slightly
-     different angles. So the channel is a LIFT plus a small ROTATION -- not
-     the vertical squash that used to be here, which has no counterpart in the
-     reference (its AE template animates `ADBE Text Position 3D` and carries no
-     scale animator at all) and which shimmers where the film travels.
-
-     `--char-tilt` is per letter and frozen from its index. `--char-wave` still
-     gates amplitude, so a loud word moves as a block with its letters held
-     together and an ordinary word lets the wave carry it.
-
-     THE LIFT IS BELOW THE FILM'S DEPTH. Measured, its glyphs travel close to a
-     full glyph height; this stage packs a paragraph with rows already under
-     4px apart, so that lands in the row above. Raise `--char-lift-em` only
-     with `scripts/ink_collision.py` open. The settle is gentler than the lift,
-     or the pair reads as a wobble instead of coming to rest. */
+  /* LETTERS LIFT IN PAIRS, EACH AT A SLIGHTLY DIFFERENT ANGLE. */
   0%, 100% {
     transform: translateY(0) rotate(0deg) scale(1, 1);
   }
-  /* THE SHAPE IS LEGACY'S ELASTIC STRETCH, RESTORED (2026-08-12). It was
-     briefly a pure lift with a per-letter angle, fitted to the film's syllable
-     splits; watched on the array against a real talker the user judged legacy's
-     wave better, and a person watching outranks the fit. So the letters stretch
-     and settle the way they always did -- the numbers below are legacy's, byte
-     for byte -- and the per-letter TILT rides on top of it, because that part
-     of the reading (each glyph of a lifting group at a slightly different
-     angle) is what the stretch alone does not carry.
-     What the syllable work left behind is the CLOCK, not the shape:
-     `--char-wave-delay` groups the letters, so a syllable stretches together
-     instead of one glyph at a time. That is the half the film shows.
-     The rebound stays gentler than the rise: an overshoot as large as the rise
-     is what makes a wave read as a wobble instead of a settle. */
+  /* THE SHAPE IS LEGACY'S ELASTIC STRETCH, RESTORED (2026-08-12). */
   /* `--group-lift-em` is 0 for a word that lifts as one piece, and non-zero
-     only from six letters up -- see `liftsInGroups`. It rides ON TOP of
-     legacy's -.05em, which is ~1px and reads as a stretch rather than a lift;
-     that is why splitting a word into syllables was invisible until this
-     existed. The group's letters share `--char-wave-delay`, so they leave the
-     line together and the next syllable follows. */
+     only from six letters up -- see `liftsInGroups`. */
   38% {
     transform:
       translateY(calc(
@@ -2693,19 +1781,7 @@ button {
 
 
 
-/* HANGUL-SHAPED CHARACTER MOTION — wide script, toggle only (2026-08-11).
-   The wave above is Y-dominant (`scale(1 - .022w, 1 + .13w)`), which suits an
-   alphabet of narrow, mostly-vertical marks. A Hangul syllable is a square
-   assembly whose grain depends on where its vowel sits: 가 (가로모임) reads
-   wide, 고 (세로모임) reads tall, and a batchim packs the lower half. Applying
-   one Latin shape to all of them is a transplant, and *Design of Kinetic
-   Typography Interaction based on the Structural Characteristics of Hangul*
-   (Int. J. Contents, 2016) keys its motion on exactly this classification.
-   `--wave-ay`/`--wave-ax` are the per-character signed amplitudes from
-   `waveGrain`; the stops and the easing are the Latin wave's, so only the AXIS
-   of the stretch changes, never its timing or its total excursion.
-   DEFAULT OFF. Unlike the continuous wipe, which repairs a measured defect,
-   this is a judgement no probe can settle. */
+/* HANGUL-SHAPED CHARACTER MOTION — wide script, toggle only (2026-08-11). */
 @keyframes character-wave-hangul {
   0%, 100% {
     transform: translateY(0) scale(1, 1);
@@ -2747,14 +1823,8 @@ button {
   }
 }
 
-/* THE INTONATION LAYER -- CWI 2.3.
-   Volume supplies size, pitch supplies weight, and harmonics supply width at
-   the crest. This live presentation makes those qualities transient: both
-   endpoints are exactly the normal caption type, and the visible glyph is
-   overlaid so the axis excursion cannot move neighbouring words. */
-/* The layout half of the cue: the word's own cell, on the glyph's clock. The
-   axes are here as well as on `.word-ink` because weight and width change a
-   word's advance, so the cell has to follow them or the push under-reads. */
+/* THE INTONATION LAYER -- CWI 2.3. */
+/* The layout half of the cue: the word's own cell, on the glyph's clock. */
 
 
 
@@ -2769,9 +1839,8 @@ button {
   place-items: center;
   overflow: auto;
   padding: 32px 20px;
-  /* NO decorative gradients: the analysis is explicit that atmosphere comes
-     from photography, and this system has no photography. A flat parchment
-     canvas with a white card is the whole treatment. */
+  /* No decorative gradients: atmosphere comes from photography, and this
+     system has none. A flat canvas is the whole treatment. */
   background: var(--bg);
 }
 
@@ -2780,11 +1849,7 @@ button {
 .language-gate-glow {
   display: none;
 }
-/* THE SETUP SCREEN FOLLOWS THE STUDIO IT OPENS INTO (2026-08-13). It was a
-   bordered, filled card holding three bordered, filled cards -- the exact
-   chrome that came off the rail and the header, kept alive on the first screen
-   anyone sees. A page whose whole content is a heading and three choices does
-   not need a card to say so; the canvas is the card. */
+/* THE SETUP SCREEN FOLLOWS THE STUDIO IT OPENS INTO (2026-08-13). */
 .language-gate-card {
   position: relative;
   width: min(100%, 640px);
@@ -2819,9 +1884,7 @@ button {
   padding: 34px 42px 22px;
 }
 
-/* NOT BLUE. Blue is the interactive signal, and on a screen whose entire
-   content is three buttons, colouring the one line that is NOT a button was
-   backwards -- it drew the eye to the label and away from the choice. */
+/* NOT BLUE. */
 .language-gate-copy .eyebrow {
   display: inline-flex;
   align-items: center;
@@ -2829,12 +1892,7 @@ button {
   color: var(--muted-2);
 }
 
-/* THE WHOLE SCREEN HAS TO FIT WITHOUT SCROLLING. At 56px over two lines the
-   heading pushed the third option below a 720px viewport -- the one screen
-   where every option must be visible at once was the one that hid one.
-   `clamp` against viewport HEIGHT as well as width: the headline gives way
-   before the choices do, which is the same rule the rail follows against the
-   captions. */
+/* THE WHOLE SCREEN HAS TO FIT WITHOUT SCROLLING. */
 .language-gate-copy h1 {
   max-width: 590px;
   margin: 11px 0 10px;
@@ -2854,10 +1912,7 @@ button {
   line-height: 1.47;
   letter-spacing: -.374px;
 }
-/* A LIST, NOT A GRID. Three items in two columns leaves one alone on a second
-   row, and because the cards sized to their own content no two were the same
-   width or height -- an arrangement that reads as a layout accident rather
-   than a set of equals. One column, one row each, divided by a hairline. */
+/* A LIST, NOT A GRID. */
 .language-options {
   display: grid;
   gap: 0;
@@ -2901,18 +1956,13 @@ button {
 }
 
 
-/* Default and pressed only. The press state is the global
-   `button:active { scale(.95) }`; the hover lift and the sliding arrow that used
-   to live here were a second transform grammar and a decorative elevation, both
-   of which the analysis rules out. */
+/* Default and pressed only. */
 .language-option > svg {
   grid-area: arrow;
   align-self: center;
   color: var(--muted);
 }
-/* The code is a label, not a chip. Its filled pill was the same "a reading
-   wearing a button's clothes" the header had. Monospace and tabular so EN, KO
-   and MULTI line up as a column of codes rather than three boxes. */
+/* The code is a label, not a chip. */
 .language-code {
   grid-area: code;
   color: var(--muted-2);
@@ -2929,11 +1979,8 @@ button {
 }
 
 
-/* "English" / "한국어" is a BUTTON LABEL, not a caption sample, so it takes the
-   Apple UI face -- the boundary rule is that CWI type never styles a button. It
-   was on `--font-caption` (Roboto Flex) while the Korean option was already
-   overridden away to a system Hangul stack, so the two options did not even
-   match each other. `--font-ui` resolves Hangul through the same fallback. */
+/* A button label, not a caption sample, so it takes the Apple UI face --
+   the boundary rule: nothing outside `.caption-word` is CWI. */
 .language-name strong {
   font-size: 28px;
   font-weight: 600;
@@ -3106,9 +2153,8 @@ button {
   .caption-feed {
     left: 3%;
     right: 3%;
-    /* The desktop rule already handles a phone: `--caption-width-cap` follows the
-       stage container and `planStageLayout` shortens the row rather than shrink
-       the type. A separate `vw` height term here only fought it. */
+    /* The desktop rule already handles a phone: `--caption-width-cap` is
+       derived from the stage container, not from the viewport. */
   }
   .caption-paragraph {
     width: 100%;
@@ -3117,10 +2163,7 @@ button {
   .caption-surface {
     max-width: 100%;
   }
-  /* Transcript only -- the Stage rule above stays `nowrap` here too. At 390px the
-     stage font drops to `clamp(16px, 4.5vw, 24px)`, so six words measured ~306px
-     (with the since-removed orb) inside a ~342px feed and still fit on one
-     line. */
+  /* Transcript only -- the Stage rule above stays `nowrap` here too. */
   .transcript-feed .caption-words {
     flex-wrap: wrap;
     max-width: 100%;
@@ -3163,56 +2206,16 @@ button {
   }
 }
 
-/* THE FILM'S ENVELOPE, enhanced only; legacy's `voice-phase` and
-   `word-sync-pop` are untouched and keep their own stops.
+/* THE RISE IS FIXED, THE FALL FILLS THE GAP. The envelope is split at its
+   own peak into two animations: the rise keeps its absolute duration --
+   the moment a word starts growing IS the moment it is spoken -- and only
+   the return stretches, out to the next word's turn.
+   BOTH SIDES FLATTEN INTO THE PEAK. A maximum on a smooth curve has zero
+   derivative; without that the velocity stepped in a single frame.
+   Enhanced only. Legacy's `voice-phase` and `word-sync-pop` are untouched. */
 
-   A raised cosine peaking at 0.357 of the window, FITTED with
-   `scripts/motion_diff.py` against the film's own measured curve. The peak
-   fraction and the window length are two knobs for two targets -- when the
-   crest peaks relative to the word's turn, and how wide it is -- and a cosine
-   couples them, so move them as a pair and re-measure both.
-
-   The tool measures both SUB-GRID (parabolic vertex for the peak, interpolated
-   half-maximum crossings for the width). Reading them off the 0.02s grid
-   quantised the fit and made the last two figures un-closeable: whichever one
-   was made exact threw the other a full grid step out, indefinitely.
-
-   RESAMPLING the film's median curve point-by-point was tried (see
-   `scripts/fit_film_envelope.py`) and measured WORSE -- that median's amplitude
-   is 1.089x, so its per-point wobble is sampling noise and fitting keyframes to
-   it fits the noise. Keep the parametric shape. */
-/* THE RISE IS FIXED, THE FALL FILLS THE GAP (2026-08-13, at the user's
-   request: "B가 실행되기 전까지 A의 모션이 부드럽게 이어지도록").
-   MEASURED before changing anything: 42% of all samples had NOTHING moving on
-   the stage -- 22 dead gaps, median 0.21s, longest 2.31s. A word popped,
-   stopped dead, and the next one started from nothing, so the stage read as
-   switching on and off rather than as continuous motion.
-   The envelope is therefore SPLIT at its own peak (35.7%) into two animations
-   that run back to back. The rise keeps its absolute duration, because the
-   moment a word starts growing IS the moment it is spoken and CWI 2.2.2 is
-   about exactly that -- moving it would decouple the cue from the audio. Only
-   the return is stretched, out to the next word's turn, so the stage is never
-   still while anyone is talking.
-   The stops below are the film envelope's own, rescaled: 0-35.7% mapped onto
-   0-100% for the rise and 35.7-100% for the fall. The SHAPE is byte-identical
-   to `voice-phase-film` / `word-sync-pop-film`, which are kept and still used
-   by the hold envelope and by legacy.
-   `forwards` on both: the rise holds the peak while the fall's delay elapses,
-   and the fall holds 0 afterwards. Neither carries `backwards`, so before the
-   turn the base value governs and a word in read-ahead is unmoved. */
-
-/* BOTH HALVES ARRIVE AT THE PEAK WITH ZERO SLOPE, and that is the whole point
-   of these stops. A maximum on a smooth curve has a derivative of zero; the
-   first cut of this envelope did not, so the rise reached the peak at full
-   speed and the fall left it at a different one, and the velocity stepped in a
-   single frame. Reported as "모션 두개간의 이음이 매끄럽지가 않음".
-   Making BOTH sides flatten into the boundary is what makes the join
-   independent of the two durations -- and they are never equal, since the fall
-   stretches to reach the next word while the rise is fixed. Matching the
-   slopes to each other instead would only hold for one ratio.
-   Interpolation between stops is linear, so the slope is exactly the stop
-   spacing: keep the last rise segments and the first fall segments small in
-   value and wide in percentage, or the corner comes back. */
+/* BOTH HALVES ARRIVE AT THE PEAK WITH ZERO SLOPE, and that is the whole
+   point of these stops. */
 @keyframes voice-phase-film-rise {
   0% { --voice-phase: 0.000; }
   14.01% { --voice-phase: 0.048; }
@@ -3224,13 +2227,7 @@ button {
   100% { --voice-phase: 1.000; }
 }
 
-/* THE TAIL HOLDS ITS AMPLITUDE LONGER THAN THE FILM'S OWN RETURN DOES.
-   These started as the film envelope's stops rescaled, and over a 900ms tail
-   that curve is already down to half by the midpoint -- so the carry-over
-   existed in the numbers and was not legible on screen. Reported as wanting it
-   "조금더 명확". The shape is now flatter early and steeper late: still
-   monotonic, still ending at exactly 0, but it stays visible for most of the
-   gap instead of most of the decay happening in the first third. */
+/* THE TAIL HOLDS ITS AMPLITUDE LONGER THAN THE FILM'S OWN RETURN DOES. */
 @keyframes voice-phase-film-fall {
   0% { --voice-phase: 1.000; }
   6% { --voice-phase: 0.9975; }
@@ -3317,57 +2314,13 @@ button {
   }
 }
 
-/* WEIGHT ANIMATES. A RULE HERE SAID IT DID NOT, AND THAT WAS WRONG.
+/* WEIGHT ANIMATES. */
 
-   The claim was that a word's motion is colour and size only, and weight is a
-   static property -- so this block pinned `--voice-weight` and `--voice-width`
-   whole for a word's whole life. Two things were offered for it: the AE
-   template animates `ADBE Text Fill Color` and `ADBE Text Position 3D` and
-   carries no weight animator, and stroke-thickness-over-glyph-height measured a
-   median swing of -40 across the film.
+/* THE CHARACTER WAVE STAYS ON, on both clocks. */
 
-   BOTH WERE MISREAD. Watched frame by frame at 12fps through the film's
-   "louder" (t=16.0-18.4s), the word starts at its neighbours' size and weight,
-   grows large AND HEAVY, holds, then returns all the way to normal -- by the
-   end "voice gets louder or softer" is uniform again. The measurement missed it
-   because dividing stroke by height is scale-invariant BY CONSTRUCTION: a word
-   that bolds and grows in proportion reads as no change at all. That is the
-   one case it cannot see, and it is the case the film is in.
-
-   Pinning the weight also removed the return: a loud word stayed permanently
-   heavy instead of bolding up and settling back, which is normal -> animation
-   -> normal losing its third step.
-
-   So weight rides `--voice-phase` on both clocks, as it always did. If this is
-   ever revisited, measure stroke thickness against a NON-GROWING neighbour in
-   the same frame, not against the word's own height. */
-
-/* THE CHARACTER WAVE STAYS ON, on both clocks.
-
-   It was briefly gated off here on the grounds that the film's 28s+ section
-   moves whole words and scatters no characters -- which is true of that
-   section. But the wave is what gives an ordinary word its texture, and
-   without it the stage reads as flat. `--char-wave` already scales with how
-   far a letter departs from its own word's size, so a loud word still moves
-   as a block with its letters held together while an ordinary word lets the
-   wave carry it. That gate is the behaviour worth keeping, not a blanket off
-   switch. */
-
-/* ── ROLLING CAPTIONS: newest at the BOTTOM, history rising above ────────────
-   A second stage layout, `Settings -> Rolling captions`, default OFF. The
-   default stage anchors the block to the TOP and grows down; this anchors it to
-   the BOTTOM and grows up, so a new caption always appears in the same place
-   and older ones travel away from it.
-
-   THE ANCHORING IS THE WHOLE TRICK, and it is the mirror of the default's.
-   `top: auto` + `bottom` + `max-height` + `justify-content: flex-end` together
-   mean the box hugs its content from the bottom edge, so overflow clips at the
-   TOP -- the OLDEST caption is what leaves. Change any one of them and the
-   NEWEST is what vanishes, which is the same trap the default layout carries.
-
-   The clip gutters below are inherited from `.caption-feed` unchanged: they are
-   room for a word's transient overhang, not spacing, and this layout does not
-   change how a word moves. */
+/* ── ROLLING CAPTIONS: newest at the bottom, history rising above ────────
+   Presentation only. Rows still never move once laid out and a late word may
+   still only append; what flips is which end of the stage is the live one. */
 .studio-shell[data-layout="rolling"] .caption-feed {
   top: auto;
   bottom: 4%;
@@ -3375,14 +2328,9 @@ button {
   justify-content: flex-end;
 }
 
-/* THE LIVE BAND IS SEPARATED FROM THE HISTORY. The newest caption sits in its
-   own zone at the bottom with a rule above it, so the place where words are
-   arriving is never confused with the transcript that has already been read.
-   The rule is drawn on the paragraph rather than the stage so it travels with
-   the boundary as the stack grows. */
-/* With the caption rules on, the paragraph separator is a THIRD horizontal
-   line in the same place doing the same job -- the rules already mark where
-   the live line is. */
+/* THE LIVE BAND IS SEPARATED FROM THE HISTORY. */
+/* With the caption rules on this separator is a third horizontal line doing
+   the same job -- the rules already mark where the live line is. */
 .studio-shell[data-plate="rules"][data-layout="rolling"]
   .caption-paragraph[data-current="true"] {
   border-top: 0;
@@ -3397,11 +2345,7 @@ button {
   padding-top: .55em;
 }
 
-/* HISTORY RECEDES BY AGE, not all at once. `nth-last-child` counts from the
-   newest, so each older caption is dimmer than the one below it and the eye is
-   pulled to the bottom without anything moving. Colour is untouched -- these
-   are opacities, so a speaker's hue still reads and CWI 2.1 is not weakened
-   into a second meaning. */
+/* HISTORY RECEDES BY AGE, not all at once. */
 .studio-shell[data-layout="rolling"] .caption-paragraph { opacity: .62; }
 .studio-shell[data-layout="rolling"] .caption-paragraph:nth-last-child(2) { opacity: .46; }
 .studio-shell[data-layout="rolling"] .caption-paragraph:nth-last-child(3) { opacity: .32; }
@@ -3413,44 +2357,16 @@ button {
   .studio-shell[data-layout="rolling"] .caption-paragraph { transition: none; }
 }
 
-/* ── THE TINY LIFT: most words leave the line a little as they pop ──────────
-   Observed word by word on the film: "To do whatever you tell me, Drill
-   Sergeant" is Pop with a tiny lift and NO bold; "Goddamnit Gump!" is bold and
-   pops harder, also with a tiny lift; and inside "What's your sole purpose in
-   this army?" two of the seven carry it. It is on most words, not a rare cue.
-
-   THIS IS NOT THE HOLD LIFT. That one is 0.525em, gated on a word being
-   isolated by ~0.8s of silence, and only three words in the whole sample earn
-   it. This is two orders smaller and rides the pop itself, so it reads as the
-   line breathing rather than a word leaving it.
-
-   It also sits against a standing rule -- "the word grows from its baseline, it
-   does not move" -- which was written after four attempts to HOP a word on its
-   pop. The rule holds for that: the amplitude here is deliberately far below
-   what read as a hop, and it is gated with everything else, so a still word
-   does not move at all. If this ever reads as bouncing, lower the amplitude
-   before reaching for the gate. */
+/* ── THE LIFT: the film's default treatment ─────────────────────────────
+   Read word by word from 28s on, the film carries roughly thirty lifts to
+   eight pops. An unemphasised word lifts and does NOT grow. */
 .studio-shell[data-motion="enhanced"] .word-glyph {
   animation-name: word-sync-pop-lift;
 }
 
-/* THE LIFT IS THE DEFAULT TREATMENT, NOT A GARNISH ON THE POP (2026-08-12).
-   Counted off the user's word-by-word reading of the film from 28s on, the
-   annotated lines carry roughly THIRTY lifts against EIGHT pops: "Buzz Light
-   year to the rescue!", "I like it because I can track,", "what the actor is
-   saying in real time.", "I'll show you." are lift on every word, and the pops
-   are the handful the speaker leans on. The header line says it outright --
-   "lifting ->> maybe all has (little bit -y moved -> up lifting)".
-   It shipped at .045em, which is under a pixel at this type size, i.e. present
-   in the DOM and invisible on the stage. That is what "you keep ignoring the
-   lifting effect" was about. `--word-lift-em` now arrives from config.
-   The scale term is unchanged and still gated: a quiet word rides `--sync-pop`
-   at exactly 1, so what it does is LIFT, and only an emphasised word grows.
-   RAISING IT IS BOUNDED BY `scripts/ink_collision.py`. The lift travels toward
-   the row above, so it eats directly into a clearance that has 9px at rest. */
-/* The lift, cut at its own peak (42%) so the rise keeps its absolute duration
-   and only the return stretches. Stops are `word-sync-pop-lift`'s own,
-   rescaled: 0-42% onto the rise and 42-100% onto the fall. */
+/* THE LIFT IS THE DEFAULT TREATMENT, NOT A GARNISH ON THE POP (2026-08-12). */
+/* The lift, cut at its own peak (42%): the rise keeps its absolute duration
+   and only the return stretches. */
 @keyframes word-sync-pop-lift-rise {
   0% { transform: translate3d(-50%, 0, 0) scale(1); }
   100% {
@@ -3460,20 +2376,15 @@ button {
   }
 }
 
-/* Same reshaping as `voice-phase-film-fall`, and for the same reason: the lift
-   is the channel EVERY word carries, so if the tail is to read at all it has to
-   read here. The word stays up for most of the gap and then comes down,
-   instead of sinking immediately and spending the rest of the tail at rest. */
+/* Reshaped like `voice-phase-film-fall`, and for the same reason: the lift
+   is the channel EVERY word carries, so the tail has to read here. */
 @keyframes word-sync-pop-lift-fall {
   0% {
     transform:
       translate3d(-50%, calc(var(--word-lift-em, .16em) * -1), 0)
       scale(var(--sync-pop));
   }
-  /* Leaves the peak with almost no slope, to meet the rise's own ease-out.
-     `cubic-bezier(.42,0,.22,1)` already arrives at the peak at zero speed --
-     its second control point sits at y=1, the same as the endpoint -- so this
-     stop is what makes the other side of the corner match. */
+  /* Leaves the peak with almost no slope, to meet the rise's own ease-out. */
   6% {
     transform:
       translate3d(-50%, calc(var(--word-lift-em, .16em) * -.994), 0)

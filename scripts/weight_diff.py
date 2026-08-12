@@ -73,9 +73,7 @@ def calibrate() -> list[tuple[int, float]]:
     probe = ImageFont.truetype(str(FONT), 160)
     axes = probe.get_variation_axes()
     # ROBOTO FLEX HAS 13 AXES and `set_variation_by_axes` wants every one of
-    # them, in order. Passing three silently left the default instance, so every
-    # weight rendered identically and the calibration was a flat line -- which
-    # then "proved" the film's weight never moves, from no data at all.
+    # them, in order.
     weight_index = next(i for i, a in enumerate(axes)
                         if a["name"].decode().lower() == "weight")
     defaults = [a["default"] for a in axes]

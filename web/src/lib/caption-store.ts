@@ -51,9 +51,8 @@ export interface CaptionWord {
   sustain_active?: boolean;
   /** CWI 2.1.5: an off-camera voice is set in italic, keeping its colour. */
   off_camera?: boolean;
-  /* CWI 2.3's contour INSIDE the word -- one reading per sub-window of its own
-     span, so each character can take its own size/weight/width the way p.34 and
-     p.38 show. Absent when the span is too short to have a measurable shape. */
+  /* 2.3's contour inside the word: one reading per sub-window of its own
+     span, so each character can read its own position. */
   env_loudness?: number[];
   env_pitch?: number[];
   env_texture?: number[];
@@ -79,9 +78,7 @@ export interface LevelEvent {
   /** Standing bearing of each speaker slot, index 0 = S1. Absent until the
    *  array has placed somebody; never an empty array. */
   speaker_slots_deg?: number[];
-  /** Where each DECIDED speaker has been heard from. Names the speaker rather
-   *  than relying on array position, so the ring's marks carry that speaker's
-   *  own caption colour. Absent with no array. */
+  /** Where each DECIDED speaker has been heard from. */
   speaker_bearings?: {
     speaker: string; deg: number;
     /** Circular standard deviation of this speaker's bearings, degrees. */
@@ -299,12 +296,8 @@ function eventWords(event: CaptionEvent, sseId: number): CaptionWord[] {
   return [];
 }
 
-/**
- * Word ids the playhead has already reached, so the reducer can leave them be.
- *
- * The reducer is pure and knows nothing about time; the caller owns the
- * playhead and passes in what it has settled.
- */
+/** Word ids the playhead has already reached, so the reducer can leave them
+   be. */
 export type SettledIds = ReadonlySet<string>;
 
 export function reduceCaptionEvent(

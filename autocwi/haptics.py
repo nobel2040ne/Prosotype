@@ -1,23 +1,15 @@
-"""Haptic salience -> actuation. The rule is: actuate on flags, never on words.
+"""Haptic salience -> actuation. Actuate on flags, never on every word.
 
-Two research findings decide the shape of this module, and both are already
-recorded in `docs/RESEARCH.md`:
+Two findings shape this, both in `docs/RESEARCH.md`: wrist vibration alongside
+captions helps DHH viewers track speaker changes (Haptic-Captioning, CHI '23),
+but *continuous* vibration is distracting (Tactile Emotions, CHI '25).
 
-* **Haptic-Captioning (CHI '23)** — wrist vibration alongside captions helps
-  DHH viewers track speaker changes and frees gaze. Hence `speaker_change`.
-* **Tactile Emotions (CHI '25)** — combined visual+haptic beats visual-only,
-  but *continuous* vibration is distracting: actuate selectively, threshold it,
-  let users tune intensity. Hence the flags, the config threshold, and the
-  refusal to drive motors from raw direction-of-arrival.
+So direction rides on a WORD rather than streaming from the array. Driving
+motors from raw DoA is the continuous vibration the research warns against; a
+bearing attached to a speaker change is one event — "someone new, over there".
 
-That second finding is why direction rides on a *word* here rather than
-streaming from the array. Raw DoA driving motors is exactly the continuous
-vibration the research warns against; a bearing attached to a speaker change
-says "someone new, and they are over there", which is one event.
-
-The bearing -> motor mapping lives here rather than on the node because it is a
-contract both ends reason about, and because a mapping that only exists inside a
-device script cannot be tested offline.
+The bearing -> motor mapping lives here, not on the node, because a mapping
+that only exists inside a device script cannot be tested offline.
 """
 
 from __future__ import annotations

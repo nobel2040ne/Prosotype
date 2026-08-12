@@ -16,11 +16,7 @@ test("wide characters cover the scripts captions actually use", () => {
 });
 
 test("an all-Latin word is NEVER wide", () => {
-  /*
-   * THE MOTION GATE. A word classified wide takes the continuous-wipe path;
-   * an English word must never reach it, or English motion moves — and every
-   * motion acceptance figure is measured on the English film.
-   */
+  /* THE MOTION GATE. */
   for (const text of [
     "louder", "softer", "is", "synchronized", "precisely", "animation,",
     "Goddamnit", "a", "don't", "1640", "S1:", "", "...", "café",

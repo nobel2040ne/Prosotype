@@ -1,33 +1,5 @@
-/**
- * CWI 2.1: which colour each speaker gets, and why.
- *
- * The design system treats this as GEOMETRY on the colour wheel, not as a list
- * to walk. Its pictures are the argument:
- *
- * - **2.1.1** places main characters around the wheel and says "if a film
- *   features only three main characters, their colors should be spaced as far
- *   apart as possible on the spectrum", with Hero and Villain opposite.
- * - **2.1.2** picks supporting colours that fall *between* the mains.
- * - **2.1.3** is a whole page of do/don't wheels: "if a main character is
- *   represented in red, avoid nearby hues like orange or magenta... as they can
- *   visually blend and create confusion".
- * - **2.1.4** gives minor characters pastels from the wheel's centre —
- *   literally `S: 30% B: 90%` at some hue.
- *
- * The previous implementation was `palette[hash(speakerId) % palette.length]`,
- * which ignores all of that: it can hand speakers 1 and 2 adjacent hues, which
- * is the exact confusion 2.1.3 exists to prevent, and it contradicted
- * config.yaml's own comment ("assigned deterministically by order of first
- * appearance").
- *
- * Assignment here is by ORDER OF FIRST APPEARANCE, greedily maximising the
- * minimum hue distance to everyone already assigned. On the CI mains that hands
- * out Yellow → Blue → Pink — 120° apart, which is exactly the maximally-spaced
- * triple 2.1.1 asks for — before filling in the rest.
- *
- * Pure and deterministic: the same roster always produces the same assignment,
- * so a speaker's colour cannot drift as later speakers appear.
- */
+/** CWI 2.1: which colour each speaker gets, and why. The design system treats
+   this as GEOMETRY on the colour wheel, not as a list to walk. */
 
 /** Hue in degrees, or null for a colour we cannot parse (never chosen by distance). */
 export function hueOf(color: string): number | null {
@@ -81,14 +53,7 @@ export interface SpeakerPalettes {
   support: readonly string[];
 }
 
-/**
- * Assign colours to speakers in the order they first spoke.
- *
- * `speakers` must be in first-appearance order; the caller owns that ordering
- * (the roster is already sorted that way). Returns a map from speaker id to
- * colour, plus the palette INDEX so a themed palette (`palette_light`) can be
- * substituted without re-deriving the assignment.
- */
+/** Assign colours to speakers in the order they first spoke. */
 export function assignSpeakerColors(
   speakers: readonly string[],
   palettes: SpeakerPalettes,
@@ -153,17 +118,7 @@ export function assignSpeakerColors(
 /** The themed assignment map the studio passes around. */
 export type SpeakerColorMap = Map<string, {color: string; index: number}>;
 
-/**
- * DISPLAY status, not tracker status. The pipeline's `speaker_status` says
- * what the attribution tracker KNOWS; the stage must still colour with the
- * best-known speaker ("never gate the onset colour turn on speaker
- * identity"). A word carrying a speaker while the tracker still reports
- * `unknown` is, for display purposes, provisional: it wears that speaker's
- * colour and may be revised. Before this mapping, such words — whose durable
- * records end with `speaker: S1` but `speaker_status: "unknown"` — stayed
- * neutral grey forever, while every word in the reference film wears its
- * block's colour.
- */
+/** DISPLAY status, not tracker status. */
 export function speakerStatus(
   word: {speaker?: string | null; speaker_status?: string | null},
 ): string {
@@ -173,15 +128,8 @@ export function speakerStatus(
   return reported;
 }
 
-/**
- * CWI 2.1, via `assignSpeakerColors` — see the module comment for why the
- * assignment is wheel geometry and not a lookup.
- *
- * Neutral grey is reserved for words with NO speaker at all. Both fallbacks
- * stay CSS variables rather than literals: they have to follow the stage
- * theme, and every consumer writes the result straight into a custom
- * property, so the indirection resolves for free.
- */
+/** CWI 2.1, via `assignSpeakerColors` — see the module comment for why the
+   assignment is wheel geometry and not a lookup. */
 export function speakerColor(
   speaker: string | null | undefined,
   colors: SpeakerColorMap,

@@ -1,17 +1,13 @@
-"""Measure OUR caption motion from pixels, so it can be compared to the film's.
+"""Measure OUR caption motion from pixels, to compare against the film's.
 
-Every comparison so far measured the film from pixels and our render from the
-DOM. Each was careful, but they are not the same quantity: the DOM reports the
-size a style resolves to, and pixels report the ink a viewer actually sees, with
-antialiasing, hinting and the glyph's own shape in between. This closes that.
+Every comparison before this measured the film from pixels and our render from
+the DOM. Those are not the same quantity: the DOM reports the size a style
+resolves to, pixels report the ink a viewer sees.
 
-The film's own pipeline (`motion_diff.py --film`) cannot be pointed at our
-frames directly: it assumes ONE caption band and detects cuts by how much the
-inked column set changes, and our stage is a multi-row wall that gains a word
-every few hundred milliseconds. Here the rows are found individually and each is
-segmented on its own, which the layout contract makes safe -- rows never move
-once laid out and a late word may only append, so a word's slot is stable for as
-long as it is on screen.
+`motion_diff.py --film` cannot be pointed at our frames — it assumes ONE
+caption band and detects cuts by inked-column change, and our stage is a
+multi-row wall. Here each row is found and segmented on its own, which the
+layout contract makes safe: rows never move once laid out.
 
     .venv/bin/python -m autocwi live --sample --lang en --no-open &
     .venv/bin/python <scratch>/screencast.py --out /tmp/cast --seconds 18

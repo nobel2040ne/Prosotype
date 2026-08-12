@@ -110,9 +110,7 @@ def main() -> None:
     for index, entry in enumerate(rows):
         row = entry.get("row", {})
         # `transcription` is the normalized form; `raw_transcription` keeps
-        # punctuation. Score against the normalized one -- punctuation is a
-        # formatting choice each recognizer makes differently and would show up
-        # as fake errors.
+        # punctuation.
         text = str(row.get("transcription") or "").strip()
         source = audio_url(row)
         if not text or not source:
