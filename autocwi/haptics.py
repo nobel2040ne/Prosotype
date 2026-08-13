@@ -42,6 +42,8 @@ class MotorLayout:
 
     pins: list[int] = field(default_factory=list)
     angles: list[float] | None = None
+    single_motor_gate_deg: float | None = None
+    motor_gate_deg: float | None = None
 
     def __post_init__(self) -> None:
         if self.angles is None:
@@ -51,6 +53,11 @@ class MotorLayout:
             raise ValueError(
                 f"{len(self.pins)} pins but {len(self.angles)} angles"
             )
+        if (self.single_motor_gate_deg is not None
+                and not 0 < self.single_motor_gate_deg <= 180):
+            raise ValueError("single_motor_gate_deg must be in (0, 180]")
+        if self.motor_gate_deg is not None and not 0 < self.motor_gate_deg <= 180:
+            raise ValueError("motor_gate_deg must be in (0, 180]")
 
     @property
     def spacing_deg(self) -> float:
@@ -79,9 +86,20 @@ def bearing_weights(layout: MotorLayout,
     """
     if not layout.pins:
         return []
-    if bearing is None or not layout.can_encode_direction:
+    if not layout.can_encode_direction:
+        # A positioned one-motor prototype can signal its own sector only.
+        # Unknown direction stays quiet rather than falsely claiming "left".
+        if layout.single_motor_gate_deg is None:
+            return [1.0] * len(layout.pins)
+        if bearing is None:
+            return [0.0] * len(layout.pins)
+        distance = abs(((bearing - layout.angles[0]) + 180) % 360 - 180)
+        return [max(0.0, 1.0 - distance / layout.single_motor_gate_deg)]
+    if bearing is None:
         return [1.0] * len(layout.pins)
-    step = layout.spacing_deg
+    # A wider configured sector allows neighbouring motors to overlap. That
+    # makes a two-motor prototype feel less like a hard left/right switch.
+    step = layout.motor_gate_deg or layout.spacing_deg
     weights = []
     for angle in layout.angles:
         # Angular distance wrapped into +/-180, so 350deg is 10deg from front.
@@ -130,4 +148,11 @@ def layout_from_config(cfg: dict) -> MotorLayout:
                 explicit = True
         else:
             pins.append(int(entry))
-    return MotorLayout(pins=pins, angles=angles if explicit else None)
+    gate = (cfg.get("haptics", {}) or {}).get("single_motor_gate_deg")
+    motor_gate = (cfg.get("haptics", {}) or {}).get("motor_gate_deg")
+    return MotorLayout(
+        pins=pins,
+        angles=angles if explicit else None,
+        single_motor_gate_deg=None if gate is None else float(gate),
+        motor_gate_deg=None if motor_gate is None else float(motor_gate),
+    )

@@ -36,7 +36,6 @@ Then, no microphone needed:
 .venv/bin/python -m autocwi live --lang ko         # skip the picker
 .venv/bin/python -m autocwi live --list-devices    # choose a microphone
 .venv/bin/python -m autocwi cc assets/reference_specs/demo.json   # exact reference motion
-.venv/bin/python -m autocwi run clip.mp4 --out out/ --speakers 2  # offline pipeline
 ```
 
 ## Map

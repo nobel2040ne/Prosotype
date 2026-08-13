@@ -36,7 +36,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from autocwi import netaudio as na          # noqa: E402
-from autocwi.haptics import MotorLayout, bearing_weights  # noqa: E402
+from autocwi.config import load_config       # noqa: E402
+from autocwi.haptics import (                # noqa: E402
+    MotorLayout, bearing_weights, layout_from_config,
+)
 
 SR = 16_000          # what the pipeline wants; the node resamples to it
 BLOCK = 1024         # ~64 ms, matching the Mac's capture cadence
@@ -323,10 +326,17 @@ def cue_loop(conn: socket.socket, ring: MotorRing, stop: threading.Event,
 # --------------------------------------------------------------------------
 
 def run(args) -> int:
-    pins = [] if args.no_motors else [
-        int(p) for p in args.ring.split(",") if p.strip()
-    ]
-    ring = MotorRing(MotorLayout(pins=pins))
+    configured_layout = layout_from_config(load_config(args.config))
+    if args.no_motors:
+        layout = MotorLayout()
+    elif args.ring is None:
+        layout = configured_layout
+    else:
+        pins = [int(p) for p in args.ring.split(",") if p.strip()]
+        # Retain an explicitly configured physical placement for its matching
+        # pin list; --ring still supports temporary probe arrangements.
+        layout = configured_layout if pins == configured_layout.pins else MotorLayout(pins=pins)
+    ring = MotorRing(layout)
     doa = DoAReader(args.doa_cmd, offset_deg=args.doa_offset)
     doa.start()
     stop = threading.Event()
@@ -414,8 +424,10 @@ def main() -> int:
                     help="channels to open on the array (default: 1)")
     ap.add_argument("--channel", type=int, default=None,
                     help="which channel carries processed speech; default averages")
-    ap.add_argument("--ring", default="17,27,22,23",
-                    help="motor BCM pins clockwise from front (default: 17,27,22,23)")
+    ap.add_argument("--ring", default=None,
+                    help="override configured motor BCM pins, clockwise from front")
+    ap.add_argument("--config", default=None,
+                    help="path to config.yaml (default: repository config.yaml)")
     ap.add_argument("--no-motors", action="store_true",
                     help="audio and direction only")
     ap.add_argument("--doa-cmd", default=None, metavar="CMD",

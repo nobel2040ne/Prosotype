@@ -1,9 +1,9 @@
 """auto-CWI CLI.
 
-  python -m autocwi live [--file clip.wav]        # live CWI captions (primary)
+  python -m autocwi live                           # live CWI captions (primary)
   python -m autocwi run <input> --out out/ [--whisper small] [--speakers 2] [--stub]
   python -m autocwi transcribe|diarize|prosody|fuse ...
-  python -m autocwi cc out/spec.json --media clip.mp4   # CWI closed captions
+  python -m autocwi cc <spec.json> [--media <media>]    # CWI closed captions
 
 Offline stages read/write JSON intermediates in --out, so they can be run,
 inspected, and swapped independently; the pipeline's product is the

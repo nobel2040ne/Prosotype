@@ -870,8 +870,15 @@ haptics:
   intensity: 0.8
 
   # The motor ring on the Pi, BCM pin numbers, CLOCKWISE FROM THE CASE'S
-  # FRONT.
-  motors: []
+  # FRONT. GPIO4 is LEFT (270°); GPIO27 is RIGHT (90°).
+  motors:
+    - gpio: 4
+      angle_deg: 270
+    - gpio: 27
+      angle_deg: 90
+  # Each motor covers ±135°, deliberately overlapping through the front and
+  # rear so a two-motor prototype does not switch direction abruptly.
+  motor_gate_deg: 135
 
 asr:
   model: small          # base | small | medium
