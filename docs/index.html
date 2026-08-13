@@ -117,6 +117,9 @@ body {
    measure and unreadable at 980px. */
 .inner { max-width: var(--wide); margin: 0 auto; padding: 80px 22px; }
 @media (max-width: 700px) { .inner { padding: 56px 22px; } }
+/* A section awaiting its content: the heading still marks the place, but the
+   tile does not open a full-height gap between the two around it. */
+.t-awaiting .inner { padding-bottom: 40px; }
 
 /* ── Type ramp, from the analysis ─────────────────────────────────────── */
 .eyebrow { margin: 0 0 12px; font-size: 14px; font-weight: 600; line-height: 1.29; letter-spacing: -.224px; color: var(--accent); }
@@ -164,7 +167,9 @@ code {
   font-variation-settings: "opsz" 40, "wght" 400, "wdth" 100;
   font-size: clamp(26px, 3.6vw, 42px); line-height: 1.3;
   letter-spacing: -.012em; display: flex; flex-wrap: wrap;
-  align-items: baseline; gap: 0 .46em; color: var(--ahead);
+  /* One gap for every preview, wide enough that a word at full crest
+     overhangs into it rather than into the word beside it. */
+  align-items: baseline; gap: 0 .82em; color: var(--ahead);
 }
 .w { display: inline-block; white-space: nowrap; color: var(--ahead); }
 .w .c { display: inline-block; }
@@ -196,9 +201,12 @@ code {
    by 4.5 px at 1.62x -- the one thing the stage never does. */
 @keyframes phase { 0%, 100% { --phase: 0; } 50% { --phase: 1; } }
 .w.t3 { position: relative; }
-/* The sizer reserves the PEAK's width and none of its height, so the crest has
-   somewhere to grow into and the row keeps the line box it started with. */
-.t3 .sizer { visibility: hidden; font-size: calc(1em * var(--scale, 1)); line-height: 0; }
+/* The sizer holds the RESTING width, never the peak. Reserving the peak padded
+   every growing word away from its neighbours and left a shrinking word
+   narrower than its own ink, so the gaps read as uneven even though the CSS gap
+   is identical everywhere. The crest overhangs into the line gap instead, which
+   is why that gap is set wide enough below to absorb it. */
+.t3 .sizer { visibility: hidden; line-height: 0; }
 .t3 .crest-anchor { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); white-space: nowrap; }
 .t3 .crest-ink { line-height: 0; font-size: calc(1em * (1 + var(--phase) * (var(--scale) - 1))); }
 .play .t3 { animation: phase 900ms linear both; animation-delay: var(--d); }
@@ -213,7 +221,21 @@ code {
 .t4 { font-variation-settings: "opsz" 40, "wght" calc(400 + var(--phase) * (var(--wt) - 400)), "wdth" 100; }
 .play .t4 { animation: phase 900ms linear both; animation-delay: var(--d); }
 
-/* Channel 5 — the lift: a word that waited rises and lands as it turns */
+/* Channel 5 — width, the one axis that is very nearly inert in practice */
+.t6 { font-variation-settings: "opsz" 40, "wght" 400, "wdth" calc(100 + var(--phase) * (var(--wd) - 100)); }
+.play .t6 { animation: phase 900ms linear both; animation-delay: var(--d); }
+
+/* Channel 7 — the word lift: every word rises and returns. Unlike the hold
+   lift below it is ungated and small, so the demo runs it at true amplitude
+   rather than exaggerating it. */
+@keyframes wordlift {
+  0%, 100% { transform: translateY(0); }
+  42%      { transform: translateY(-0.16em); }
+  72%      { transform: translateY(0.048em); }
+}
+.play .t7 { animation: wordlift 620ms cubic-bezier(.42,0,.22,1) both; animation-delay: var(--d); }
+
+/* Channel 6 — the hold lift: a word that waited rises and lands as it turns */
 @keyframes lift {
   0%   { transform: translateY(0); }
   22%  { transform: translateY(-.525em); }
@@ -231,7 +253,8 @@ code {
 .play .tw .c { animation: wave 240ms cubic-bezier(.34,0,.28,1) both; animation-delay: var(--d); }
 
 @media (prefers-reduced-motion: reduce) {
-  .play .t1 .c, .play .t2, .play .t3, .play .t4, .play .t5, .play .tw .c {
+  .play .t1 .c, .play .t2, .play .t3, .play .t4, .play .t5, .play .t6,
+  .play .t7, .play .tw .c {
     animation-duration: 1ms !important;
   }
 }
@@ -251,14 +274,22 @@ figure { margin: 36px 0 0; }
 .t-dark .plate, .t-dark-2 .plate, .t-dark-3 .plate, .t-black .plate {
   background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.12);
 }
-figcaption { margin: 20px auto 0; max-width: 62ch; text-align: center; font-size: 14px; line-height: 1.43; letter-spacing: -.224px; color: var(--fg-2); }
+/* A caption names what the figure shows. It is not running prose, so it sets
+   flush left with the figure rather than centred under it. */
+figcaption { margin: 20px 0 0; max-width: 62ch; font-size: 14px; line-height: 1.43; letter-spacing: -.224px; color: var(--fg-2); }
 figcaption b { color: var(--fg); font-weight: 600; }
 figcaption i { font-style: italic; }
 
 .fig { display: flex; flex-direction: column; align-items: center; min-width: 480px; }
-.fnode { border: 1px solid var(--hair); border-radius: 11px; background: var(--bg); padding: 12px 16px; text-align: center; min-width: 0; }
-.fnode b { display: block; font-size: 14px; font-weight: 600; letter-spacing: -.224px; color: var(--fg); }
-.fnode i { display: block; font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--fg-2); margin-top: 5px; line-height: 1.45; letter-spacing: 0; }
+/* A node title is centred; its detail is not. Centring three ragged lines of
+   monospace reads as an accident — the detail is a list, so it sets left. */
+.fnode {
+  border: 1px solid var(--hair); border-radius: 11px; background: var(--bg);
+  padding: 13px 18px 14px; min-width: 0;
+  display: flex; flex-direction: column; align-items: center;
+}
+.fnode b { display: block; font-size: 14px; font-weight: 600; letter-spacing: -.224px; color: var(--fg); text-align: center; }
+.fnode i { display: block; font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--fg-2); margin-top: 6px; line-height: 1.5; letter-spacing: 0; text-align: left; }
 .fnode.wide { width: 100%; max-width: 470px; }
 .fnode.key { border-color: var(--accent); }
 .fnode.key b { color: var(--accent); }
@@ -279,9 +310,41 @@ figcaption i { font-style: italic; }
   background: var(--bg); padding: 0 10px; font-size: 12px; letter-spacing: -.12px; color: var(--fg-2);
 }
 .flanes .fnode { height: 100%; }
-.fconsumers, .fsources { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%; max-width: 470px; }
+/* Three responsibilities, left to right, with the wire drawn as the boundary
+   between the two runtimes rather than as a third participant. */
+.fcols {
+  display: grid; grid-template-columns: 1fr 26px 1fr 26px 1fr;
+  align-items: stretch; min-width: 700px; width: 100%;
+}
+.fcol { display: flex; flex-direction: column; gap: 12px; }
+.fcol-head {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px;
+  padding-bottom: 11px; border-bottom: 1px solid var(--hair);
+  font-size: 12px; letter-spacing: -.12px; color: var(--fg-2);
+}
+.fcol-head b {
+  font-size: 15px; font-weight: 600; letter-spacing: -.224px; color: var(--fg);
+}
+.fcol .fnode { align-items: flex-start; }
+.fcol .fnode b { text-align: left; }
+/* The wire column is a channel, not a stage: dashed, tinted, and it carries
+   the caret that shows which way the stream runs. */
+.fcol.wire {
+  border: 1px dashed var(--hair); border-radius: 18px;
+  padding: 16px 14px; background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+.fcol.wire .fnode { border-color: var(--hair); }
+.fcross { display: flex; align-items: center; justify-content: center; color: var(--fg-2); font-size: 13px; }
 .fnode.dim { border-style: dashed; }
 .fnode.dim b { color: var(--fg-2); font-weight: 400; }
+/* A heading inside a section, below the h2. */
+.sub-h {
+  margin: 44px 0 0; font-size: 21px; font-weight: 600; line-height: 1.19;
+  letter-spacing: .231px; color: var(--fg);
+}
+.sub-h + p { margin-top: 12px; }
+
+.fconsumers { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%; max-width: 470px; }
 .fmeet { font-size: 12px; letter-spacing: -.12px; color: var(--fg-2); margin: 10px 0 4px; }
 
 /* ── Tables ───────────────────────────────────────────────────────────── */
@@ -301,14 +364,6 @@ td:first-child { color: var(--fg); font-weight: 600; white-space: nowrap; }
 td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
 td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; margin-right: 8px; }
-
-.pull {
-  margin: 36px 0 0; padding: 28px 32px; border-radius: 18px;
-  background: var(--parchment); color: var(--ink);
-  font-size: 21px; font-weight: 400; line-height: 1.38; letter-spacing: .231px;
-}
-.t-dark .pull, .t-dark-2 .pull, .t-dark-3 .pull, .t-black .pull { background: rgba(255,255,255,.06); color: var(--on-dark); }
-.pull strong { font-weight: 600; }
 
 /* ── The studio mock ──────────────────────────────────────────────────── */
 .stage-mock { border-radius: 18px; overflow: hidden; background: var(--black); display: grid; grid-template-columns: 1fr 190px; }
@@ -389,6 +444,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
       <a href="#what">What</a>
       <a href="#pillars">Pillars</a>
       <a href="#pipeline">Pipeline</a>
+      <a href="#internals">Internals</a>
       <a href="#playhead">Playhead</a>
       <a href="#motion">Motion</a>
       <a href="#studio">Studio</a>
@@ -417,16 +473,15 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
       motion, and the voice in typography — entirely offline.
     </p>
     <p class="muted">
-      The headline above is itself a caption. It runs the real colour turn and
-      the real 15% pop, and so does every demo on this page.
+      The headline above is itself a caption, and so is every demo on this page.
     </p>
     <p><button class="btn" data-target="hero">Replay</button></p>
 
     <dl class="stats">
       <div><dt>Runs</dt><dd>Local<small>no cloud, no telemetry</small></dd></div>
-      <div><dt>English</dt><dd>2.27%<small>WER, FLEURS</small></dd></div>
-      <div><dt>Korean</dt><dd>10.54%<small>CER, 120 clips</small></dd></div>
+      <div><dt>Languages</dt><dd>EN · KO<small>chosen before capture</small></dd></div>
       <div><dt>Read-ahead</dt><dd>1.75 s<small>plus a 420 ms floor</small></dd></div>
+      <div><dt>Speakers</dt><dd>12<small>CI colours, evidence-gated</small></dd></div>
     </dl>
   </div>
 </header>
@@ -536,10 +591,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
     <figure>
       <div class="plate">
         <div class="fig">
-          <div class="fsources">
-            <div class="fnode"><b>microphone</b><i>local capture</i></div>
-            <div class="fnode dim"><b>XVF3800 array → Pi Zero 2 W</b><i>optional; capture and actuation only</i></div>
-          </div>
+          <div class="fnode wide"><b>XVF3800 array → Pi Zero 2 W</b><i>4-channel array with on-chip direction of arrival;<br>the device captures and actuates, and analyses nothing</i></div>
           <div class="fpipe"></div>
           <div class="fnode wide"><b>audio in</b><i>lossless deadline batcher</i></div>
           <div class="fpipe"></div>
@@ -561,15 +613,8 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
         </div>
       </div>
       <figcaption>
-        <b>Figure 1.</b> The live path. Text, voice and speaker are independent
-        stages joined per word, so a pending speaker decision does not delay a
-        colour turn. The optional hardware branch performs capture and actuation
-        only — a Raspberry Pi Zero 2 W has 512 MB of memory against 600 MB per
-        model — so recognition and the salience decision both remain on the host,
-        beside the speaker tracker. The motor ring is driven by the
-        <code>speaker_change</code> and <code>emphasis</code> flags carried on
-        each word, not by the direction stream, which continuous-vibration
-        studies report as distracting.
+        <b>Figure 1.</b> The live path, from the wearable to the two consumers.
+        Text, voice and speaker are independent stages joined per word.
       </figcaption>
     </figure>
 
@@ -583,7 +628,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
           </tr>
           <tr>
             <td>Word onsets are never synthesised</td>
-            <td>Prosody, the motion clock and the read-ahead floor are all keyed to per-word <code>start</code>/<code>end</code>. A recognizer that returns no timestamps can therefore supply text at the verifier boundary and nowhere else.</td>
+            <td>Prosody, the motion clock and the read-ahead floor are all keyed to per-word start and end times. A recognizer that returns no timestamps can therefore supply text at the verifier boundary and nowhere else.</td>
           </tr>
           <tr>
             <td>Utterances are reconciled, not rebuilt</td>
@@ -595,8 +640,81 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 4 · THE PLAYHEAD — light ══════════════════════════════════════ -->
-<section class="tile t-light" id="playhead">
+<!-- ═══ 4 · INTERNALS — light ═══════════════════════════════════════ -->
+<section class="tile t-light" id="internals">
+  <div class="inner">
+    <p class="eyebrow">Internals</p>
+    <h2>One process decides, one stream carries, one reducer draws.</h2>
+    <p>
+      Python owns every decision and the browser owns none. What crosses between
+      them is a stream of word events; the renderer is a pure function of it.
+    </p>
+
+    <figure>
+      <div class="plate">
+        <div class="fcols">
+          <div class="fcol">
+            <div class="fcol-head"><b>Decides</b> Python · <code>autocwi</code></div>
+            <div class="fnode"><b>live.py</b><i>capture thread<br>adaptive gain<br>recognizer streams<br>endpoint verifier<br>hybrid diarization<br>http.server + SSE</i></div>
+            <div class="fnode"><b>sortformer.py</b><i>bridge to the native<br>Core ML diarizer, kept off<br>the recognition thread</i></div>
+            <div class="fnode"><b>schema.py</b><i>CaptionSpec — the shape<br>every event and every<br>consumer share</i></div>
+          </div>
+          <div class="fcross">→</div>
+          <div class="fcol wire">
+            <div class="fcol-head"><b>Carries</b> the wire</div>
+            <div class="fnode key"><b>GET /events</b><i>server-sent events<br>one origin, no socket<br>replayed on reconnect</i></div>
+            <div class="fnode"><b>the word event</b><i>word_id · text · start<br>end · speaker · loudness<br>pitch · final · revision</i></div>
+            <div class="fnode dim"><b>everything else</b><i>level · hypothesis · cue<br>commit · verification<br>none of it durable</i></div>
+          </div>
+          <div class="fcross">→</div>
+          <div class="fcol">
+            <div class="fcol-head"><b>Draws</b> browser · <code>web/src</code></div>
+            <div class="fnode"><b>use-caption-stream</b><i>EventSource lifecycle<br>runtime config<br>language session</i></div>
+            <div class="fnode"><b>caption-store</b><i>pure reducer: merge by<br>word id, resolve source<br>authority and finality</i></div>
+            <div class="fnode"><b>caption-clock</b><i>the playhead — freezes<br>a word&rsquo;s turn moment<br>once, at first sight</i></div>
+            <div class="fnode"><b>live-studio</b><i>one node per word,<br>one delay per node</i></div>
+          </div>
+        </div>
+      </div>
+      <figcaption>
+        <b>Figure 2.</b> Where each responsibility lives. Recognition, prosody
+        and attribution never leave Python; the browser reduces and draws.
+      </figcaption>
+    </figure>
+
+    <div class="sub-h">The event stream</div>
+    <p>
+      Five kinds of event travel the stream; one is durable. A word is re-emitted
+      under the same identifier when later evidence revises it, so a consumer
+      must collapse by identifier rather than count events.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Event</th><th>Carries</th><th>Durable</th></tr></thead>
+        <tbody>
+          <tr><td><code>word</code></td><td>the settled word — text, span, speaker, loudness, pitch, and the salience flags the haptics read</td><td>yes, and only this</td></tr>
+          <tr><td><code>level</code></td><td>input level, noise floor, gain, and the bearing when an array supplies one</td><td>no</td></tr>
+          <tr><td><code>hypothesis</code></td><td>the streaming recogniser&rsquo;s running guess at the phrase</td><td>no</td></tr>
+          <tr><td><code>cue</code>, <code>commit</code></td><td>a word entering and leaving the revisable window</td><td>no</td></tr>
+          <tr><td><code>verification</code></td><td>the endpoint verifier reconciling a finished phrase, word by word</td><td>no</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="sub-h">What the renderer may not do</div>
+    <p>
+      It has no scheduler and no timer: the clock computes one turn moment per
+      word, hands it over as a single delay, and the browser owns every frame
+      after that. And it may not revise freely — a word&rsquo;s text can change only
+      while the word is still ahead of the playhead. Colour and timing still
+      update, but a word the reader has already read never rewrites itself.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ 5 · THE PLAYHEAD — light ══════════════════════════════════════ -->
+<section class="tile t-parchment" id="playhead">
   <div class="inner">
     <p class="eyebrow">The playhead</p>
     <h2>What makes this a CWI renderer rather than a subtitle track.</h2>
@@ -614,40 +732,34 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
           <tr>
             <td>The playhead trails the acoustic clock</td>
             <td class="num">1.75 s</td>
-            <td>Colouring only up to <code>now − delay</code> leaves real, recognised, still-uncoloured text ahead of the colour.</td>
+            <td>Colouring only up to the present minus the delay leaves real, recognised, still-uncoloured text ahead of the colour.</td>
           </tr>
           <tr>
             <td>Read-ahead is a per-word floor</td>
             <td class="num">420 ms</td>
-            <td>The recogniser releases words in bursts, so a delay moves the mean lead and leaves its spread alone: at 1.75 s, 42% of words still turned within 100 ms of appearing. The floor takes that to 0%.</td>
+            <td>The recogniser releases words in bursts, so a delay moves the mean lead without narrowing its spread. A per-word floor is what actually guarantees the margin.</td>
           </tr>
           <tr>
             <td>The turn is never gated on the speaker</td>
-            <td class="num">0.62 s vs 4.48 s</td>
-            <td>Text arrives at a median 0.62 s and durable attribution at 4.48 s — so the turn happens on time in whatever colour is known, or not on time at all.</td>
+            <td class="num">—</td>
+            <td>Text is available long before a durable speaker decision, so the turn happens on time in whatever colour is known, or it does not happen on time at all.</td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <p class="pull">
-      <strong>The caption invariant is structural.</strong> A word's colour turn
-      is a fixed moment on the acoustic timeline, so text may be revised only
-      while the word is still ahead of the playhead. Behind it is frozen history
-      — spelling included. Measured, coloured-caption rewrites went 14 → 0.
-    </p>
   </div>
 </section>
 
-<!-- ═══ 5 · THE FIVE CHANNELS — dark ══════════════════════════════════ -->
+<!-- ═══ 6 · THE MOTION CHANNELS — dark ══════════════════════════════════ -->
 <section class="tile t-dark-3" id="motion">
   <div class="inner">
     <p class="eyebrow">The motion channels</p>
     <h2>What a word does when it is spoken.</h2>
     <p class="muted">
       Each channel has one owner and one input; they do not share state, and the
-      browser schedules all of them from a single <code>animation-delay</code>,
-      with no timer and no reveal queue. The design system names five. The
+      browser schedules all of them from a single animation delay, with no timer
+      and no reveal queue. The design system names five. The
       shipped renderer runs seven, and departs from the specified values in
       three places — the table records both.
     </p>
@@ -679,7 +791,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
           <tr>
             <td>Width</td><td>harmonic content</td>
             <td class="num">condensed → expanded</td>
-            <td class="num">82% → 124%, but 99.3% of words render at exactly 100%</td>
+            <td class="num">82% → 124%</td>
           </tr>
           <tr>
             <td>Hold lift</td><td>silence either side of the word</td>
@@ -710,10 +822,9 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
       </div>
       <div class="box-foot">
         <p class="box-note">
-          <b>Colour turn.</b> The word is presented in read-ahead ink and
-          changes to its speaker colour at the spoken onset, wiped across its
-          characters rather than switched. The keyframe declares no end state, so
-          a later speaker correction applies as a direct write.
+          <b>Colour turn.</b> The word waits in read-ahead ink and changes to its
+          speaker colour at the spoken onset, wiped across its characters rather
+          than switched.
         </p>
         <button class="btn" data-target="d1">Replay</button>
       </div>
@@ -729,9 +840,8 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
       </div>
       <div class="box-foot">
         <p class="box-note">
-          <b>Pop.</b> The specified cue: a constant 15% on every word, growing
-          from the baseline with no vertical translation. The shipped renderer
-          halves it to 7.6% and applies it only to emphasised words.
+          <b>Pop.</b> The specified cue — a constant 15% on every word, growing
+          from the baseline with no vertical translation.
         </p>
         <button class="btn" data-target="d2">Replay</button>
       </div>
@@ -746,9 +856,8 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
       <div class="box-foot">
         <p class="box-note">
           <b>Crest.</b> Loudness is applied as a font-size rather than a
-          transform, so the letterforms are genuinely set at that size. The row
-          is unaffected: a hidden sizer holds the layout at resting size and the
-          growing ink is overlaid on the row's own baseline.
+          transform, so the letterforms are genuinely set at that size — and the
+          row it sits on does not move.
         </p>
         <button class="btn" data-target="d3">Replay</button>
       </div>
@@ -756,23 +865,47 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
 
     <div class="box">
       <div class="line" id="d4">
-        <span class="w t4" style="--wt:340;--d:0ms;color:var(--b)">a high voice</span>
-        <span class="w t4" style="--wt:900;--d:420ms;color:var(--b)">a low one</span>
+        <span class="w t4" style="--wt:340;--d:0ms;color:var(--b)">a</span>
+        <span class="w t4" style="--wt:340;--d:0ms;color:var(--b)">high</span>
+        <span class="w t4" style="--wt:340;--d:0ms;color:var(--b)">voice</span>
+        <span class="w t4" style="--wt:900;--d:420ms;color:var(--g)">a</span>
+        <span class="w t4" style="--wt:900;--d:420ms;color:var(--g)">low</span>
+        <span class="w t4" style="--wt:900;--d:420ms;color:var(--g)">one</span>
       </div>
       <div class="box-foot">
         <p class="box-note">
-          <b>Weight.</b> A property of the voice rather than of the word. Read
-          per word, the mapping inverts under emphasis — a shout roughly doubles
-          F0, which would render the loudest delivery as the lightest type — so
-          the register term reads the speaker's running median F0.
+          <b>Weight.</b> A property of the voice rather than of the word: the
+          register term reads the speaker&rsquo;s running median F0, because read per
+          word a shout would render as the lightest type on screen.
         </p>
         <button class="btn" data-target="d4">Replay</button>
       </div>
     </div>
 
     <div class="box">
+      <div class="line" id="d6">
+        <span class="w t6" style="--wd:82;--d:0ms;color:var(--p)">thin</span>
+        <span class="w t6" style="--wd:82;--d:0ms;color:var(--p)">and</span>
+        <span class="w t6" style="--wd:82;--d:0ms;color:var(--p)">reedy</span>
+        <span class="w t6" style="--wd:124;--d:420ms;color:var(--o)">full</span>
+        <span class="w t6" style="--wd:124;--d:420ms;color:var(--o)">and</span>
+        <span class="w t6" style="--wd:124;--d:420ms;color:var(--o)">warm</span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Width.</b> Harmonic content drives the width axis — rich low
+          harmonics set wider, dominant high harmonics narrower. The quietest
+          channel of the eight.
+        </p>
+        <button class="btn" data-target="d6">Replay</button>
+      </div>
+    </div>
+
+    <div class="box">
       <div class="line" id="d5">
-        <span class="w" style="color:var(--y)">as each word</span>
+        <span class="w" style="color:var(--y)">as</span>
+        <span class="w" style="color:var(--y)">each</span>
+        <span class="w" style="color:var(--y)">word</span>
         <span class="w t5" style="color:var(--y)">is</span>
         <span class="w" style="color:var(--y)">spoken</span>
       </div>
@@ -780,10 +913,27 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
         <p class="box-note">
           <b>Hold lift.</b> A word surrounded by silence rises and lands on its
           colour turn. The signal is isolation — the shorter of the gaps either
-          side, over inter-onset intervals — not sustain: the recognizer cannot
-          distinguish a drawn-out word from a word followed by a pause.
+          side — not sustain.
         </p>
         <button class="btn" data-target="d5">Replay</button>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="line" id="d7">
+        <span class="w t7" style="--d:0ms;color:var(--y)">every</span>
+        <span class="w t7" style="--d:230ms;color:var(--y)">word</span>
+        <span class="w t7" style="--d:460ms;color:var(--y)">rises</span>
+        <span class="w t7" style="--d:690ms;color:var(--y)">the</span>
+        <span class="w t7" style="--d:920ms;color:var(--y)">same</span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Word lift.</b> A small rise every word carries, ungated, on the size
+          cue&rsquo;s clock — the specification has no channel for it. Shown at its
+          true amplitude.
+        </p>
+        <button class="btn" data-target="d7">Replay</button>
       </div>
     </div>
 
@@ -794,9 +944,8 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
       <div class="box-foot">
         <p class="box-note">
           <b>Character wave.</b> Texture beneath the colour turn, advancing one
-          syllable at a time — <i>se</i>+<i>en</i>, <i>but</i>+<i>ton</i>. The
-          grouping is measured from the reference film, in which adjacent glyphs
-          step 42 ms apart with four elevated simultaneously.
+          syllable at a time — <i>se</i>+<i>en</i>, <i>but</i>+<i>ton</i>. Never
+          one letter at a time.
         </p>
         <button class="btn" data-target="dw">Replay</button>
       </div>
@@ -804,7 +953,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 6 · THE STUDIO — parchment ════════════════════════════════════ -->
+<!-- ═══ 7 · THE STUDIO — parchment ════════════════════════════════════ -->
 <section class="tile t-parchment" id="studio">
   <div class="inner">
     <p class="eyebrow">The studio</p>
@@ -814,8 +963,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
       which outranks it. The line is literal: <strong>anything inside a caption
       word is CWI, everything else is Apple.</strong> "UI recedes so the product
       can speak" is why the captions carry no frame and no per-block label —
-      here the captions <em>are</em> the product. This page is built the same
-      way, which is why every caption on it sits in a black box of its own.
+      here the captions <em>are</em> the product.
     </p>
 
     <figure>
@@ -852,18 +1000,14 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
         </div>
       </div>
       <figcaption>
-        <b>Figure 2.</b> The stage and its rail. Each speaker occupies an arc of
-        the ring spanning two circular standard deviations of that speaker's own
-        observed bearings, floored at 8° and capped at 150°: a settled talker
-        resolves to a narrow band, an unsettled one to a wide arc. Speakers whose
-        recent bearings fall below the concentration threshold are re-emitted at
-        their last confident position and dimmed rather than removed. The needle
-        and its dot mark the current bearing in the active speaker's colour.
+        <b>Figure 3.</b> The stage and its rail. Each speaker occupies an arc of
+        the ring; the needle marks the current bearing in the active speaker's
+        colour.
       </figcaption>
     </figure>
 
     <p>
-      Measured readings are not controls, so <code>−22.4 dBFS</code> carries no
+      A displayed reading is not a control, so the input level carries no
       border, fill or pill. Speaker colour is the only colour on screen that
       encodes information, which is why the surrounding interface is achromatic.
       The bracketed sound label is placed inside the dial rather than at the foot
@@ -875,26 +1019,10 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
 </section>
 
 <!-- ═══ 8 · LIMITS — light ════════════════════════════════════════════ -->
-<section class="tile t-light" id="limits">
+<section class="tile t-light t-awaiting" id="limits">
   <div class="inner">
     <p class="eyebrow">What it can't do</p>
     <h2>Known limitations.</h2>
-    <p>
-      A microphone cannot know future words. The playhead buys the read-ahead
-      back, but it buys it with 1.75 s of latency. Attribution is uncertain at
-      the edges — short turns and similar voices stay ambiguous, and about half
-      of all words first paint in a colour they will not keep; the UI shows that
-      rather than guessing. English and Korean each keep their own model and
-      their own numbers, chosen before capture. The haptic module has never run
-      against real motors.
-    </p>
-    <p>
-      Every figure above is measured rather than asserted, and each measurement
-      carries a negative control that is run first: a check never observed to
-      fail is not evidence. The recurring failure modes have been a probe
-      incapable of failing, a per-word average that normalised away the quantity
-      under test, and numeric agreement accepted in place of visual inspection.
-    </p>
   </div>
 </section>
 
