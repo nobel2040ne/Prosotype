@@ -4077,7 +4077,8 @@ class StreamingCaptioner:
         clock, so `stream_base` is what makes the two comparable. Getting that
         wrong would score every word against a bearing from a different moment.
         """
-        lookup = getattr(self.speaker_tracker, "direction_for_span", None)
+        tracker = getattr(self, "speaker_tracker", None)
+        lookup = getattr(tracker, "direction_for_span", None)
         if lookup is None:
             return None
         return lookup(self.stream_base + start, self.stream_base + end)
@@ -4303,9 +4304,16 @@ class StreamingCaptioner:
         # getattr, not attribute access: the tests build captioners with
         # `__new__` to skip loading a recognizer, so anything read here has to
         # tolerate an instance that never ran `__init__`.
-        direction_source = getattr(self, "direction_source", None)
-        if final and direction_source is not None:
-            bearing = direction_source()
+        if final:
+            # A final ASR word commonly arrives seconds after it was spoken.
+            # Its cue must retain the DoA observed *during that word's span*,
+            # not look up the newest reading now and lose it to the short TTL.
+            # The newest reading remains a fallback for array integrations
+            # that do not expose span history.
+            bearing = self._direction_for(word.start, word.end)
+            direction_source = getattr(self, "direction_source", None)
+            if bearing is None and direction_source is not None:
+                bearing = direction_source()
             if bearing is not None:
                 salience["direction_deg"] = round(float(bearing), 1)
         # Pivot the scale on the speaker's median so it lands on the CWI

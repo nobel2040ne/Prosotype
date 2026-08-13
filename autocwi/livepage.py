@@ -1130,18 +1130,24 @@ function updateIntentCircle(ev) {
   const rawDirection = ev.direction_deg ?? ev.azimuth_deg;
   const direction = Number(rawDirection);
   const known = Number.isFinite(direction);
+  // Same 180deg display offset the studio dial carries -- the array's 0deg and
+  // the front of the case point opposite ways. DISPLAY ONLY: `direction_deg`
+  // itself is untouched. Kept in step with COMPASS_BEARING_OFFSET_DEG in
+  // web/src/components/live-studio.tsx, or the two pages disagree about which
+  // way the room is.
+  const bearing = (((direction + 180) % 360) + 360) % 360;
   if (voiceCompass) {
     voiceCompass.dataset.direction = known ? "known" : "unknown";
     if (known) {
       voiceCompass.style.setProperty(
-        "--direction-angle", (((direction % 360) + 360) % 360).toFixed(1) + "deg"
+        "--direction-angle", bearing.toFixed(1) + "deg"
       );
     }
   }
   if (compassDirection) {
     compassDirection.dataset.known = known ? "true" : "false";
     compassDirection.textContent = known
-      ? Math.round(((direction % 360) + 360) % 360) + "°"
+      ? Math.round(bearing) + "°"
       : "awaiting array";
   }
 }

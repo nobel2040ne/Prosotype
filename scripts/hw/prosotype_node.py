@@ -60,6 +60,8 @@ class MotorRing:
     def __init__(self, layout: MotorLayout):
         self.layout = layout
         self._devices = None
+        self._direct_until = 0.0
+        self._direct_next_at = 0.0
         if layout.pins:
             try:
                 from gpiozero import PWMOutputDevice
@@ -91,16 +93,47 @@ class MotorRing:
         if flag == "speaker_change":
             for _ in range(2):
                 self._set(weights, intensity)
-                time.sleep(0.055)
+                # Coin motors need appreciable spin-up time. The previous
+                # 55 ms tap reached the driver but was commonly imperceptible.
+                time.sleep(0.18)
                 self._set(weights, 0.0)
-                time.sleep(0.085)
+                time.sleep(0.14)
         else:
-            steps = 14
-            for i in range(steps):
-                shape = 1 - abs(i - steps / 2) / (steps / 2)
-                self._set(weights, intensity * shape)
-                time.sleep(0.018)
+            # A gentle swell with a perceptible plateau, rather than a brief
+            # PWM peak that ends before the motor reaches useful amplitude.
+            for level in (0.25, 0.5, 0.75, 1.0):
+                self._set(weights, intensity * level)
+                time.sleep(0.05)
+            time.sleep(0.16)
+            for level in (0.75, 0.5, 0.25):
+                self._set(weights, intensity * level)
+                time.sleep(0.05)
             self._set(weights, 0.0)
+
+    def follow(self, bearing: float | None, intensity: float,
+               pulse_s: float, interval_s: float) -> None:
+        """Drive motors directly from the array's current speech bearing.
+
+        This is the low-latency path: the Pi receives a DoA update roughly
+        every 120 ms and applies it locally, without waiting for ASR or a
+        network round trip through the Mac. No array speech reading means off;
+        unlike an event cue, absence must never activate every motor.
+        """
+        if not self._devices:
+            return
+        if bearing is None:
+            self._set([0.0] * len(self._devices), 0.0)
+            self._direct_until = 0.0
+            self._direct_next_at = 0.0
+            return
+        now = time.monotonic()
+        if now >= self._direct_next_at:
+            self._direct_until = now + pulse_s
+            self._direct_next_at = now + interval_s
+        if now < self._direct_until:
+            self._set(self._weights(bearing), intensity)
+        else:
+            self._set([0.0] * len(self._devices), 0.0)
 
     def _set(self, weights: list[float], intensity: float) -> None:
         for dev, w in zip(self._devices, weights):
@@ -299,8 +332,8 @@ def resample(block: np.ndarray, src: int, dst: int) -> np.ndarray:
 # --------------------------------------------------------------------------
 
 def cue_loop(conn: socket.socket, ring: MotorRing, stop: threading.Event,
-             verbose: bool) -> None:
-    """Actuate cues from the Mac. Never analyses anything itself."""
+             verbose: bool, mac_cues: bool) -> None:
+    """Drain optional Mac cues without interfering with direct DoA control."""
     reader = na.FrameReader()
     conn.settimeout(0.5)
     while not stop.is_set():
@@ -314,6 +347,8 @@ def cue_loop(conn: socket.socket, ring: MotorRing, stop: threading.Event,
             return
         for frame in reader.feed(data):
             if frame.kind != na.KIND_CUE:
+                continue
+            if not mac_cues:
                 continue
             body = frame.json()
             bearing = body.get("direction_deg")
@@ -355,9 +390,10 @@ def run(args) -> int:
             with conn:
                 conn.sendall(na.pack_hello(SR, BLOCK))
                 threading.Thread(target=cue_loop,
-                                 args=(conn, ring, stop, args.verbose),
+                                 args=(conn, ring, stop, args.verbose,
+                                       args.mac_cues),
                                  daemon=True).start()
-                _stream(conn, args, doa, stop)
+                _stream(conn, args, doa, ring, stop)
         except (OSError, KeyboardInterrupt) as e:
             if isinstance(e, KeyboardInterrupt):
                 stop.set()
@@ -371,7 +407,7 @@ def run(args) -> int:
     return 0
 
 
-def _stream(conn: socket.socket, args, doa: DoAReader,
+def _stream(conn: socket.socket, args, doa: DoAReader, ring: MotorRing,
             stop: threading.Event) -> None:
     """Capture and ship until the link drops.
 
@@ -403,6 +439,11 @@ def _stream(conn: socket.socket, args, doa: DoAReader,
             mono = resample(downmix(raw, args.channel), args.rate, SR)
             conn.sendall(na.pack_audio(seq, mono))
 
+            # Local low-latency haptics: the speaker's current bearing drives
+            # the physical layout without waiting for caption finalization.
+            ring.follow(doa.latest, args.intensity, args.direct_pulse_s,
+                        args.direct_interval_s)
+
             now = time.monotonic()
             if doa.latest is not None and now - sent_doa_at >= 0.1:
                 conn.sendall(na.pack_doa(seq, doa.latest))
@@ -430,12 +471,24 @@ def main() -> int:
                     help="path to config.yaml (default: repository config.yaml)")
     ap.add_argument("--no-motors", action="store_true",
                     help="audio and direction only")
+    ap.add_argument("--intensity", type=float, default=0.8, metavar="0..1",
+                    help="direct DoA vibration strength (default: 0.8)")
+    ap.add_argument("--direct-pulse-ms", type=float, default=100.0,
+                    metavar="MS", help="direct DoA pulse length (default: 100)")
+    ap.add_argument("--direct-interval-ms", type=float, default=300.0,
+                    metavar="MS", help="time between direct DoA pulses (default: 300)")
+    ap.add_argument("--mac-cues", action="store_true",
+                    help="also play delayed caption cues from the Mac")
     ap.add_argument("--doa-cmd", default=None, metavar="CMD",
                     help="shell command printing the bearing, from probe_array.py")
     ap.add_argument("--doa-offset", type=float, default=0.0, metavar="DEG",
                     help="rotate bearings so 0deg matches the case's front")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
+
+    args.intensity = max(0.0, min(1.0, args.intensity))
+    args.direct_pulse_s = max(0.02, args.direct_pulse_ms / 1000.0)
+    args.direct_interval_s = max(args.direct_pulse_s, args.direct_interval_ms / 1000.0)
 
     if args.device is not None and str(args.device).lstrip("-").isdigit():
         args.device = int(args.device)

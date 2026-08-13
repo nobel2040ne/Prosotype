@@ -663,6 +663,23 @@ const MotionWord = memo(function MotionWord({
   );
 });
 
+/* THE DIAL IS DRAWN 180 DEG ROUND FROM THE ARRAY'S OWN FRAME (2026-08-14, at
+   the user's direction, decided watching a real talker beside the case). The
+   array's 0 deg and the dial's front tick were pointing opposite ways, so a
+   speaker in front of the case drew a needle behind it. This rotates the
+   BEARINGS -- needle, speaker arcs and the spoken label -- and leaves the tick
+   scale alone: the front tick is the case's front and is the frame everything
+   else is read against, so turning it too would move the reference instead of
+   the reading.
+   DISPLAY ONLY. `direction_deg` in the event stream and the bearing
+   `autocwi/haptics.py` drives motors from are untouched -- if the motors point
+   the wrong way as well, that is the same sign error at the source and belongs
+   in the node, not here. */
+const COMPASS_BEARING_OFFSET_DEG = 180;
+
+const compassBearing = (deg: number): number =>
+  (((deg + COMPASS_BEARING_OFFSET_DEG) % 360) + 360) % 360;
+
 /* THE SIDE-GRID INSTRUMENT, AND NOW THE ONLY ONE. */
 function VoiceCompass({
   level,
@@ -712,7 +729,11 @@ function VoiceCompass({
     "--delivery-stretch-y": (0.94 + force * 0.15).toFixed(3),
     "--delivery-energy": (0.18 + force * 0.62 + attack * 0.20).toFixed(3),
     "--delivery-texture": texture.toFixed(3),
-    "--direction-angle": `${directionMeasured ? ((direction % 360) + 360) % 360 : 0}deg`,
+    /* The unmeasured fallback is 0deg ON SCREEN, not through the offset: it
+       means "assume the talker is at the front of the case", which is where the
+       front tick is drawn. Passing it through would aim the default needle at
+       the back. */
+    "--direction-angle": `${directionMeasured ? compassBearing(direction) : 0}deg`,
   };
   // Standing speaker positions, the SpeechCompass minimap idea: the live dot
   // is where sound is arriving NOW, these are where each speaker sits. Colours
@@ -737,7 +758,7 @@ function VoiceCompass({
   const label = `${profile} delivery, ${number(level.rms_db, -72).toFixed(1)} dB, ${
     number(level.pitch_hz) > 0 ? `${Math.round(number(level.pitch_hz))} Hz` : "unvoiced"
   }${directionMeasured
-    ? `, ${Math.round(direction)} degrees`
+    ? `, ${Math.round(compassBearing(direction))} degrees`
     : ", direction not measured"}`;
 
   return (
@@ -776,7 +797,7 @@ function VoiceCompass({
         />
       ))}
       {slots.map((bearing, index) => {
-        const angle = ((Number(bearing) % 360) + 360) % 360;
+        const angle = compassBearing(Number(bearing));
         /* AN ARC, NOT A DOT, AND ITS WIDTH IS THE UNCERTAINTY. */
         const spread = marks.length ? number(marks[index]?.spread, 26) : 26;
         const span = clamp(spread * 2, 8, 150);
