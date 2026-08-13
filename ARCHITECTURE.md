@@ -8,18 +8,7 @@ shape:
 - **`cc`** — the closed-caption renderer that plays a finished spec and is the
   motion reference the other two are measured against.
 
-New to the terms here (ASR, diarization, prosody, CaptionSpec, SSE)? See the
-[glossary](ARCHITECTURE.md#glossary).
-
-## Contents
-
-- [System diagram](#system-diagram)
-- [Module map](#module-map)
-- [The data contract](#the-data-contract)
-- [How live rendering works](#how-live-rendering-works)
-- [Speaker attribution](#speaker-attribution)
-- [Design decisions & rationale](#design-decisions--rationale)
-- [Extension points](#extension-points)
+New to the terms? The [glossary](#glossary) is at the foot.
 
 ## System diagram
 
@@ -50,8 +39,8 @@ offline:  media ─► transcribe ─► diarize ─► prosody ─► fuse ─�
                  words.json  segments.json prosody.json           ├─► future haptic module
                                                                   └─► cc ─► captions.html
 
-reference:  docs/reference/*.mov ─► derive_reference_spec ─► assets/reference_specs/*.json
-            (+ transcript)          (measures the pixels)      └─► build_demo ─► demo.json
+reference:  screen recordings ─► derive_reference_spec ─► assets/reference_specs/*.json
+            (+ transcript)       (measures the pixels)     └─► build_demo ─► demo.json
 ```
 
 ## Module map
@@ -179,8 +168,9 @@ The load-bearing invariant: **text may be revised only ahead of the playhead.**
 Once the colour turn passes a word it is frozen — spelling included — so
 corrections land in the read-ahead zone where they are invisible. A settled
 word's typography returns exactly to normal.
-The full behavioral detail is in [docs/LIVE.md](docs/LIVE.md), and the frontend's
-non-negotiables are listed in [web/README.md](web/README.md).
+The frontend's non-negotiables are listed in
+[web/README.md](web/README.md), and
+[the project page](https://nobel2040ne.github.io/Prosotype/) shows the playhead running.
 
 ## Speaker attribution
 
@@ -189,176 +179,99 @@ Attribution runs live with four states — `unknown`, `provisional`, `stable`,
 and identity are separate evidence: Streaming Sortformer supplies continuous
 provisional turn slots, and at each endpoint a segmentation pass plus a full-turn
 voice embedding verifies the durable identity (ERes2Net for English, CAM++ for
-Korean). See [docs/LIVE.md](docs/LIVE.md#speaker-attribution)
-for the full behavior.
+Korean). [the project page](https://nobel2040ne.github.io/Prosotype/) shows the
+four states and what each one may claim.
 
 A haptic module plugs in by consuming either the SSE `word` events or `spec.json`
 — it must never import analysis code.
 
 ## Design decisions & rationale
 
-- **Per-speaker loudness, absolute pitch.** Loudness expressiveness is relative
-  to a voice's own range, but CWI's pitch→weight scale is explicitly absolute
-  (80 Hz heavy ↔ 250 Hz thin), which also makes male/female contrast visible —
-  so the renderer uses raw Hz for pitch.
+- **Per-speaker loudness, absolute pitch.** Loudness is relative to a voice's
+  own range; CWI's pitch→weight scale is explicitly absolute (80 Hz heavy ↔
+  250 Hz thin), which also makes voice-to-voice contrast visible.
 - **Accuracy-first live path.** The streaming model gives fast provisional text;
-  the endpoint verifier owns the durable result. Corrections are aligned back
-  onto the streaming timeline rather than re-rendering the sentence.
-- **Draft inference is demand-driven.** The low-latency 160 ms model loads only
-  in `readahead` mode. Running it hidden wasted CPU the accurate path needed.
-- **Verified text is durable; attribution is revisable.** The verifier owns text,
-  but a word's speaker may still firm up later under the same `word_id`.
+  the endpoint verifier owns the durable result, aligned back onto the streaming
+  timeline rather than re-rendering the sentence.
+- **Verified text is durable; attribution is revisable** under the same
+  `word_id`.
 - **Backlog is lossless.** Capture blocks carry their source-clock position and
-  are drained into catch-up batches after a stall, so no audio is skipped.
-- **Two-layer level handling.** Adaptive gain drives only the recognizer's copy
-  toward its training level; raw captured loudness still feeds prosody, so size
-  reflects true loudness.
-- **SSE over stdlib `http.server`, not websockets.** One-way stream, automatic
-  browser reconnect, zero extra dependencies, replay from `Last-Event-ID`.
-- **Frame-coalesced in-place rendering.** Stable `word_id` nodes survive text,
-  verification, and attribution revisions; ordinary updates never replace the
-  stage, line, or word node.
-- **Self-contained HTML** (fonts as data URIs, config embedded): pages survive
-  being moved, with no CDN or CSP concerns.
-- **Stubs as first-class** (`--stub`): the contract and pipeline are testable
-  with no model downloads. The offline tests rely on this.
+  drain into catch-up batches, so no audio is skipped.
+- **Two-layer level handling.** Adaptive gain drives only the recognizer's copy;
+  raw captured loudness still feeds prosody, so size reflects true loudness.
+- **SSE over stdlib `http.server`.** One-way, automatic reconnect, no extra
+  dependencies, replay from `Last-Event-ID`.
+- **Stable `word_id` nodes** survive every revision; an update never replaces the
+  stage, the line, or the word.
+- **Stubs are first-class** (`--stub`): the contract is testable with no models.
 
 ## Extension points
 
-1. **Haptics** — consume final `type: "word"` events from `/events`, or read
-   `spec.json`; map loudness/pitch + timing to actuators. Ignore revisable
-   hypotheses/cues/commits and provisional speaker changes, and apply
-   same-`word_id` revisions to state without re-actuating.
-2. **Offline video renderer** — removed; if revived, it should consume only
-   CaptionSpec (the previous implementation followed CWI §2.2/§2.4: white
-   read-ahead, onset color flip, the captions box).
+**Haptics** — consume final `type: "word"` events, or read `spec.json`. Ignore
+hypotheses, cues, commits and provisional speaker changes; apply same-`word_id`
+revisions without re-actuating.
 
 ---
 
 ## Glossary
 
-Plain-language definitions of the terms used throughout this project. If a term
-in the code or docs is unclear, it should be here — if it isn't, please add it.
+**Prosotype** — this project. "Prosody" (the melody of speech) + "type".
 
-### Product & domain
+**Caption with Intention (CWI)** — the design system implemented here, from the
+Chicago Hearing Society. Its three pillars:
 
-**Prosotype** — the name of this project: an application that turns live speech
-into expressive captions. "Prosody" (the melody and rhythm of speech) + "type"
-(typography).
+| Pillar | Question | How |
+|---|---|---|
+| **Attribution** | who is speaking | one colour per speaker, in wheel order |
+| **Synchronization** | when a word is spoken | it turns to that colour and pops as it is said |
+| **Intonation** | how it was said | a variable font: louder is larger, pitch moves weight and width |
 
-**Caption with Intention (CWI)** — the published design system we implement. It
-specifies how captions should look and move so that Deaf and hard-of-hearing
-viewers can follow *who* is speaking, *when* each word is spoken, and *how* it
-is said. Authored by the Chicago Hearing Society. The V1.0 PDF is the single
-source of truth for the visual design; see [docs/RESEARCH.md — sources](docs/RESEARCH.md#sources).
-
-**Deaf / hard-of-hearing (Deaf/HoH, DHH)** — the primary audience. The whole
-design exists to give this audience information that hearing viewers get for
-free from the audio.
-
-**Open captions** — captions burned into the view that everyone sees (as
-opposed to *closed* captions the viewer can toggle). Our live mode renders open
-captions in the browser.
-
-#### The three CWI pillars
-
-**Attribution** — *who is speaking.* Each speaker is assigned a distinct color
-(yellow, green, blue, pink, red, orange, in that wheel order). A word is drawn
-in its speaker's color.
-
-**Synchronization** — *when a word is spoken.* As each word begins, it turns
-from white to its speaker's color and does a brief "pop" (a small size increase
-and lift, then a return to normal). This points the viewer's eye at the word
-being said right now.
-
-**Intonation** — *how a word is spoken.* The typography carries the voice:
-louder speech is larger, and pitch changes the font weight and width. This uses
-a *variable font* (see below).
+**Open captions** — burned into the view, not toggleable. Live mode renders
+these.
 
 ### Speech processing
 
-**Automatic speech recognition (ASR)** — turning audio into text. We run
-recognizers locally (no cloud).
+| Term | Meaning |
+|---|---|
+| **ASR** | automatic speech recognition; runs locally here |
+| **Streaming ASR** | emits words as you speak, before the sentence ends — required for live |
+| **Diarization** | who spoke when. It separates speakers; it does not name them |
+| **Prosody** | the measurable qualities of *how* speech sounds: loudness, pitch, timing |
+| **Endpoint** | the moment a phrase finishes. A more accurate pass runs there |
+| **Onset** | the beginning of a word — the moment its colour turn is scheduled for |
+| **WER / CER** | word / character error rate, the standard accuracy metrics |
 
-**Streaming / online ASR** — recognition that emits words continuously as you
-speak, before the sentence is finished. Required for live captions. Contrasted
-with offline recognition, which processes a whole recording at once.
+### Models
 
-**Diarization** — "who spoke when": splitting audio into speaker turns. It does
-not identify names, only that speaker A differs from speaker B.
-
-**Prosody** — the measurable qualities of *how* speech sounds: loudness, pitch,
-and timing. Prosody drives the Intonation pillar.
-
-**Endpoint** — the moment a phrase finishes (a pause). At an endpoint we run a
-more accurate verification pass over the completed phrase.
-
-**Onset** — the very beginning of a word or speech sound. The *onset sidecar* is
-an optional component that guesses the first few letters of a word from its
-opening sounds (e.g. `H → He → Hel`) so a drawn-out word can start appearing
-before the recognizer commits to full spelling.
-
-**Word error rate (WER)** — the standard accuracy metric for ASR: the fraction
-of words inserted, deleted, or substituted compared to a reference transcript.
-
-### Models & components
-
-**Nemotron / Parakeet** — the English streaming recognizer (Nemotron) and its
-endpoint verifier (Parakeet). Nemotron gives fast provisional text; Parakeet
-re-checks each finished phrase.
-
-**Zipformer** — the Korean streaming recognizer (a 174M-parameter causal
-model).
-
-**Sortformer** — the streaming diarization model (from NVIDIA) that tracks
-speaker turns in real time on Apple Silicon.
-
-**Speaker embedding** — a numeric "voiceprint" used to confirm a speaker's
-identity at an endpoint. English uses a model called ERes2Net; Korean uses
-CAM++.
-
-**Variable font** — a font whose weight, width, and other axes can be set to any
-value continuously, not just a few presets. We use Roboto Flex (English/Latin)
-and Noto Sans KR (Korean). This is what lets typography track pitch smoothly.
+| Name | Role |
+|---|---|
+| **Nemotron** | the English streaming recognizer |
+| **Parakeet** | its endpoint verifier — owns the durable text |
+| **Zipformer** | the Korean streaming recognizer (174M, causal) |
+| **Sortformer** | streaming diarization, in Core ML on Apple Silicon |
+| **ERes2Net / CAM++** | voice embeddings that confirm identity at an endpoint (EN / KO) |
+| **Roboto Flex / Noto Sans KR** | the variable fonts; their axes are what carry intonation |
 
 ### Data & runtime
 
-**CaptionSpec (`spec.json`)** — the versioned data contract. It is the single,
-stable description of a caption: the words, their timing, speaker, loudness,
-pitch, and how to style them. **Every consumer (the renderer, a future haptic
-device) reads only the CaptionSpec — never the internal model objects.** Its
-definition is `autocwi/schema.py`; the data contract section above describes
-how it flows.
+**CaptionSpec (`spec.json`)** — the versioned contract: words, timing, speaker,
+loudness, pitch, and how to style them. **Every consumer reads only this**,
+never the internal model objects. Defined in `autocwi/schema.py`.
 
-**Server-Sent Events (SSE)** — a one-way stream from the Python server to the
-browser over plain HTTP. Live captions arrive as SSE `word` events. The browser
-reconnects automatically and can replay missed events.
+**SSE** — a one-way stream from Python to the browser over plain HTTP. Live
+captions arrive as `word` events; the browser reconnects and replays by itself.
 
-**Stage** — the main audience-facing caption surface in the studio UI: a stable
-stack of the most recent caption rows.
+**Stage** — the audience-facing caption surface. **Transcript** — the complete
+history, by speaker and utterance. **Voice Compass** — the rail dial: volume,
+pitch, texture, and where each speaker is.
 
-**Transcript** — the secondary UI surface that keeps the complete history of
-what was said, organized by speaker and utterance.
-
-**Voice Compass** — the side-rail indicator that shows continuous voice
-qualities (volume, pitch, brightness) as shapes, separate from the caption text.
-It reserves a direction marker for future multi-microphone input. A second,
-line-edge copy of the same channels (the "voice circle") sat beside the active
-caption until 2026-08-04; the stage now carries captions only.
-
-**Haptics** — physical/vibration feedback. Not built yet. A future haptic module
-would subscribe to the same CaptionSpec / SSE contract and buzz on meaningful
-events (speaker changes, emphasis) rather than every word.
+**Haptics** — a motor ring that pulses on speaker changes and emphasis, never on
+every word. It consumes the same contract and imports no analysis code.
 
 ### The three run modes
 
-**Live** — the primary mode. Microphone → CWI-styled captions in the browser, in
-real time.
-
-**`cc` (closed-caption renderer)** — plays a finished `spec.json` with the text
-known in advance. Because the future is known, it renders the *exact* reference
-CWI motion. It is the visual benchmark the live mode is measured against.
-
-**Offline** — a batch pipeline (`media → transcribe → diarize → prosody → fuse`)
-that ends at `spec.json`. Kept as the reference generator for the CaptionSpec
-contract.
+**live** — microphone to captions, in real time. The product.
+**`cc`** — plays a finished `spec.json` with the text known in advance, so it
+renders the exact reference motion. The benchmark, not the product.
+**offline** — a batch pipeline ending at `spec.json`, kept as the contract's
+reference generator.

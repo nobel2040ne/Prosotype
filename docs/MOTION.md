@@ -7,8 +7,8 @@ repository disagrees with this file, this file is what ships.
 Read it before changing anything a word does on screen. Most of the obvious
 ideas have already been tried here, measured, and reverted, and the reasons are
 recorded beside the rules they produced — often as a number that says how badly
-the idea failed. [motion.html](motion.html) is the same contract as a page you
-can watch in a browser.
+the idea failed. [motion.html](motion.html) puts these channels — and the rest
+of the project around them — on one page, with the motion running.
 
 Two things to know before the rules:
 
@@ -799,6 +799,25 @@ a per-letter angle; watched on the array, legacy's elastic stretch read better,
 so the stops are legacy's byte for byte with the tilt riding on top. What the
 syllable work left behind is the CLOCK — `--char-wave-delay` groups the letters
 so a syllable stretches together — which is the half the film shows.
+
+### THE WORD LIFT WAS TURNED OFF FOR ONE ROUND, AND PUT BACK (2026-08-13)
+
+`word_lift_em_enhanced` went to 0 on a misread: the report was about
+`motion.html`'s **crest demo**, whose own line box grew with the type and took
+the baseline with it, not about the stage. The stage never had that defect —
+`.word-glyph` is an absolute overlay over a hidden resting sizer, so the crest
+cannot move a row (measured: row tops and cell bottoms identical at rest and at
+a pinned 1.62x crest, 0.00px on all 108 words).
+
+Worth keeping from the round, because it is the only measurement of what the
+lift actually costs: traced over the film, the lift is **4.10px of vertical
+travel on 59 of 106 words**, and removing it left the size cue untouched
+(glyph scale p90 1.076 either way). The per-letter wave is a separate 0.57px
+median, 4.46px max.
+
+**The lesson is the scope, not the number.** A report about the reference page
+is not a report about the stage; check which one is being watched before
+changing a tunable that only the stage reads.
 
 ### A word past its turn SETTLES; it does not resume (2026-08-13)
 

@@ -1,4 +1,4 @@
-# Where these came from
+# Source
 
 ## The official Caption With Intention release, in full
 
@@ -44,8 +44,3 @@ why their prosody columns had to be back-fitted. The `.aep`'s markers plus this
 audio are therefore an authored caption timing paired with real speech: the one
 place the template's own timing can be checked against sound without measuring
 pixels. `autocwi/live.py` already lists it as a `sample_clip_path` fallback.
-
-## The `.mov` recordings
-
-Screen recordings of the project's WEBSITE, which is a different implementation
-from the AE template — see `docs/DECISIONS.md`. Silent.

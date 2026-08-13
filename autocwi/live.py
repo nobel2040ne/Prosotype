@@ -39,7 +39,7 @@ import unicodedata
 import warnings
 import webbrowser
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -5905,7 +5905,9 @@ def make_handler(
     broadcaster: Broadcaster,
     *,
     static_root: Path | None = None,
-    legacy_page_path: Path | None = None,
+    # A Path, or a callable that renders one on demand -- see
+    # `_legacy_page_resolver`.
+    legacy_page_path: Path | Callable[[], Path] | None = None,
     font_path: Path | None = None,
     korean_font_path: Path | None = None,
     runtime_config: dict | None = None,
@@ -5978,8 +5980,13 @@ def make_handler(
                     page_path, content_type="text/html; charset=utf-8"
                 )
             elif path in ("/legacy", "/legacy/") and legacy_page_path is not None:
+                target = (
+                    legacy_page_path()
+                    if callable(legacy_page_path)
+                    else legacy_page_path
+                )
                 self._send_file(
-                    legacy_page_path, content_type="text/html; charset=utf-8"
+                    target, content_type="text/html; charset=utf-8"
                 )
             elif path == "/runtime-config.json":
                 self._send_bytes(
@@ -6160,7 +6167,7 @@ def _start_server(
     open_browser: bool,
     *,
     static_root: Path | None = None,
-    legacy_page: Path | None = None,
+    legacy_page: Path | Callable[[], Path] | None = None,
     font_path: Path | None = None,
     korean_font_path: Path | None = None,
     runtime_config: dict | None = None,
@@ -6390,19 +6397,39 @@ def _studio_runtime_config(
     }
 
 
+def _legacy_page_resolver(cfg: dict, out: Path) -> Callable[[], Path]:
+    """Render `out/live.html` on FIRST REQUEST, not on every run.
+
+    The diagnostics page is ~2.4 MB because the variable font is base64-embedded
+    in it, and with the studio built nothing reads it unless someone opens
+    `/legacy`. Writing it every run left a stale multi-megabyte artefact in
+    `out/` after a run that never used it.
+    """
+    cache: dict[str, Path] = {}
+
+    def resolve() -> Path:
+        if "path" not in cache:
+            from .livepage import render_live
+            cache["path"] = Path(render_live(cfg, out))
+        return cache["path"]
+
+    return resolve
+
+
 def _select_live_frontend(
     cfg: dict,
-    legacy_page: Path,
-) -> tuple[Path, Path | None, Path | None, Path, Path | None, dict]:
+    legacy_page: Callable[[], Path],
+) -> tuple[Path, Path | None, Callable[[], Path] | None, Path, Path | None, dict]:
     display = cfg.get("display", {}) or {}
     studio_root = REPO_ROOT / "web" / "out"
     studio_page = studio_root / "index.html"
     requested = display.get("frontend", "next")
     static_root = None
-    page = legacy_page
+    # Only the fallback renders it eagerly, because only the fallback IS the
+    # frontend; behind a built studio it stays a callable.
+    page = studio_page if requested == "next" and studio_page.is_file() else legacy_page()
     legacy_route = None
     if requested == "next" and studio_page.is_file():
-        page = studio_page
         static_root = studio_root
         legacy_route = legacy_page
         print("[live] frontend: Next.js studio (legacy diagnostics at /legacy)")
@@ -6458,8 +6485,7 @@ def run_live(args, cfg: dict, device: str) -> None:
     cfg = {**cfg, "live": {**live_cfg, "input_gain": gain_cfg}}
     live_cfg = cfg["live"]
 
-    from .livepage import render_live
-    legacy_page = Path(render_live(cfg, out))
+    legacy_page = _legacy_page_resolver(cfg, out)
     (
         page,
         static_root,

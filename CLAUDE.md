@@ -206,6 +206,11 @@ What must be true regardless of which file you are in:
   pops and it does, but forty at 2.5 words/s is noise where four in a held shot
   is emphasis. `word_lift_em_enhanced`; it shipped at .045em, which is under a
   pixel and was reported as the lift being ignored.
+  **It was set to 0 once, on a misread, and put back the same day.** The report
+  was about the crest demo on the reference PAGE, whose line box grew with the
+  type; the stage cannot do that, because the crest lives on an absolute
+  overlay above a hidden resting sizer. **A report about `docs/` is not a
+  report about the stage** — check which one is being watched.
 - **LETTERS LIFT IN SYLLABLES, and the colour still travels per letter.**
   `se|en`, `Gu|mp`, `but|ton`, `be|cause`, `say|ing`, `res|cue!` — those six are
   the film's own, and they are the tests in `web/src/lib/syllables.ts`. A fixed

@@ -1,143 +1,84 @@
 # Prosotype
 
-Prosotype turns live speech into **expressive captions** for Deaf and
-hard-of-hearing viewers. It automates the official
-[Caption with Intention](https://captionwithintention.org) (CWI) design system:
-captions that show *who* is speaking (color), *when* each word is spoken
-(motion), and *how* it is said (typography that tracks loudness and pitch).
+Live speech into **expressive captions** for Deaf and hard-of-hearing viewers.
+It automates [Caption with Intention](https://captionwithintention.org): colour
+for *who* is speaking, motion for *when* each word is spoken, a variable font
+for *how* it is said.
 
-The **primary mode is live captions** — a microphone streams into CWI-styled
-open captions in the browser, in English or Korean. A batch pipeline for
-recorded video is kept as the reference generator for the caption data contract.
+English or Korean, from a microphone, **entirely offline**. No cloud inference,
+no telemetry — the only network access is a one-time model and font download.
 
-Everything runs **locally and offline**. No cloud inference, no telemetry. The
-only network access is one-time downloads of model weights and fonts.
-
-> New here? Start with **[CONTRIBUTING.md](CONTRIBUTING.md#setup)** for a
-> step-by-step first run, and **[ARCHITECTURE.md — glossary](ARCHITECTURE.md#glossary)** for the
-> terminology.
-
-## What it does
-
-The renderer follows the **CWI Design System V1.0**
-([PDF](docs/reference/cwi-design-system-v1.0.pdf)) across its three pillars:
-
-- **Attribution** — each speaker gets a distinct color (yellow, green, blue,
-  pink, red, orange, in wheel order).
-- **Synchronization** — a word turns to its speaker's color at the moment it is
-  spoken, with a brief size "pop" and lift that returns to normal.
-- **Intonation** — a variable font carries the voice: louder speech is larger,
-  pitch changes weight and width.
-
-Captions sit in a dark box in the lower area of the frame, as the design system
-specifies.
+**[See how it works →](https://nobel2040ne.github.io/Prosotype/)** — the whole
+project on one page, with the motion running.
 
 ## Quick start
 
-Requires **Python 3.11**, **Node.js**, and **ffmpeg** on macOS (Apple Silicon
-recommended) or Linux.
+Python 3.11, Node.js and ffmpeg, on macOS (Apple Silicon) or Linux.
 
 ```bash
-brew install ffmpeg                                  # if not already installed
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python scripts/fetch_font.py               # one-time: English + Korean fonts
-.venv/bin/python scripts/fetch_streaming_model.py    # one-time: live ASR + diarization models
-npm --prefix web install                             # one-time: studio dependencies
-npm --prefix web run build                           # build the browser UI
+.venv/bin/python scripts/fetch_font.py             # fonts, ~12 MB
+.venv/bin/python scripts/fetch_streaming_model.py  # models, ~2.2 GB
+npm --prefix web install && npm --prefix web run build
 ```
 
-Then run the bundled demo — no microphone needed:
+Then, no microphone needed:
 
 ```bash
-.venv/bin/python -m autocwi live --sample            # opens http://127.0.0.1:7337/
+.venv/bin/python -m autocwi live --sample          # opens 127.0.0.1:7337
 ```
 
-Full setup notes (download sizes, offline extras, gated model tokens) are in
-**[CONTRIBUTING.md](CONTRIBUTING.md#setup)**.
-
-## Common commands
+## Commands
 
 ```bash
-# Live captions (primary mode)
-.venv/bin/python -m autocwi live                     # microphone; pick English/한국어 first
-.venv/bin/python -m autocwi live --lang ko           # skip the picker, use Korean
-.venv/bin/python -m autocwi live --sample            # stream the bundled clip, no mic
-.venv/bin/python -m autocwi live --list-devices      # choose a microphone
-
-# Reference renderer (exact CWI motion from a finished spec)
-.venv/bin/python -m autocwi cc assets/reference_specs/demo.json
-.venv/bin/python -m autocwi tune                     # motion tuner with live sliders
-
-# Offline pipeline (generates spec.json)
-.venv/bin/python -m autocwi run clip.mp4 --out out/ --speakers 2
-
-# Tests
-.venv/bin/python -m pytest                           # fast, offline, no model loads
-npm --prefix web run check                           # lint + UI reducer tests + build
+.venv/bin/python -m autocwi live                   # microphone; pick a language first
+.venv/bin/python -m autocwi live --lang ko         # skip the picker
+.venv/bin/python -m autocwi live --list-devices    # choose a microphone
+.venv/bin/python -m autocwi cc assets/reference_specs/demo.json   # exact reference motion
+.venv/bin/python -m autocwi run clip.mp4 --out out/ --speakers 2  # offline pipeline
 ```
 
-## Project map
+## Map
 
 ```
-autocwi/          Python runtime: live engine, offline pipeline, renderers, schema
-  live.py           live capture → recognition → SSE server (primary mode)
-  cli.py            subcommands: live, run, cc, tune, transcribe, diarize, prosody, fuse
-  schema.py         the CaptionSpec data contract (versioned)
-  ccpage.py         cc reference renderer
-  sortformer.py     bridge to the native diarization helper
-web/              Next.js studio (the browser UI); static-exported and served by Python
-native/           Swift helper for native diarization on Apple Silicon
-scripts/          one-time model/font downloads, benchmarks, spec derivation
-assets/           fonts, bundled audio samples, reference specs
-config.yaml       ALL tunable mapping values (never hardcoded in code)
-docs/             design system, architecture, onboarding, glossary, research
-tests/            offline test suite (synthetic audio, no model loads)
+autocwi/     the runtime: live engine, offline pipeline, renderers, schema
+web/         the studio UI; static-exported and served by Python
+native/      Swift helper for diarization on Apple Silicon
+scripts/     one-time downloads; the Raspberry Pi node
+assets/      fonts, sample audio, reference specs
+config.yaml  every tunable value — never hardcoded in code
 ```
 
-A fuller breakdown of every module is in
-**[ARCHITECTURE.md](ARCHITECTURE.md)**.
+Tests and measurement probes are development tooling and are not distributed.
 
 ## Documentation
 
-| Document | What's in it |
+| | |
 |---|---|
-| [CONTRIBUTING.md](CONTRIBUTING.md#setup) | Setup, first run, conventions and the ground rules |
-| [ARCHITECTURE.md — glossary](ARCHITECTURE.md#glossary) | Definitions of every domain term |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System design, modules, and the data contract |
-| [docs/LIVE.md](docs/LIVE.md) | How live mode works in depth |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, conventions, ground rules, PR flow |
-| [docs/RESEARCH.md — sources](docs/RESEARCH.md#sources) | The primary source materials |
-| [docs/MOTION.md](docs/MOTION.md) | **The motion contract** — five channels, the rules, the acceptance figures |
-| [docs/motion.html](docs/motion.html) | The motion contract as a page you can watch |
-| [docs/HARDWARE.md](docs/HARDWARE.md) | The mic array + Pi + motor node: bring-up and booth runbook |
-| [docs/RESEARCH.md](docs/RESEARCH.md) | Research grounding for design decisions |
-| [web/README.md](web/README.md) | The studio frontend |
+| **[nobel2040ne.github.io/Prosotype](https://nobel2040ne.github.io/Prosotype/)** | the project, on one page |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | modules, data contract, glossary |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | setup and the ground rules |
+| [web/README.md](web/README.md) | the studio frontend |
+| [captionwithintention.org](https://captionwithintention.org) | the design system — the final word |
 
-## Scope & limitations
+## Limits
 
-Prosotype is a research/demonstration project, not a finished product. Known
-limits:
+A research demonstration, not a product.
 
-- **Live captions are an approximation.** A microphone can't know future words,
-  so motion follows acoustic evidence as it arrives. The `cc` renderer shows the
-  exact reference motion because it knows the text in advance.
-- **English and Korean only.** No automatic language detection; the language is
-  chosen before capture and locked for the session.
-- **Speaker attribution is uncertain at the edges.** Very short turns, rapid
-  back-and-forth, and similar voices can stay ambiguous. The UI shows that
-  uncertainty rather than guessing.
-- **CPU-bound latency.** Recognition runs on CPU (Apple Silicon or x86); on
-  slower hardware latency grows, though no audio is dropped.
-- **Not yet implemented from the spec:** off-camera italics, sound-effect and
-  music captions, and the haptic device module.
+- **Live motion follows evidence, not foresight.** The playhead buys back CWI's
+  read-ahead, and pays 1.75 s of latency for it. `cc` shows the exact reference
+  motion because it knows the text in advance.
+- **English and Korean**, chosen before capture and locked for the session.
+- **Attribution is uncertain at the edges** — short turns and similar voices can
+  stay ambiguous. The UI shows that rather than guessing.
+- **Not implemented from the spec:** off-camera italics, the sound-effect and
+  music caption rules, and the haptic device.
 
-See [docs/LIVE.md](docs/LIVE.md) for the full detail behind
-each of these.
+## License
 
-## License & attribution
+The code is MIT — see [LICENSE](LICENSE).
 
 The Caption with Intention design system is authored by the Chicago Hearing
-Society. Bundled audio samples carry their own licenses (see the
-`assets/*.LICENSE.md` files). Model weights and fonts are downloaded from their
-respective sources under their own licenses.
+Society. This is an independent implementation, not affiliated with or endorsed
+by them. Bundled samples, model weights and fonts carry their own licenses.

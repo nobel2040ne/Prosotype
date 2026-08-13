@@ -6,6 +6,7 @@ Organised by what you are trying to do. Start at the top.
 
 | Document | What's in it |
 |---|---|
+| [motion.html](motion.html) | **The whole project on one page, with the motion running.** Open it in a browser |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | From a fresh clone to running captions, then the conventions and the ground rules |
 | [ARCHITECTURE.md — glossary](../ARCHITECTURE.md#glossary) | Plain-language definitions of every domain term |
 
@@ -23,7 +24,6 @@ Organised by what you are trying to do. Start at the top.
 | Document | What's in it |
 |---|---|
 | [MOTION.md](MOTION.md) | **The motion contract.** The five channels, the playhead, and the acceptance figures |
-| [motion.html](motion.html) | The same contract as a page you can watch — open it in a browser |
 | [RESEARCH.md — sources](RESEARCH.md#sources) | The primary sources, in order of authority, and which wins when they disagree |
 | [RESEARCH.md](RESEARCH.md) | Research grounding for the design decisions |
 | `reference/cwi-design-system-v1.0.pdf` | The design system itself — the final word on any disagreement |
