@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prosotype — how it works</title>
+<link rel="canonical" href="https://nobel2040ne.github.io/Prosotype/">
+<meta property="og:title" content="Prosotype — how it works">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://nobel2040ne.github.io/Prosotype/">
+<meta property="og:description" content="Live Caption with Intention captions, offline: the pipeline, the playhead, and the motion channels — running.">
+<meta name="theme-color" content="#000000">
+<meta name="description" content="Prosotype turns live speech into Caption with Intention captions, offline: the pipeline, the playhead, and the motion channels — running.">
+<style>
+/* ═══ TWO DESIGN SYSTEMS, AND THE BOUNDARY IS THE WORD ═══════════════════
+   The page chrome follows the Apple design analysis: edge-to-edge tiles that
+   alternate light and dark, SF Pro on its own type ramp, a single blue accent, radii
+   on the 0/5/8/11/18/pill scale, weight 600 never 700, and no shadows except
+   the one signature drop under a product resting on a surface.
+
+   The captions follow CWI, which outranks it. Anything inside a caption line
+   is Roboto Flex on a black box in the CI palette, whatever tile it sits on —
+   and on a light tile that black box is 2.4.1's captions box AND the Apple
+   product-on-a-surface at once, which is why it carries the one permitted
+   shadow. No Apple token ever reaches a caption word. ═════════════════════ */
+
+@font-face {
+  font-family: "Roboto Flex";
+  src: url("RobotoFlex.ttf") format("truetype-variations");
+  font-weight: 100 1000; font-stretch: 25% 151%; font-display: block;
+}
+
+:root {
+  /* Apple — surfaces */
+  --canvas: #ffffff;
+  --parchment: #f5f5f7;
+  --tile-1: #272729;
+  --tile-2: #2a2a2c;
+  --tile-3: #252527;
+  --black: #000000;
+  /* Apple — ink */
+  --ink: #1d1d1f;
+  --ink-80: #333333;
+  --ink-48: #7a7a7a;
+  --on-dark: #ffffff;
+  --on-dark-muted: #cccccc;
+  --hairline: #e0e0e0;
+  /* Apple — the one accent */
+  --action: #0066cc;
+  --action-focus: #0071e3;
+  --sky: #2997ff;
+  /* CWI — the caption palette, 2.1.1 */
+  --y: #E5E517; --g: #17E517; --b: #17E5E5;
+  --p: #E517E5; --r: #E51717; --o: #E58017;
+  --ahead: #8C8C90;               /* read-ahead ink, 2.2.1 */
+  --caption-box: #000000;         /* 2.4.1 */
+
+  --font-ui: "SF Pro Display", "SF Pro Text", -apple-system,
+             BlinkMacSystemFont, system-ui, sans-serif;
+  --font-caption: "Roboto Flex", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --nav-h: 44px;
+  --wide: 980px;
+
+  /* Per-tile roles, re-bound by the tile classes below. */
+  --bg: var(--canvas); --fg: var(--ink); --fg-2: var(--ink-48);
+  --hair: var(--hairline); --accent: var(--action);
+}
+
+.t-light     { --bg: var(--canvas);    --fg: var(--ink); --fg-2: var(--ink-48);
+               --hair: var(--hairline); --accent: var(--action); }
+.t-parchment { --bg: var(--parchment); --fg: var(--ink); --fg-2: var(--ink-48);
+               --hair: var(--hairline); --accent: var(--action); }
+.t-dark      { --bg: var(--tile-1); --fg: var(--on-dark); --fg-2: var(--on-dark-muted);
+               --hair: rgba(255,255,255,.14); --accent: var(--sky); }
+.t-dark-2    { --bg: var(--tile-2); --fg: var(--on-dark); --fg-2: var(--on-dark-muted);
+               --hair: rgba(255,255,255,.14); --accent: var(--sky); }
+.t-dark-3    { --bg: var(--tile-3); --fg: var(--on-dark); --fg-2: var(--on-dark-muted);
+               --hair: rgba(255,255,255,.14); --accent: var(--sky); }
+.t-black     { --bg: var(--black);  --fg: var(--on-dark); --fg-2: var(--on-dark-muted);
+               --hair: rgba(255,255,255,.14); --accent: var(--sky); }
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: var(--nav-h); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0; background: var(--canvas); color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 17px; line-height: 1.47; letter-spacing: -.374px; font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Global nav: slim, black, 12px links ──────────────────────────────── */
+.nav { position: sticky; top: 0; z-index: 40; background: var(--black); height: var(--nav-h); }
+.nav-inner {
+  max-width: 1024px; margin: 0 auto; padding: 0 22px; height: 100%;
+  display: flex; align-items: center; gap: 24px;
+}
+.brand { color: var(--on-dark); font-size: 12px; letter-spacing: -.12px; font-weight: 600; white-space: nowrap; }
+.chapters { display: flex; overflow-x: auto; scrollbar-width: none; margin-left: auto; -webkit-overflow-scrolling: touch; }
+.chapters::-webkit-scrollbar { display: none; }
+.chapters a {
+  color: var(--on-dark-muted); text-decoration: none; white-space: nowrap;
+  font-size: 12px; letter-spacing: -.12px; padding: 0 12px; line-height: var(--nav-h);
+}
+.chapters a[aria-current="true"] { color: var(--on-dark); }
+.chapters a:focus-visible { outline: 2px solid var(--action-focus); outline-offset: -4px; }
+@media (max-width: 620px) { .brand { display: none; } .chapters { margin-left: 0; } }
+
+/* ── The tile: edge to edge, and the colour change is the divider ─────── */
+.tile { background: var(--bg); color: var(--fg); }
+/* ONE MEASURE. Text and figures share the same column; nothing is narrower
+   than anything else. Body copy therefore uses the analysis's `lead-airy`
+   rung (24px/300/1.5) rather than the 17px body rung, which is a marketing
+   measure and unreadable at 980px. */
+.inner { max-width: var(--wide); margin: 0 auto; padding: 80px 22px; }
+@media (max-width: 700px) { .inner { padding: 56px 22px; } }
+
+/* ── Type ramp, from the analysis ─────────────────────────────────────── */
+.eyebrow { margin: 0 0 12px; font-size: 14px; font-weight: 600; line-height: 1.29; letter-spacing: -.224px; color: var(--accent); }
+h1 { margin: 0; font-size: clamp(34px, 5.4vw, 54px); font-weight: 600; line-height: 1.07; letter-spacing: -.28px; }
+h2 { margin: 0; font-size: clamp(30px, 4vw, 40px); font-weight: 600; line-height: 1.1; color: var(--fg); }
+.lead { margin: 22px 0 0; font-size: clamp(21px, 2.4vw, 28px); font-weight: 400; line-height: 1.14; letter-spacing: .196px; color: var(--fg-2); }
+p { margin: 24px 0 0; font-size: clamp(19px, 2vw, 24px); font-weight: 300;
+    line-height: 1.5; letter-spacing: 0; color: var(--fg); }
+p.muted { color: var(--fg-2); }
+.tile p strong { font-weight: 600; }
+.tile p em, .tile p i { font-style: italic; }
+a { color: var(--accent); text-decoration: none; }
+
+code {
+  font-family: var(--mono); font-size: .84em; letter-spacing: 0;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  padding: 2px 6px; border-radius: 5px;
+}
+
+/* ── Buttons: one grammar, and no hover state ─────────────────────────── */
+.btn {
+  display: inline-block; border: 0; cursor: pointer;
+  font-family: var(--font-ui); font-size: 14px; font-weight: 400;
+  letter-spacing: -.224px; line-height: 1.29;
+  background: var(--canvas); color: var(--action);
+  border-radius: 9999px; padding: 9px 20px;
+}
+.btn:active { transform: scale(.95); }
+.btn:focus-visible { outline: 2px solid var(--action-focus); outline-offset: 3px; }
+
+/* ── The captions box: CWI 2.4.1, and the one place a shadow is allowed.
+   On a light tile it is a product resting on a surface; on a dark tile the
+   shadow is dropped because there is nothing to rest on. ──────────────── */
+.box { background: var(--caption-box); border-radius: 18px; padding: 44px 38px; margin-top: 36px; }
+.t-light .box, .t-parchment .box { box-shadow: rgba(0, 0, 0, .22) 3px 5px 30px; }
+.t-dark .box, .t-dark-2 .box, .t-dark-3 .box, .t-black .box { border: 1px solid rgba(255,255,255,.12); }
+.box-foot { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 30px; flex-wrap: wrap; }
+.box-note { margin: 0; font-size: 14px; line-height: 1.43; letter-spacing: -.224px; color: var(--on-dark-muted); max-width: 52ch; }
+.box-note b { color: var(--on-dark); font-weight: 600; }
+.box-note i { font-style: italic; }
+
+/* ── The caption line — CWI only, on every tile ───────────────────────── */
+.line {
+  font-family: var(--font-caption);
+  font-variation-settings: "opsz" 40, "wght" 400, "wdth" 100;
+  font-size: clamp(26px, 3.6vw, 42px); line-height: 1.3;
+  letter-spacing: -.012em; display: flex; flex-wrap: wrap;
+  align-items: baseline; gap: 0 .46em; color: var(--ahead);
+}
+.w { display: inline-block; white-space: nowrap; color: var(--ahead); }
+.w .c { display: inline-block; }
+
+@property --phase { syntax: "<number>"; inherits: true; initial-value: 0; }
+
+/* Channel 1 — the colour turn, wiped per character */
+@keyframes turn { from { color: var(--ahead); } }
+.play .t1 .c { animation: turn 1ms linear both; animation-delay: var(--d); }
+.t1 .c { color: var(--y); }
+.t1.g2 .c { color: var(--g); }
+.t1.q2 .c { color: var(--g); }
+.t1.q3 .c { color: var(--b); }
+
+/* Channel 2 — the 2.2.3 pop: constant 15%, from the baseline */
+@keyframes pop {
+  0%, 100% { transform: scale(1); }
+  42%      { transform: scale(1.15); }
+}
+.w.t2 { transform-origin: 50% 100%; }
+.play .t2 { animation: pop 620ms cubic-bezier(.42,0,.22,1) both; animation-delay: var(--d); }
+
+/* Channel 3 — the crest: a real font-size, ridden by loudness.
+   THE LINE MUST NOT MOVE, which needs the stage's own architecture: a hidden
+   RESTING sizer owns layout, and the growing ink is overlaid on top of it.
+   `.crest-anchor` keeps the resting font-size and is pinned by `bottom: 0`, so
+   its baseline is the row's; `line-height: 0` on the ink stops the swollen type
+   from dragging that baseline up. Growing the word directly moved the whole row
+   by 4.5 px at 1.62x -- the one thing the stage never does. */
+@keyframes phase { 0%, 100% { --phase: 0; } 50% { --phase: 1; } }
+.w.t3 { position: relative; }
+/* The sizer reserves the PEAK's width and none of its height, so the crest has
+   somewhere to grow into and the row keeps the line box it started with. */
+.t3 .sizer { visibility: hidden; font-size: calc(1em * var(--scale, 1)); line-height: 0; }
+.t3 .crest-anchor { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); white-space: nowrap; }
+.t3 .crest-ink { line-height: 0; font-size: calc(1em * (1 + var(--phase) * (var(--scale) - 1))); }
+.play .t3 { animation: phase 900ms linear both; animation-delay: var(--d); }
+/* A word carrying both rides two animations: the `animation` shorthand replaces
+   the whole list, so the pair is written out. */
+.play .t2.t3 {
+  animation: pop 620ms cubic-bezier(.42,0,.22,1) both, phase 900ms linear both;
+  animation-delay: var(--d), var(--d);
+}
+
+/* Channel 4 — weight, a property of the VOICE not the word */
+.t4 { font-variation-settings: "opsz" 40, "wght" calc(400 + var(--phase) * (var(--wt) - 400)), "wdth" 100; }
+.play .t4 { animation: phase 900ms linear both; animation-delay: var(--d); }
+
+/* Channel 5 — the lift: a word that waited rises and lands as it turns */
+@keyframes lift {
+  0%   { transform: translateY(0); }
+  22%  { transform: translateY(-.525em); }
+  78%  { transform: translateY(-.525em); }
+  100% { transform: translateY(0); }
+}
+.play .t5 { animation: lift 1500ms cubic-bezier(.33,0,.2,1) both; }
+
+/* The character wave — texture under channel 1, a syllable at a time. */
+@keyframes wave {
+  0%, 100% { transform: translateY(0) rotate(0deg) scale(1, 1); }
+  38%  { transform: translateY(-.13em) rotate(var(--tilt, 0deg)) scale(1, 1.035); }
+  72%  { transform: translateY(.029em) rotate(calc(var(--tilt, 0deg) * -.28)) scale(1, .988); }
+}
+.play .tw .c { animation: wave 240ms cubic-bezier(.34,0,.28,1) both; animation-delay: var(--d); }
+
+@media (prefers-reduced-motion: reduce) {
+  .play .t1 .c, .play .t2, .play .t3, .play .t4, .play .t5, .play .tw .c {
+    animation-duration: 1ms !important;
+  }
+}
+
+/* ── The stat row ─────────────────────────────────────────────────────── */
+.stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 32px 24px; margin: 48px 0 0; padding-top: 32px; border-top: 1px solid var(--hair);
+}
+.stats dt { margin: 0 0 6px; font-size: 12px; font-weight: 400; letter-spacing: -.12px; color: var(--fg-2); }
+.stats dd { margin: 0; font-size: 34px; font-weight: 600; line-height: 1.1; letter-spacing: -.374px; color: var(--fg); }
+.stats dd small { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; line-height: 1.3; letter-spacing: -.12px; color: var(--fg-2); }
+
+/* ── Figures: a plate in the tile's own grammar, caption underneath ───── */
+figure { margin: 36px 0 0; }
+.plate { background: var(--canvas); border: 1px solid var(--hairline); border-radius: 18px; padding: 40px 28px 36px; overflow-x: auto; }
+.t-dark .plate, .t-dark-2 .plate, .t-dark-3 .plate, .t-black .plate {
+  background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.12);
+}
+figcaption { margin: 20px auto 0; max-width: 62ch; text-align: center; font-size: 14px; line-height: 1.43; letter-spacing: -.224px; color: var(--fg-2); }
+figcaption b { color: var(--fg); font-weight: 600; }
+figcaption i { font-style: italic; }
+
+.fig { display: flex; flex-direction: column; align-items: center; min-width: 480px; }
+.fnode { border: 1px solid var(--hair); border-radius: 11px; background: var(--bg); padding: 12px 16px; text-align: center; min-width: 0; }
+.fnode b { display: block; font-size: 14px; font-weight: 600; letter-spacing: -.224px; color: var(--fg); }
+.fnode i { display: block; font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--fg-2); margin-top: 5px; line-height: 1.45; letter-spacing: 0; }
+.fnode.wide { width: 100%; max-width: 470px; }
+.fnode.key { border-color: var(--accent); }
+.fnode.key b { color: var(--accent); }
+.fpipe { width: 1px; height: 24px; background: var(--hair); position: relative; }
+.fpipe::after {
+  content: ""; position: absolute; left: -3px; bottom: 0;
+  border-left: 3.5px solid transparent; border-right: 3.5px solid transparent;
+  border-top: 5px solid var(--hair);
+}
+.flanes {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+  border: 1px dashed var(--hair); border-radius: 18px;
+  padding: 20px 16px 16px; width: 100%; position: relative; margin-top: 4px;
+}
+.flanes::before {
+  content: "independent stages";
+  position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
+  background: var(--bg); padding: 0 10px; font-size: 12px; letter-spacing: -.12px; color: var(--fg-2);
+}
+.flanes .fnode { height: 100%; }
+.fconsumers, .fsources { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%; max-width: 470px; }
+.fnode.dim { border-style: dashed; }
+.fnode.dim b { color: var(--fg-2); font-weight: 400; }
+.fmeet { font-size: 12px; letter-spacing: -.12px; color: var(--fg-2); margin: 10px 0 4px; }
+
+/* ── Tables ───────────────────────────────────────────────────────────── */
+.scroll { overflow-x: auto; border: 1px solid var(--hair); border-radius: 18px; margin: 36px 0 0; background: var(--canvas); }
+.t-dark .scroll, .t-dark-2 .scroll, .t-dark-3 .scroll, .t-black .scroll {
+  background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.12);
+}
+table { border-collapse: collapse; width: 100%; min-width: 520px; }
+th, td {
+  padding: 14px 20px; text-align: left; vertical-align: top;
+  border-bottom: 1px solid var(--hair);
+  font-size: 14px; line-height: 1.43; letter-spacing: -.224px;
+}
+th { font-weight: 600; color: var(--fg); white-space: nowrap; }
+td { color: var(--fg-2); }
+td:first-child { color: var(--fg); font-weight: 600; white-space: nowrap; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; margin-right: 8px; }
+
+.pull {
+  margin: 36px 0 0; padding: 28px 32px; border-radius: 18px;
+  background: var(--parchment); color: var(--ink);
+  font-size: 21px; font-weight: 400; line-height: 1.38; letter-spacing: .231px;
+}
+.t-dark .pull, .t-dark-2 .pull, .t-dark-3 .pull, .t-black .pull { background: rgba(255,255,255,.06); color: var(--on-dark); }
+.pull strong { font-weight: 600; }
+
+/* ── The studio mock ──────────────────────────────────────────────────── */
+.stage-mock { border-radius: 18px; overflow: hidden; background: var(--black); display: grid; grid-template-columns: 1fr 190px; }
+.t-light .stage-mock, .t-parchment .stage-mock { box-shadow: rgba(0,0,0,.22) 3px 5px 30px; }
+@media (max-width: 640px) { .stage-mock { grid-template-columns: 1fr; } }
+.stage-mock .surface {
+  padding: 30px 26px 34px; display: flex; flex-direction: column;
+  gap: 3px; justify-content: flex-end; min-height: 210px;
+  font-family: var(--font-caption); font-variation-settings: "opsz" 24, "wght" 400;
+}
+.stage-mock .row { font-size: 18px; letter-spacing: -.012em; line-height: 1.34; color: var(--ahead); }
+.stage-mock .row.old { color: #3c3c40; }
+.stage-mock .live {
+  border-top: 1px solid rgba(255,255,255,.16); border-bottom: 1px solid rgba(255,255,255,.16);
+  padding: 7px 0; margin-top: 7px; align-self: flex-start; max-width: 100%;
+}
+.stage-mock .rail { border-left: 1px solid rgba(255,255,255,.12); padding: 20px 18px; display: flex; flex-direction: column; gap: 18px; }
+.rail-line { font-family: var(--font-ui); font-size: 12px; letter-spacing: -.12px; color: #6e6e74; }
+.rail-line b { display: block; color: var(--on-dark); font-size: 17px; font-weight: 600; letter-spacing: -.374px; font-variant-numeric: tabular-nums; margin-top: 3px; }
+.dial { position: relative; width: 118px; height: 118px; flex: 0 0 auto; border-radius: 50%; border: 1px solid rgba(255,255,255,.14); }
+.dial .tick { position: absolute; inset: 0; border-radius: 50%; transform: rotate(var(--a)); }
+.dial .tick::before { content: ""; position: absolute; left: 50%; top: 5px; width: 1px; height: 6px; background: #4a4a50; transform: translateX(-.5px); }
+.dial .tick.cardinal::before { height: 9px; background: rgba(255,255,255,.30); }
+.dial .tick.front::before { height: 12px; background: rgba(255,255,255,.52); }
+.dial .arc {
+  position: absolute; inset: 6px; border-radius: 50%;
+  background: conic-gradient(from calc(var(--a) - var(--span) / 2), var(--c) 0 var(--span), transparent var(--span));
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 84%, #000 85%);
+          mask: radial-gradient(circle closest-side, transparent 0 84%, #000 85%);
+  opacity: .88; filter: drop-shadow(0 0 2px color-mix(in srgb, var(--c) 45%, transparent));
+}
+.dial .arc.stale { opacity: .34; filter: none; }
+/* The needle runs from the centre to the rim — faint at the centre, solid at
+   the tip — and ends in the dot. Both take the ACTIVE speaker's colour. */
+.dial .needle { position: absolute; inset: 5px; transform: rotate(var(--a)); }
+.dial .needle::before {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: 1px; height: calc(50% - 7px); transform: translate(-50%, -100%);
+  background: linear-gradient(to bottom,
+              color-mix(in srgb, var(--y) 14%, transparent), var(--y));
+  opacity: .78;
+}
+.dial .needle::after {
+  content: ""; position: absolute; left: 50%; top: -2px;
+  width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%;
+  background: var(--y); box-shadow: 0 0 12px var(--y);
+}
+.dial .label {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+}
+/* The sound label sits in its own chip, as it does on the stage. */
+.dial .label span {
+  background: rgba(0, 0, 0, .82); color: var(--on-dark);
+  border-radius: 5px; padding: .18em .42em .24em; max-width: 74%;
+  font-family: var(--font-caption); font-size: 11px; line-height: 1.24;
+  font-variation-settings: "opsz" 14, "wght" 460; text-align: center;
+}
+.dial .label span { animation: sound-shake 1.6s ease-in-out infinite; display: block; }
+@keyframes sound-shake {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  25%      { transform: translate(.9px, -.7px) rotate(.7deg); }
+  60%      { transform: translate(-.8px, .6px) rotate(-.6deg); }
+}
+@media (prefers-reduced-motion: reduce) { .dial .label span { animation: none; } }
+
+/* ── Footer ───────────────────────────────────────────────────────────── */
+.foot { background: var(--parchment); }
+.foot .inner { padding: 56px 22px; }
+.foot p { margin: 0; font-size: 12px; line-height: 1.5; letter-spacing: -.12px; color: var(--ink-48); }
+</style>
+</head>
+<body>
+
+<nav class="nav" aria-label="Chapters">
+  <div class="nav-inner">
+    <div class="brand">Prosotype</div>
+    <div class="chapters" id="chapters">
+      <a href="#what">What</a>
+      <a href="#pillars">Pillars</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#playhead">Playhead</a>
+      <a href="#motion">Motion</a>
+      <a href="#studio">Studio</a>
+      <a href="#limits">Limits</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══ HERO — black, because the headline is a caption ═══════════════ -->
+<header class="tile t-black">
+  <div class="inner" style="padding-top:100px">
+    <p class="eyebrow">auto-CWI</p>
+    <h1 class="line" id="hero">
+      <span class="w t1 t2" style="--d:0ms"><span class="c" style="--d:0ms">L</span><span class="c" style="--d:34ms">i</span><span class="c" style="--d:68ms">v</span><span class="c" style="--d:102ms">e</span></span>
+      <span class="w t1 t2" style="--d:210ms"><span class="c" style="--d:210ms">c</span><span class="c" style="--d:244ms">a</span><span class="c" style="--d:278ms">p</span><span class="c" style="--d:312ms">t</span><span class="c" style="--d:346ms">i</span><span class="c" style="--d:380ms">o</span><span class="c" style="--d:414ms">n</span><span class="c" style="--d:448ms">s</span></span>
+      <span class="w t1 t2" style="--d:560ms"><span class="c" style="--d:560ms">t</span><span class="c" style="--d:594ms">h</span><span class="c" style="--d:628ms">a</span><span class="c" style="--d:662ms">t</span></span>
+      <span class="w t1 t2" style="--d:740ms"><span class="c" style="--d:740ms">s</span><span class="c" style="--d:774ms">h</span><span class="c" style="--d:808ms">o</span><span class="c" style="--d:842ms">w</span></span>
+      <span class="w t1 t2" style="--d:980ms"><span class="c" style="--d:980ms">w</span><span class="c" style="--d:1014ms">h</span><span class="c" style="--d:1048ms">o</span><span class="c" style="--d:1082ms">,</span></span>
+      <span class="w t1 t2 q2" style="--d:1220ms"><span class="c" style="--d:1220ms">w</span><span class="c" style="--d:1254ms">h</span><span class="c" style="--d:1288ms">e</span><span class="c" style="--d:1322ms">n</span></span>
+      <span class="w t1 t2" style="--d:1450ms"><span class="c" style="--d:1450ms">a</span><span class="c" style="--d:1484ms">n</span><span class="c" style="--d:1518ms">d</span></span>
+      <span class="w t1 t2 q3" style="--d:1620ms"><span class="c" style="--d:1620ms">h</span><span class="c" style="--d:1654ms">o</span><span class="c" style="--d:1688ms">w</span><span class="c" style="--d:1722ms">.</span></span>
+    </h1>
+    <p class="lead">
+      Prosotype automates the Caption with Intention design system: a microphone
+      streams into captions that carry the speaker in colour, the moment in
+      motion, and the voice in typography — entirely offline.
+    </p>
+    <p class="muted">
+      The headline above is itself a caption. It runs the real colour turn and
+      the real 15% pop, and so does every demo on this page.
+    </p>
+    <p><button class="btn" data-target="hero">Replay</button></p>
+
+    <dl class="stats">
+      <div><dt>Runs</dt><dd>Local<small>no cloud, no telemetry</small></dd></div>
+      <div><dt>English</dt><dd>2.27%<small>WER, FLEURS</small></dd></div>
+      <div><dt>Korean</dt><dd>10.54%<small>CER, 120 clips</small></dd></div>
+      <div><dt>Read-ahead</dt><dd>1.75 s<small>plus a 420 ms floor</small></dd></div>
+    </dl>
+  </div>
+</header>
+
+<!-- ═══ 1 · WHAT IT IS — light ════════════════════════════════════════ -->
+<section class="tile t-light" id="what">
+  <div class="inner">
+    <p class="eyebrow">What it is</p>
+    <h2>What a caption carries beyond the words.</h2>
+    <p>
+      A conventional subtitle preserves the words and discards the rest of the
+      signal. <strong>Caption with Intention</strong>, published by the Chicago
+      Hearing Society, restores three of the discarded properties: speaker
+      identity as colour, utterance timing as motion, and vocal delivery as
+      typography. Prosotype derives all three <strong>live</strong>, from a
+      microphone, in English or Korean, without transmitting audio.
+    </p>
+
+    <div class="box">
+      <div class="line" id="d0">
+        <span class="w t1 t2" style="--d:0ms"><span class="c" style="--d:0ms">t</span><span class="c" style="--d:30ms">w</span><span class="c" style="--d:60ms">o</span></span>
+        <span class="w t1 t2" style="--d:230ms"><span class="c" style="--d:230ms">p</span><span class="c" style="--d:260ms">e</span><span class="c" style="--d:290ms">o</span><span class="c" style="--d:320ms">p</span><span class="c" style="--d:350ms">l</span><span class="c" style="--d:380ms">e</span></span>
+        <span class="w t1 t2 t3" style="--scale:1.34;--d:560ms"><span class="sizer">talking</span><span class="crest-anchor"><span class="crest-ink"><span class="c" style="--d:560ms">t</span><span class="c" style="--d:590ms">a</span><span class="c" style="--d:620ms">l</span><span class="c" style="--d:650ms">k</span><span class="c" style="--d:680ms">i</span><span class="c" style="--d:710ms">n</span><span class="c" style="--d:740ms">g</span></span></span></span>
+        <span class="w t1 t2 g2" style="--d:1080ms"><span class="c" style="--d:1080ms">a</span><span class="c" style="--d:1110ms">n</span><span class="c" style="--d:1140ms">d</span></span>
+        <span class="w t1 t2 g2" style="--d:1290ms"><span class="c" style="--d:1290ms">y</span><span class="c" style="--d:1320ms">o</span><span class="c" style="--d:1350ms">u</span></span>
+        <span class="w t1 t2 g2 t3" style="--scale:1.5;--d:1500ms"><span class="sizer">know</span><span class="crest-anchor"><span class="crest-ink"><span class="c" style="--d:1500ms">k</span><span class="c" style="--d:1530ms">n</span><span class="c" style="--d:1560ms">o</span><span class="c" style="--d:1590ms">w</span></span></span></span>
+        <span class="w t1 t2 g2" style="--d:1780ms"><span class="c" style="--d:1780ms">w</span><span class="c" style="--d:1810ms">h</span><span class="c" style="--d:1840ms">i</span><span class="c" style="--d:1870ms">c</span><span class="c" style="--d:1900ms">h</span></span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Three pillars in one line.</b> Colour encodes the speaker,
+          the size cue marks the moment of utterance, and type size encodes
+          relative loudness.
+        </p>
+        <button class="btn" data-target="d0">Replay</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 2 · THE THREE PILLARS — parchment ═════════════════════════════ -->
+<section class="tile t-parchment" id="pillars">
+  <div class="inner">
+    <p class="eyebrow">The three pillars</p>
+    <h2>Three properties of speech that the words alone do not carry.</h2>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Pillar</th><th>Question</th><th>Carried by</th><th>And so</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Attribution</td><td>who is speaking</td><td>one colour per speaker</td>
+            <td>an undecided word is grey, never a guess — a wrong colour is a false claim about who spoke</td>
+          </tr>
+          <tr>
+            <td>Synchronization</td><td>when each word is spoken</td><td>the colour turn, plus a 15% pop</td>
+            <td>the line is already on screen, so the eye is pointed at a word it has already read</td>
+          </tr>
+          <tr>
+            <td>Intonation</td><td>how it was said</td><td>a variable font: size, weight, width</td>
+            <td>the styling is a one-time interpretation — a settled caption never shakes again</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th colspan="4">The palette — CWI 2.1.1, by order of first appearance</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="sw" style="background:var(--y)"></span>S1</td><td class="num">#E5E517</td>
+            <td><span class="sw" style="background:var(--p)"></span>S4</td><td class="num">#E517E5</td>
+          </tr>
+          <tr>
+            <td><span class="sw" style="background:var(--g)"></span>S2</td><td class="num">#17E517</td>
+            <td><span class="sw" style="background:var(--r)"></span>S5</td><td class="num">#E51717</td>
+          </tr>
+          <tr>
+            <td><span class="sw" style="background:var(--b)"></span>S3</td><td class="num">#17E5E5</td>
+            <td><span class="sw" style="background:var(--o)"></span>S6</td><td class="num">#E58017</td>
+          </tr>
+          <tr>
+            <td><span class="sw" style="background:linear-gradient(90deg,#E85C2E,#5EEDC9,#CC6BED)"></span>S7+</td>
+            <td>twelve supporting hues</td>
+            <td><span class="sw" style="background:var(--ahead)"></span>—</td>
+            <td>unknown, and a state of its own</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 3 · THE PIPELINE — dark ═══════════════════════════════════════ -->
+<section class="tile t-dark" id="pipeline">
+  <div class="inner">
+    <p class="eyebrow">The pipeline</p>
+    <h2>From capture to glyph, entirely on the local machine.</h2>
+    <p class="muted">
+      Language is chosen <strong>before</strong> capture and locked for the
+      session, so a recognizer is never swapped under retained decoder state.
+      Everything runs on the local CPU; the only network access the project
+      permits is a one-time model download and the LAN link to the hardware node.
+    </p>
+
+    <figure>
+      <div class="plate">
+        <div class="fig">
+          <div class="fsources">
+            <div class="fnode"><b>microphone</b><i>local capture</i></div>
+            <div class="fnode dim"><b>XVF3800 array → Pi Zero 2 W</b><i>optional; capture and actuation only</i></div>
+          </div>
+          <div class="fpipe"></div>
+          <div class="fnode wide"><b>audio in</b><i>lossless deadline batcher</i></div>
+          <div class="fpipe"></div>
+          <div class="fnode wide key"><b>the split</b><i>true level → prosody &nbsp;·&nbsp; gained copy → ASR</i></div>
+          <div class="fpipe"></div>
+          <div class="flanes">
+            <div class="fnode"><b>text</b><i>streaming ASR<br>→ endpoint verifier<br>→ reconcile per word</i></div>
+            <div class="fnode"><b>voice</b><i>loudness dB<br>median F0<br>over word spans</i></div>
+            <div class="fnode"><b>speaker</b><i>Sortformer<br>→ endpoint embedding<br>→ four states</i></div>
+          </div>
+          <div class="fmeet">per-word join</div>
+          <div class="fpipe"></div>
+          <div class="fnode wide key"><b>CaptionSpec · SSE /events</b><i>versioned — the only thing a consumer reads</i></div>
+          <div class="fpipe"></div>
+          <div class="fconsumers">
+            <div class="fnode"><b>studio</b><i>static export, served by Python</i></div>
+            <div class="fnode"><b>motor ring</b><i>one pulse per salience flag</i></div>
+          </div>
+        </div>
+      </div>
+      <figcaption>
+        <b>Figure 1.</b> The live path. Text, voice and speaker are independent
+        stages joined per word, so a pending speaker decision does not delay a
+        colour turn. The optional hardware branch performs capture and actuation
+        only — a Raspberry Pi Zero 2 W has 512 MB of memory against 600 MB per
+        model — so recognition and the salience decision both remain on the host,
+        beside the speaker tracker. The motor ring is driven by the
+        <code>speaker_change</code> and <code>emphasis</code> flags carried on
+        each word, not by the direction stream, which continuous-vibration
+        studies report as distracting.
+      </figcaption>
+    </figure>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Constraint</th><th>Reason</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Gain is applied to the recognizer's copy only</td>
+            <td>Prosody measures loudness from the captured signal. Applying gain before that measurement would map a whisper and a shout to the same type size.</td>
+          </tr>
+          <tr>
+            <td>Word onsets are never synthesised</td>
+            <td>Prosody, the motion clock and the read-ahead floor are all keyed to per-word <code>start</code>/<code>end</code>. A recognizer that returns no timestamps can therefore supply text at the verifier boundary and nowhere else.</td>
+          </tr>
+          <tr>
+            <td>Utterances are reconciled, not rebuilt</td>
+            <td>A structural mismatch between the streaming and verified transcripts occurs on nearly every utterance. Rebuilding the block would re-render the sentence at each pause; instead, matches are corrected in place, deletions dropped and insertions added at their spoken position.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 4 · THE PLAYHEAD — light ══════════════════════════════════════ -->
+<section class="tile t-light" id="playhead">
+  <div class="inner">
+    <p class="eyebrow">The playhead</p>
+    <h2>What makes this a CWI renderer rather than a subtitle track.</h2>
+    <p>
+      CWI needs the line on screen <em>before</em> it is spoken, and a live
+      recogniser cannot produce text early. So the captions present from a clock
+      that runs <strong>behind</strong> the acoustic one. Nothing is predicted —
+      the delay is the lag, one for one.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Rule</th><th>Figure</th><th>Why it is not the obvious thing</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>The playhead trails the acoustic clock</td>
+            <td class="num">1.75 s</td>
+            <td>Colouring only up to <code>now − delay</code> leaves real, recognised, still-uncoloured text ahead of the colour.</td>
+          </tr>
+          <tr>
+            <td>Read-ahead is a per-word floor</td>
+            <td class="num">420 ms</td>
+            <td>The recogniser releases words in bursts, so a delay moves the mean lead and leaves its spread alone: at 1.75 s, 42% of words still turned within 100 ms of appearing. The floor takes that to 0%.</td>
+          </tr>
+          <tr>
+            <td>The turn is never gated on the speaker</td>
+            <td class="num">0.62 s vs 4.48 s</td>
+            <td>Text arrives at a median 0.62 s and durable attribution at 4.48 s — so the turn happens on time in whatever colour is known, or not on time at all.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="pull">
+      <strong>The caption invariant is structural.</strong> A word's colour turn
+      is a fixed moment on the acoustic timeline, so text may be revised only
+      while the word is still ahead of the playhead. Behind it is frozen history
+      — spelling included. Measured, coloured-caption rewrites went 14 → 0.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ 5 · THE FIVE CHANNELS — dark ══════════════════════════════════ -->
+<section class="tile t-dark-3" id="motion">
+  <div class="inner">
+    <p class="eyebrow">The motion channels</p>
+    <h2>What a word does when it is spoken.</h2>
+    <p class="muted">
+      Each channel has one owner and one input; they do not share state, and the
+      browser schedules all of them from a single <code>animation-delay</code>,
+      with no timer and no reveal queue. The design system names five. The
+      shipped renderer runs seven, and departs from the specified values in
+      three places — the table records both.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Channel</th><th>Driven by</th><th>Specified</th><th>Shipped</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Colour turn</td><td>the word's onset</td>
+            <td>read-ahead ink → speaker colour</td>
+            <td>as specified; wiped across the characters over 80 ms</td>
+          </tr>
+          <tr>
+            <td>Pop</td><td>nothing — constant</td>
+            <td class="num">1.00 → 1.15, every word</td>
+            <td class="num">1.00 → 1.076, emphasised words only</td>
+          </tr>
+          <tr>
+            <td>Crest</td><td>loudness</td>
+            <td class="num">3% → 12% of screen height</td>
+            <td class="num">1.00 → 1.425×, upward only</td>
+          </tr>
+          <tr>
+            <td>Weight</td><td>the speaker's median F0</td>
+            <td class="num">80 Hz heavy → 250 Hz light</td>
+            <td class="num">400 → 340…900; held at 400 on an unemphasised word</td>
+          </tr>
+          <tr>
+            <td>Width</td><td>harmonic content</td>
+            <td class="num">condensed → expanded</td>
+            <td class="num">82% → 124%, but 99.3% of words render at exactly 100%</td>
+          </tr>
+          <tr>
+            <td>Hold lift</td><td>silence either side of the word</td>
+            <td>—</td>
+            <td class="num">0 → 0.525 em, gated on isolation</td>
+          </tr>
+          <tr>
+            <td>Word lift</td><td>nothing — constant</td>
+            <td>—</td>
+            <td class="num">0.16 em on every word</td>
+          </tr>
+          <tr>
+            <td>Character wave</td><td>the syllable, not the letter</td>
+            <td>syllable variation, "in certain instances"</td>
+            <td class="num">every word; ≈40 ms between groups</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="box">
+      <div class="line" id="d1">
+        <span class="w t1"><span class="c" style="--d:0ms">a</span><span class="c" style="--d:34ms">s</span></span>
+        <span class="w t1"><span class="c" style="--d:150ms">e</span><span class="c" style="--d:184ms">a</span><span class="c" style="--d:218ms">c</span><span class="c" style="--d:252ms">h</span></span>
+        <span class="w t1"><span class="c" style="--d:400ms">w</span><span class="c" style="--d:434ms">o</span><span class="c" style="--d:468ms">r</span><span class="c" style="--d:502ms">d</span></span>
+        <span class="w t1"><span class="c" style="--d:650ms">i</span><span class="c" style="--d:684ms">s</span></span>
+        <span class="w t1"><span class="c" style="--d:800ms">s</span><span class="c" style="--d:834ms">p</span><span class="c" style="--d:868ms">o</span><span class="c" style="--d:902ms">k</span><span class="c" style="--d:936ms">e</span><span class="c" style="--d:970ms">n</span></span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Colour turn.</b> The word is presented in read-ahead ink and
+          changes to its speaker colour at the spoken onset, wiped across its
+          characters rather than switched. The keyframe declares no end state, so
+          a later speaker correction applies as a direct write.
+        </p>
+        <button class="btn" data-target="d1">Replay</button>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="line" id="d2">
+        <span class="w t2" style="--d:0ms;color:var(--y)">every</span>
+        <span class="w t2" style="--d:260ms;color:var(--y)">word</span>
+        <span class="w t2" style="--d:520ms;color:var(--y)">pops</span>
+        <span class="w t2" style="--d:780ms;color:var(--y)">the</span>
+        <span class="w t2" style="--d:1040ms;color:var(--y)">same</span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Pop.</b> The specified cue: a constant 15% on every word, growing
+          from the baseline with no vertical translation. The shipped renderer
+          halves it to 7.6% and applies it only to emphasised words.
+        </p>
+        <button class="btn" data-target="d2">Replay</button>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="line" id="d3">
+        <span class="w t3" style="--scale:.78;--d:0ms;color:var(--y)"><span class="sizer">softer</span><span class="crest-anchor"><span class="crest-ink">softer</span></span></span>
+        <span class="w t3" style="--scale:1;--d:260ms;color:var(--y)"><span class="sizer">or</span><span class="crest-anchor"><span class="crest-ink">or</span></span></span>
+        <span class="w t3" style="--scale:1.62;--d:520ms;color:var(--y)"><span class="sizer">louder</span><span class="crest-anchor"><span class="crest-ink">louder</span></span></span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Crest.</b> Loudness is applied as a font-size rather than a
+          transform, so the letterforms are genuinely set at that size. The row
+          is unaffected: a hidden sizer holds the layout at resting size and the
+          growing ink is overlaid on the row's own baseline.
+        </p>
+        <button class="btn" data-target="d3">Replay</button>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="line" id="d4">
+        <span class="w t4" style="--wt:340;--d:0ms;color:var(--b)">a high voice</span>
+        <span class="w t4" style="--wt:900;--d:420ms;color:var(--b)">a low one</span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Weight.</b> A property of the voice rather than of the word. Read
+          per word, the mapping inverts under emphasis — a shout roughly doubles
+          F0, which would render the loudest delivery as the lightest type — so
+          the register term reads the speaker's running median F0.
+        </p>
+        <button class="btn" data-target="d4">Replay</button>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="line" id="d5">
+        <span class="w" style="color:var(--y)">as each word</span>
+        <span class="w t5" style="color:var(--y)">is</span>
+        <span class="w" style="color:var(--y)">spoken</span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Hold lift.</b> A word surrounded by silence rises and lands on its
+          colour turn. The signal is isolation — the shorter of the gaps either
+          side, over inter-onset intervals — not sustain: the recognizer cannot
+          distinguish a drawn-out word from a word followed by a pause.
+        </p>
+        <button class="btn" data-target="d5">Replay</button>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="line" id="dw">
+        <span class="w tw" style="color:var(--y)"><span class="c" style="--d:0ms;--tilt:1.35deg">a</span><span class="c" style="--d:96ms;--tilt:-0.9deg">n</span><span class="c" style="--d:96ms;--tilt:0.28deg">i</span><span class="c" style="--d:192ms;--tilt:1.2deg">m</span><span class="c" style="--d:192ms;--tilt:-1.31deg">a</span><span class="c" style="--d:288ms;--tilt:0.44deg">t</span><span class="c" style="--d:288ms;--tilt:1.06deg">i</span><span class="c" style="--d:288ms;--tilt:-1.29deg">o</span><span class="c" style="--d:288ms;--tilt:0.61deg">n</span></span>
+      </div>
+      <div class="box-foot">
+        <p class="box-note">
+          <b>Character wave.</b> Texture beneath the colour turn, advancing one
+          syllable at a time — <i>se</i>+<i>en</i>, <i>but</i>+<i>ton</i>. The
+          grouping is measured from the reference film, in which adjacent glyphs
+          step 42 ms apart with four elevated simultaneously.
+        </p>
+        <button class="btn" data-target="dw">Replay</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 6 · THE STUDIO — parchment ════════════════════════════════════ -->
+<section class="tile t-parchment" id="studio">
+  <div class="inner">
+    <p class="eyebrow">The studio</p>
+    <h2>Two design systems, and the boundary is the word.</h2>
+    <p>
+      The chrome follows the Apple design analysis; the captions follow CWI,
+      which outranks it. The line is literal: <strong>anything inside a caption
+      word is CWI, everything else is Apple.</strong> "UI recedes so the product
+      can speak" is why the captions carry no frame and no per-block label —
+      here the captions <em>are</em> the product. This page is built the same
+      way, which is why every caption on it sits in a black box of its own.
+    </p>
+
+    <figure>
+      <div class="stage-mock">
+        <div class="surface">
+          <div class="row old">and then he said he'd never seen anything like it</div>
+          <div class="row old" style="color:#2e2e32">not in twenty years of doing this</div>
+          <div class="row live">
+            <span style="color:var(--y)">so we </span><span style="color:var(--y);font-variation-settings:'wght' 700">stopped</span><span style="color:var(--ahead)"> and looked</span>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="rail-line">Input<b>−22.4 dBFS</b></div>
+          <div class="dial">
+            <div class="tick cardinal front" style="--a:0deg"></div>
+            <div class="tick" style="--a:30deg"></div>
+            <div class="tick" style="--a:60deg"></div>
+            <div class="tick cardinal" style="--a:90deg"></div>
+            <div class="tick" style="--a:120deg"></div>
+            <div class="tick" style="--a:150deg"></div>
+            <div class="tick cardinal" style="--a:180deg"></div>
+            <div class="tick" style="--a:210deg"></div>
+            <div class="tick" style="--a:240deg"></div>
+            <div class="tick cardinal" style="--a:270deg"></div>
+            <div class="tick" style="--a:300deg"></div>
+            <div class="tick" style="--a:330deg"></div>
+            <div class="arc" style="--a:38deg;--span:22deg;--c:var(--y)"></div>
+            <div class="arc" style="--a:128deg;--span:47deg;--c:var(--g)"></div>
+            <div class="arc" style="--a:214deg;--span:93deg;--c:var(--b)"></div>
+            <div class="arc stale" style="--a:305deg;--span:64deg;--c:var(--p)"></div>
+            <div class="needle" style="--a:38deg"></div>
+            <div class="label"><span>[GASP]</span></div>
+          </div>
+        </div>
+      </div>
+      <figcaption>
+        <b>Figure 2.</b> The stage and its rail. Each speaker occupies an arc of
+        the ring spanning two circular standard deviations of that speaker's own
+        observed bearings, floored at 8° and capped at 150°: a settled talker
+        resolves to a narrow band, an unsettled one to a wide arc. Speakers whose
+        recent bearings fall below the concentration threshold are re-emitted at
+        their last confident position and dimmed rather than removed. The needle
+        and its dot mark the current bearing in the active speaker's colour.
+      </figcaption>
+    </figure>
+
+    <p>
+      Measured readings are not controls, so <code>−22.4 dBFS</code> carries no
+      border, fill or pill. Speaker colour is the only colour on screen that
+      encodes information, which is why the surrounding interface is achromatic.
+      The bracketed sound label is placed inside the dial rather than at the foot
+      of the stage: a non-speech event has a direction, and the dial is where
+      direction is displayed. This is a placement deviation from the design
+      system, not a removal.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ 8 · LIMITS — light ════════════════════════════════════════════ -->
+<section class="tile t-light" id="limits">
+  <div class="inner">
+    <p class="eyebrow">What it can't do</p>
+    <h2>Known limitations.</h2>
+    <p>
+      A microphone cannot know future words. The playhead buys the read-ahead
+      back, but it buys it with 1.75 s of latency. Attribution is uncertain at
+      the edges — short turns and similar voices stay ambiguous, and about half
+      of all words first paint in a colour they will not keep; the UI shows that
+      rather than guessing. English and Korean each keep their own model and
+      their own numbers, chosen before capture. The haptic module has never run
+      against real motors.
+    </p>
+    <p>
+      Every figure above is measured rather than asserted, and each measurement
+      carries a negative control that is run first: a check never observed to
+      fail is not evidence. The recurring failure modes have been a probe
+      incapable of failing, a per-word average that normalised away the quantity
+      under test, and numeric agreement accepted in place of visual inspection.
+    </p>
+  </div>
+</section>
+
+<footer class="tile foot">
+  <div class="inner">
+    <p>
+      The Caption with Intention design system is authored by the Chicago
+      Hearing Society and is the final word wherever this page and it disagree.
+      This is an independent implementation, not affiliated with or endorsed
+      by them.
+    </p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var lines = document.querySelectorAll(".line");
+
+  function run(line) {
+    if (!line) return;
+    line.classList.remove("play");
+    void line.offsetWidth;          // restart the animations
+    line.classList.add("play");
+  }
+
+  document.querySelectorAll("[data-target]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      run(document.getElementById(btn.getAttribute("data-target")));
+    });
+  });
+
+  // Play each line once when it first scrolls into view, so the page
+  // demonstrates itself without every channel firing at once on load.
+  if ("IntersectionObserver" in window) {
+    var seen = new WeakSet();
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && !seen.has(e.target)) {
+          seen.add(e.target);
+          setTimeout(function () { run(e.target); }, 160);
+        }
+      });
+    }, { threshold: 0.55 });
+    lines.forEach(function (l) { io.observe(l); });
+  } else {
+    lines.forEach(run);
+  }
+
+  // Chapter nav: mark the section the reader is in. Read back from an observer
+  // rather than the scroll offset, so a short section at the foot still lights.
+  var links = {};
+  document.querySelectorAll("#chapters a").forEach(function (a) {
+    links[a.getAttribute("href").slice(1)] = a;
+  });
+  var sections = Array.prototype.filter.call(
+    document.querySelectorAll("section[id]"),
+    function (s) { return links[s.id]; }
+  );
+
+  function mark(id) {
+    Object.keys(links).forEach(function (key) {
+      if (key === id) links[key].setAttribute("aria-current", "true");
+      else links[key].removeAttribute("aria-current");
+    });
+  }
+
+  if ("IntersectionObserver" in window && sections.length) {
+    var visible = {};
+    var spy = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
+      for (var i = 0; i < sections.length; i++) {
+        if (visible[sections[i].id]) { mark(sections[i].id); return; }
+      }
+    }, { rootMargin: "-30% 0px -60% 0px" });
+    sections.forEach(function (s) { spy.observe(s); });
+  }
+})();
+</script>
+
+</body>
+</html>

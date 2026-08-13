@@ -40,7 +40,12 @@ CLAUDE.md
 docs/DECISIONS.md
 docs/DESIGN.md
 docs/*
-!docs/how-it-works.html
+# The GitHub Pages site. `index.html` is the name Pages serves at the site
+# root; the font is copied in beside it because `assets/` is above the site
+# root and is ignored anyway; `.nojekyll` stops Jekyll rendering docs/README.
+!docs/index.html
+!docs/RobotoFlex.ttf
+!docs/.nojekyll
 !docs/reference/
 docs/reference/*
 !docs/reference/pr-film.mp4
