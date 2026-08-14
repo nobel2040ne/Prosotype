@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Weave</title>
 <link rel="canonical" href="https://nobel2040ne.github.io/Weave/">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="favicon.png" type="image/png" sizes="64x64">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta property="og:title" content="Weave">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://nobel2040ne.github.io/Weave/">
@@ -417,10 +420,35 @@ figure { margin: 36px 0 0; }
 .blockfig text { font-family: var(--font-ui); fill: #0B0B0B; }
 .blockfig .bt { font-size: 15px; font-weight: 600; text-anchor: middle; letter-spacing: -.2px; }
 .blockfig .bs { font-size: 12.5px; text-anchor: middle; fill: #333333; }
-.blockfig .on-blue { fill: #FFFFFF; }
-.blockfig .fr { font-size: 14px; font-weight: 600; text-anchor: end; letter-spacing: -.2px; }
-.blockfig .el { font-size: 12px; fill: #333333; }
-.blockfig .el.accent { fill: #0066CC; font-weight: 600; }
+.blockfig .pt { font-size: 15px; font-weight: 600; letter-spacing: -.2px; }
+.blockfig .rl { font-size: 13px; }
+.blockfig .ax { font-size: 11.5px; fill: #86868B; text-anchor: middle; }
+.blockfig .key { font-size: 11.5px; fill: #333333; }
+.blockfig .ann { font-size: 12px; fill: #333333; }
+.blockfig .annc { font-size: 12px; fill: #333333; text-anchor: middle; }
+.blockfig .annk { font-size: 12px; font-weight: 600; fill: #0B0B0B; }
+.blockfig .phl { font-size: 11.5px; font-weight: 600; fill: #0B0B0B; text-anchor: middle; }
+.blockfig .foot { font-size: 12px; fill: #86868B; }
+.blockfig .mn { font-family: var(--mono); font-size: 11px; fill: #86868B; }
+.blockfig .end { text-anchor: end; }
+.blockfig .rule { stroke: #DCDCE1; }
+/* Recessive frame: the axis and grid must never out-weigh a mark. */
+.blockfig .axis { stroke: #C8C8CE; fill: none; }
+.blockfig .grid { stroke: #F2F2F5; fill: none; }
+.blockfig .brace { stroke: #C8C8CE; fill: none; }
+/* The data marks. `wash-*` is "and onwards", `tick-*` is the moment itself;
+   provisional carries a hatch so the state is never colour alone. */
+.blockfig .spoken { fill: #0B0B0B; }
+.blockfig .wash-s { fill: url(#fade); }
+.blockfig .tick-s { fill: #0066CC; }
+.blockfig .wash-p { fill: url(#hatch); }
+.blockfig .tick-p { fill: #86868B; }
+.blockfig .whisk { stroke: #0066CC; fill: none; stroke-width: 1.5; }
+.blockfig .markf { fill: #0B0B0B; }
+.blockfig .marko { fill: #FFFFFF; stroke: #0B0B0B; }
+.blockfig .playhead { stroke: #0B0B0B; fill: none; stroke-width: 1.5; }
+.blockfig .flag { fill: #0B0B0B; }
+.blockfig g:hover rect { filter: brightness(.94); }
 
 .plate.toolpath { background: var(--black); padding: 8px 0 0; border: 0; }
 
@@ -680,78 +708,164 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
 
     <figure>
       <div class="plate sheet fig-wide">
-        <svg class="blockfig" viewBox="0 0 1040 340" role="img"
-             aria-label="Where each responsibility lives. Python owns live.py, sortformer.py and schema.py; the wire carries GET /events, the durable word event and the non-durable event kinds; the browser owns use-caption-stream, caption-store, caption-clock and live-studio.">
+        <svg class="blockfig" viewBox="0 0 1040 541" role="img"
+             aria-label="A time axis from the moment a word is spoken to five seconds later, showing when each part of it becomes known. The word itself is about 280 milliseconds of speech. Its text, start and end, and its loudness, pitch and voiced fraction all arrive at a median 0.62 seconds, together with a speaker that is still provisional or null. Endpoint verification revises the text somewhere in a window between 1.1 and 3.2 seconds. A durable speaker decision lands at a median 4.48 seconds. The playhead stands at 1.75 seconds: the word turns colour there, while its speaker is still provisional and nearly three seconds before the durable decision, and the gap from arrival to turn is the read-ahead, never less than 420 milliseconds. Haptics run on two lanes: the Pi pulses from the array's own bearing at once, while the Mac's opt-in cue waits for the durable word.">
           <defs>
-            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6"
-                    markerHeight="6" orient="auto-start-reverse">
-              <path d="M0,1.5 L9,5 L0,8.5 z" fill="#0B0B0B"/></marker>
-            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6"
-                    markerHeight="6" orient="auto-start-reverse">
-              <path d="M0,1.5 L9,5 L0,8.5 z" fill="#0066CC"/></marker>
+            <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse"
+                     patternTransform="rotate(45)">
+              <rect width="7" height="7" fill="#FAFAFB"/>
+              <line x1="0" y1="0" x2="0" y2="7" stroke="#C9C9D0" stroke-width="1.6"/>
+            </pattern>
+            <linearGradient id="fade" gradientUnits="userSpaceOnUse" x1="940" y1="0" x2="1002" y2="0">
+              <stop offset="0" stop-color="#AFD2F0"/>
+              <stop offset="1" stop-color="#AFD2F0" stop-opacity="0"/>
+            </linearGradient>
           </defs>
-          <rect class="fr-r" x="6" y="22" width="326" height="296" fill="#FBFBFD" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="fr" x="322" y="43">Python · autocwi</text>
-          <rect class="bx-r" x="18" y="58" width="302" height="62" fill="#E5E5EB" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="169.0" y="77.0">live.py</text>
-          <text class="bs" x="169.0" y="94.0">capture · gain · recognizer streams</text>
-          <text class="bs" x="169.0" y="111.0">verifier · diarization · SSE</text>
-          <rect class="bx-r" x="18" y="134" width="302" height="52" fill="#E5E5EB" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="169.0" y="156.5">sortformer.py</text>
-          <text class="bs" x="169.0" y="173.5">the Core ML diarizer, off the ASR thread</text>
-          <rect class="bx-r" x="18" y="200" width="302" height="52" fill="#D6E8F8" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="169.0" y="222.5">schema.py</text>
-          <text class="bs" x="169.0" y="239.5">CaptionSpec — the shared shape</text>
-          <rect class="fr-r" x="356" y="22" width="300" height="296" fill="#FBFBFD" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="fr" x="646" y="43">the wire</text>
-          <rect class="bx-r" x="368" y="58" width="276" height="46" fill="#D6E8F8" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="506.0" y="77.5">GET /events</text>
-          <text class="bs" x="506.0" y="94.5">server-sent · replayed</text>
-          <rect class="bx-r" x="368" y="116" width="276" height="52" fill="#FFFFFF" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="506.0" y="138.5">the word event</text>
-          <text class="bs" x="506.0" y="155.5">id · text · span · speaker · loudness</text>
-          <rect class="bx-r" x="368" y="182" width="276" height="52" fill="#F5F5F7" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="506.0" y="204.5">everything else</text>
-          <text class="bs" x="506.0" y="221.5">level · hypothesis · cue · commit</text>
-          <rect class="fr-r" x="680" y="22" width="354" height="296" fill="#FBFBFD" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="fr" x="1024" y="43">browser · web/src</text>
-          <rect class="bx-r" x="692" y="58" width="330" height="46" fill="#FFFFFF" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="857.0" y="77.5">use-caption-stream</text>
-          <text class="bs" x="857.0" y="94.5">EventSource · config · language</text>
-          <rect class="bx-r" x="692" y="116" width="330" height="46" fill="#FFFFFF" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="857.0" y="135.5">caption-store</text>
-          <text class="bs" x="857.0" y="152.5">merge by word id, resolve authority</text>
-          <rect class="bx-r" x="692" y="174" width="330" height="46" fill="#D6E8F8" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="857.0" y="193.5">caption-clock</text>
-          <text class="bs" x="857.0" y="210.5">the playhead, frozen once per word</text>
-          <rect class="bx-r" x="692" y="232" width="330" height="44" fill="#FFFFFF" stroke="#0B0B0B" stroke-width="1"/>
-          <text class="bt" x="857.0" y="250.5">live-studio</text>
-          <text class="bs" x="857.0" y="267.5">one node per word</text>
-          <path d="M332,174 L356,174" fill="none" stroke="#0B0B0B" stroke-width="1" marker-end="url(#ah)"/>
-          <path d="M656,174 L680,174" fill="none" stroke="#0B0B0B" stroke-width="1" marker-end="url(#ah)"/>
+          <text class="pt" x="6" y="44">One word, from the air to the colour turn</text>
+          <text class="mn end" x="1034" y="44">medians over a live session</text>
+          <path class="rule" d="M6,58 L1034,58"/>
+          <path class="axis" d="M278,118 L1002,118"/>
+          <path class="axis" d="M278.0,118 L278.0,122"/>
+          <text class="ax" x="278.0" y="109">0</text>
+          <path class="axis" d="M409.6,118 L409.6,122"/>
+          <text class="ax" x="409.6" y="109">1 s</text>
+          <path class="axis" d="M541.3,118 L541.3,122"/>
+          <text class="ax" x="541.3" y="109">2 s</text>
+          <path class="axis" d="M672.9,118 L672.9,122"/>
+          <text class="ax" x="672.9" y="109">3 s</text>
+          <path class="axis" d="M804.5,118 L804.5,122"/>
+          <text class="ax" x="804.5" y="109">4 s</text>
+          <path class="axis" d="M936.2,118 L936.2,122"/>
+          <text class="ax" x="936.2" y="109">5 s</text>
+          <text class="ax end" x="262" y="109">the word is spoken</text>
+          <path class="brace" d="M359.6,140 L359.6,132 L508.4,132 L508.4,140"/>
+          <text class="annc" x="434.0" y="156">read-ahead ≥ 420 ms</text>
+          <path class="grid" d="M409.6,122 L409.6,442"/>
+          <path class="grid" d="M541.3,122 L541.3,442"/>
+          <path class="grid" d="M672.9,122 L672.9,442"/>
+          <path class="grid" d="M804.5,122 L804.5,442"/>
+          <path class="grid" d="M936.2,122 L936.2,442"/>
+          <text class="rl end" x="262" y="191">in the air</text>
+          <text class="mn end" x="262" y="205">audio.py · InputGain</text>
+          <g><title>about 280 ms of speech</title><rect class="spoken" x="278.0" y="180" width="36.9" height="22" rx="3"/></g>
+          <text class="ann" x="324.9" y="195">≈280 ms of speech</text>
+          <text class="rl end" x="262" y="231">text · start · end</text>
+          <text class="mn end" x="262" y="245">asr.py</text>
+          <g><title>text · start · end — known from 0.62 s</title><rect class="wash-s" x="359.6" y="220" width="642.4" height="22" rx="3"/></g>
+          <rect class="tick-s" x="359.6" y="220" width="3" height="22"/>
+          <text class="annk" x="370.6" y="235">0.62 s</text>
+          <text class="rl end" x="262" y="271">loudness · pitch · voiced_frac</text>
+          <text class="mn end" x="262" y="285">prosody.py</text>
+          <g><title>loudness · pitch · voiced_frac — known from 0.62 s</title><rect class="wash-s" x="359.6" y="260" width="642.4" height="22" rx="3"/></g>
+          <rect class="tick-s" x="359.6" y="260" width="3" height="22"/>
+          <text class="annk" x="370.6" y="275">0.62 s</text>
+          <text class="rl end" x="262" y="311">speaker — provisional, or null</text>
+          <text class="mn end" x="262" y="325">sortformer.py</text>
+          <g><title>speaker — provisional, or null — known from 0.62 s</title><rect class="wash-p" x="359.6" y="300" width="508.1" height="22" rx="3"/></g>
+          <rect class="tick-p" x="359.6" y="300" width="3" height="22"/>
+          <rect class="tick-p" x="864.7" y="300" width="3" height="22"/>
+          <text class="annk" x="370.6" y="315">0.62 s</text>
+          <text class="ann end" x="857.7" y="315">until the evidence decides</text>
+          <text class="rl end" x="262" y="351">text, verified</text>
+          <text class="mn end" x="262" y="365">EndpointVerifier</text>
+          <path class="whisk" d="M422.8,351.0 L699.2,351.0"/>
+          <path class="whisk" d="M422.8,343 L422.8,359"/>
+          <path class="whisk" d="M699.2,343 L699.2,359"/>
+          <text class="annc" x="561.0" y="337">1.1 – 3.2 s</text>
+          <g><title>verified text — by 3.2 s at the latest</title><rect class="wash-s" x="699.2" y="340" width="302.8" height="22" rx="3"/></g>
+          <rect class="tick-s" x="699.2" y="340" width="3" height="22"/>
+          <text class="rl end" x="262" y="391">speaker, durable</text>
+          <text class="mn end" x="262" y="405">SpeakerTracker</text>
+          <g><title>speaker, durable — known from 4.48 s</title><rect class="wash-s" x="867.7" y="380" width="134.3" height="22" rx="3"/></g>
+          <rect class="tick-s" x="867.7" y="380" width="3" height="22"/>
+          <text class="annk" x="878.7" y="395">4.48 s</text>
+          <text class="rl end" x="262" y="431">a cue to the motors</text>
+          <text class="mn end" x="262" y="445">haptics.py · weave_node.py</text>
+          <path class="markf" d="M278.0,442 L286.0,422 L270.0,422 z"/>
+          <text class="ann" x="292.0" y="435">the Pi pulses from the array's own bearing, at once</text>
+          <path class="marko" d="M561.0,442 L569.0,422 L553.0,422 z"/>
+          <text class="ann" x="575.0" y="435">the Mac's cue waits for the durable word — opt-in</text>
+          <path class="playhead" d="M508.4,114 L508.4,424"/>
+          <path class="flag" d="M508.4,114 L514.4,105 L502.4,105 z"/>
+          <text class="phl" x="508.4" y="78">the playhead — 1.75 s</text>
+          <text class="phl" x="508.4" y="92">the word turns here</text>
+          <rect class="wash-s" x="6" y="466" width="26" height="12" rx="3"/>
+          <rect class="tick-s" x="6" y="466" width="3" height="12"/>
+          <text class="key" x="40" y="476">known, and settled</text>
+          <rect class="wash-p" x="181.6" y="466" width="26" height="12" rx="3"/>
+          <rect class="tick-p" x="181.6" y="466" width="3" height="12"/>
+          <text class="key" x="215.60000000000002" y="476">known, but provisional</text>
+          <path class="whisk" d="M382.0,472 L408.0,472"/>
+          <path class="whisk" d="M382.0,466 L382.0,478"/>
+          <path class="whisk" d="M408.0,466 L408.0,478"/>
+          <text class="key" x="416.0" y="476">a window, not a moment — the value lands somewhere inside it</text>
+          <text class="foot" x="6" y="508">The turn is a fixed moment on the acoustic timeline, so it happens on time in whatever colour is known — attribution never gates it.</text>
+          <text class="foot" x="6" y="525">A word behind the playhead is frozen history; the gap between arrival and turn is the read-ahead, and a per-word floor holds it at 420 ms.</text>
         </svg>
       </div>
       <figcaption>
-        <b>Figure 3.</b> Where each responsibility lives. Recognition, prosody
-        and attribution never leave Python; the browser reduces and draws.
+        <b>Figure 3.</b> One word, from the air to its colour turn. Every stage on
+        the machine shows up here as the moment it fills something in &mdash; and the
+        turn lands at 1.75&nbsp;s, while the speaker is still provisional and nearly
+        three seconds before the durable decision.
+      </figcaption>
+    </figure>
+
+    <div class="sub-h">The contract</div>
+    <p>
+      What those stages fill in is one versioned shape. A renderer &mdash; and the
+      haptic module &mdash; reads this and nothing else, so a stage can be replaced
+      without touching either.
+    </p>
+
+    <figure>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Field</th><th>Holds</th><th>Filled by</th></tr></thead>
+          <tbody>
+            <tr><td><code>version</code></td><td>1.0 &mdash; every field marked <code>?</code> is additive, and only a breaking change bumps it</td><td>&mdash;</td></tr>
+            <tr><td><code>media</code></td><td><code>path</code> &middot; <code>duration</code> &middot; <code>fps?</code></td><td>the clip a spec was derived from</td></tr>
+            <tr><td><code>speakers</code></td><td><code>{ S1 … S12 → color }</code>, #RRGGBB from the CWI 2.1.1 palette by order of first appearance</td><td>the speaker tracker</td></tr>
+            <tr><td><code>mapping</code></td><td><code>loudness_to</code> &middot; <code>pitch_to</code> &middot; <code>speaker_to</code>, each an axis of <code>axis</code> &middot; <code>min</code> &middot; <code>max</code> &middot; <code>invert</code> &middot; <code>unit?</code> &middot; <code>domain_hz?</code> &middot; <code>baseline?</code></td><td><code>config.yaml</code></td></tr>
+            <tr><td><code>words[]</code> &mdash; what was said</td><td><code>text</code> &middot; <code>start</code> &middot; <code>end</code> &middot; <code>conf</code></td><td><code>asr.py</code>, revised by the verifier</td></tr>
+            <tr><td><code>words[]</code> &mdash; who said it</td><td><code>speaker</code> &middot; <code>speaker_status</code> &middot; <code>speaker_confidence</code> &middot; <code>speaker_change_probability</code> &middot; <code>speaker_revision_id</code> &middot; <code>overlap</code></td><td><code>sortformer.py</code>, <code>diarize.py</code></td></tr>
+            <tr><td><code>words[]</code> &mdash; how it was said</td><td><code>loudness</code> &middot; <code>pitch</code> normalised within the speaker, beside raw <code>loudness_db</code> &middot; <code>pitch_hz</code> &middot; <code>voiced_frac</code></td><td><code>prosody.py</code>, off the true signal</td></tr>
+            <tr><td><code>words[]</code> &mdash; how to set it</td><td><code>line_break</code> &middot; <code>tracking</code> &middot; <code>emphasis_measured</code> &middot; <code>emphasis_source</code></td><td>derived references only</td></tr>
+            <tr><td><code>words[]</code> &mdash; a measured curve</td><td><code>motion?</code> of <code>t0</code> &middot; <code>dt</code> &middot; <code>lift[]</code> &middot; <code>scale[]</code> &middot; <code>dwght[]</code>, replayed verbatim instead of modelled</td><td>the reference recordings</td></tr>
+            <tr><td><code>events[]</code></td><td><code>label</code> &middot; <code>category</code> (vocal | reaction | music | environmental) &middot; <code>start</code> &middot; <code>end</code> &middot; <code>conf</code> &middot; <code>source</code></td><td><code>soundevents.py</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <figcaption>
+        <b>Figure 4.</b> CaptionSpec 1.0 in full, from <code>schema.py</code>.
+        <code>start</code> and <code>end</code> are what everything else is keyed
+        to: prosody, the motion clock, the read-ahead floor and the haptic cue all
+        read them, which is why a recogniser that cannot supply them is no use here.
+        Per-stage intermediates &mdash; <code>WordTiming</code>,
+        <code>DiarSegment</code>, <code>ProsodyFeature</code> &mdash; live in the
+        same file and never reach a renderer.
       </figcaption>
     </figure>
 
     <div class="sub-h">The event stream</div>
     <p>
-      Five kinds travel the stream; one is durable. A revised word is re-emitted
-      under the same id, so consumers collapse by id rather than count events.
+      Eight kinds travel the stream, and the word is the one a renderer keeps. A
+      revised word is re-emitted under the same id, so consumers collapse by id
+      rather than count events.
     </p>
 
     <div class="scroll">
       <table>
-        <thead><tr><th>Event</th><th>Carries</th><th>Durable</th></tr></thead>
+        <thead><tr><th>Event</th><th>Carries</th><th>Replayed to a late joiner</th></tr></thead>
         <tbody>
-          <tr><td><code>word</code></td><td>text, span, speaker, loudness, pitch, and the salience flags the haptics read</td><td>yes, and only this</td></tr>
+          <tr><td><code>word</code></td><td>text, span, speaker, loudness, pitch, and the salience flags the haptics read</td><td>yes, once final &mdash; and this is the one a renderer keeps</td></tr>
+          <tr><td><code>commit</code></td><td>a word leaving the revisable window</td><td>yes</td></tr>
+          <tr><td><code>verification</code></td><td>the endpoint verifier reconciling a finished phrase, word by word</td><td>yes</td></tr>
+          <tr><td><code>sound</code></td><td>a non-speech sound &mdash; laughter, applause, music, the room itself</td><td>yes, on its end</td></tr>
+          <tr><td><code>cue</code></td><td>a word entering the revisable window</td><td>no</td></tr>
+          <tr><td><code>hypothesis</code></td><td>the streaming recogniser&rsquo;s running guess at the phrase</td><td>only the newest is held</td></tr>
           <tr><td><code>level</code></td><td>input level, noise floor, gain, and the bearing when an array supplies one</td><td>no</td></tr>
-          <tr><td><code>hypothesis</code></td><td>the streaming recogniser&rsquo;s running guess at the phrase</td><td>no</td></tr>
-          <tr><td><code>cue</code>, <code>commit</code></td><td>a word entering and leaving the revisable window</td><td>no</td></tr>
-          <tr><td><code>verification</code></td><td>the endpoint verifier reconciling a finished phrase, word by word</td><td>no</td></tr>
+          <tr><td><code>boot</code></td><td>which model is still loading, before capture is real</td><td>no</td></tr>
         </tbody>
       </table>
     </div>
@@ -1006,7 +1120,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
 
     <figure>
       <div class="plate shot">
-        <img src="figure/fig4.png" width="2200" height="1320" loading="lazy"
+        <img src="figure/fig5.png" width="2200" height="1320" loading="lazy"
              alt="The studio running. A dark stage carries rolling captions,
                   each word coloured by speaker and the newest line ruled off
                   below the history; a right-hand rail shows the input level,
@@ -1014,7 +1128,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
                   current bearing, and a live waveform.">
       </div>
       <figcaption>
-        <b>Figure 4.</b> A live capture. History recedes by age above the ruled
+        <b>Figure 5.</b> A live capture. History recedes by age above the ruled
         live line; each speaker holds an arc of the ring.
       </figcaption>
     </figure>

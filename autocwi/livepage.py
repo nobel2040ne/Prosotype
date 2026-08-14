@@ -241,6 +241,9 @@ _TEMPLATE = Template(r'''<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Captioned with intent — local live captions</title>
+<!-- The same mark web/src/app/icon.svg carries, inlined: this page is what
+     serves when the studio export is missing, so it cannot fetch /icon.svg. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Cg fill='none' stroke-width='9.5' stroke-linecap='round'%3E%3Cpath d='M13 18L23.5 46' stroke='%23E5E517'/%3E%3Cpath d='M23.5 46L32 29' stroke='%2317E517'/%3E%3Cpath d='M32 29L40.5 46' stroke='%2317E5E5'/%3E%3Cpath d='M40.5 46L51 18' stroke='%23E517E5'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   @font-face {
     font-family: "Roboto Flex VF";

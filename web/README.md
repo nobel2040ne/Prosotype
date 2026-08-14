@@ -54,7 +54,7 @@ NEXT_PUBLIC_AUTOCWI_ORIGIN=http://127.0.0.1:7337 npm --prefix web run dev
 
 ## The stage
 
-The workspace holds captions and nothing else — no nav rail, header, transport bar, stage label, grid or corner brackets, and no card border around `.caption-stage`. The studio has **one** framing system, the full-bleed hairline grid, and the stage's border box *is* the workspace box. At 1440×900 that gives the stage **1104×757** and caption type at **29.2 px**.
+The workspace holds captions and nothing else — no nav rail, header, transport bar, stage label, grid or corner brackets, and no card border around `.caption-stage`. The studio has **one** framing system, the full-bleed hairline grid, and the stage's border box *is* the workspace box.
 
 `.caption-feed`'s right padding is deliberately unreclaimed: `--caption-gutter-em` absorbs a row-final word's mid-pop overhang, measured up to .842em. Shrink it and words clip silently — measured on ~15% of row-samples.
 
@@ -63,7 +63,7 @@ The workspace holds captions and nothing else — no nav rail, header, transport
 The chrome follows the Apple design analysis; the captions follow CWI, which outranks it. **Anything inside `.caption-word` is CWI, everything else is Apple.** Never let an Apple token reach a caption, or a CWI token style a button.
 
 - One accent: Action Blue `#0066cc` on light, Sky Link Blue `#2997ff` on dark (Action Blue measures 2.68:1 on a dark tile).
-- Radius on the 0/5/8/11/18/pill scale; `--r-md` has no caller on purpose.
+- Radius on the 0/5/8/11/18/pill scale.
 - Weight ladder 300/400/600/700 — **500 is deliberately absent**.
 - No shadows and no decorative gradients on chrome; surface alternation is the divider. A shadow is allowed only where it is a data channel.
 - Default and active states only — the analysis documents no hover.

@@ -6,8 +6,6 @@ Weave has three modes that share one analysis philosophy and one word-data shape
 - **offline** — a batch pipeline over recorded media that ends at `spec.json`;
 - **`cc`** — the closed-caption renderer that plays a finished spec and is the motion reference the other two are measured against.
 
-New to the terms? The [glossary](#glossary) is at the foot.
-
 ## System diagram
 
 ```
@@ -26,7 +24,7 @@ live: startup UI ─► lock en/ko ─► load matching local recognizer ─► 
                                                                                              └─► durable haptics
 
 browser: SSE ─► revision reducer ─► per-word reveal queue ─► stable word identity
-                                                        ├─► six-row audience stack
+                                                        ├─► measured audience stack
                                                         ├─► acoustic sequential reveal
                                                         ├─► per-character voice envelope
                                                         └─► complete Transcript history
@@ -37,8 +35,7 @@ offline:  media ─► transcribe ─► diarize ─► prosody ─► fuse ─�
                  words.json  segments.json prosody.json           ├─► future haptic module
                                                                   └─► cc ─► captions.html
 
-reference:  screen recordings ─► derive_reference_spec ─► assets/reference_specs/*.json
-            (+ transcript)       (measures the pixels)     └─► build_demo ─► demo.json
+reference:  screen recordings ─► measured per glyph ─► assets/reference_specs/*.json
 ```
 
 ## Module map
@@ -57,7 +54,7 @@ reference:  screen recordings ─► derive_reference_spec ─► assets/referen
 |---|---|
 | `web/` | Next.js App Router studio. Builds to a static export that Python serves at `/`. Provides the pre-capture language gate, the Stage/Transcript views, presentation settings, speaker cards, and the voice indicators — with no Node runtime. |
 | `web/src/lib/caption-store.ts` | Pure event reducer: stable word identity, independent revision channels, source/finality authority, and the reveal deadline policy. |
-| `web/src/lib/caption-paragraphs.ts` | Pure layout partitioner: Transcript keeps complete paragraphs; Stage flattens them into stable eight-word rows and keeps the newest six. |
+| `web/src/lib/caption-paragraphs.ts` | Pure layout partitioner: Transcript keeps complete paragraphs; Stage flattens them into rows on a measured em budget and keeps as many as it measures room for. |
 | `web/src/hooks/use-caption-stream.ts` | Client boundary for the language session, the event stream, the reveal scheduler, reconnect state, and the `?demo=1` preview. |
 | `autocwi/livepage.py` | Generates the legacy `live.html` renderer (kept as a fallback and diagnostic tool). |
 | `autocwi/live_render_core.js` | Dependency-free ordering/reduction core shared by the legacy page and its Node tests. |
@@ -84,14 +81,6 @@ reference:  screen recordings ─► derive_reference_spec ─► assets/referen
 | `autocwi/device.py` | Compute-device selection (cuda → mps → cpu) and seeding. |
 | `autocwi/cli.py` | Subcommands: `live`, `run`, `cc`, `tune`, `transcribe`, `diarize`, `prosody`, `fuse`. |
 
-### Reference derivation
-
-| Module | Responsibility |
-|---|---|
-| `scripts/derive_reference_spec.py` | Turns a recording + transcript into a validated CaptionSpec by measuring the pixels. |
-| `scripts/build_demo.py` | Concatenates the three derived specs onto one timeline (`demo.json`). |
-| `scripts/live_render_probe.py` | Injects a deterministic event burst into the pages in headless Chrome and reports DOM, queue, and motion metrics. |
-
 ## Data contract
 
 **`CaptionSpec` (`spec.json`)** is the stable, versioned (currently `"1.0"`) boundary between analysis and any consumer. Renderers and the future haptic module read only this — never the internal model objects.
@@ -116,7 +105,7 @@ Example additive word fields:
 }
 ```
 
-Every new field here is optional, so no version bump was needed and `1.0` files still validate. Absence means "legacy stable", **not** `unknown`.
+Every field here is optional and `1.0` files still validate. Absence means "legacy stable", **not** `unknown`.
 
 **Live events** (SSE `/events`, logged to `out/live_events.jsonl`) use the same word shape plus `type: "word"`, `final: true`, `utterance`, a stable `word_id`, revision counters, and `t` (absolute stream onset). Display clients also receive `type: "hypothesis"`, `"cue"`, `"commit"`, and `"verification"` events during the speech lifecycle; only `type: "word"` events are durable. Reconnect replays from `Last-Event-ID` without replaying motion.
 
@@ -136,15 +125,13 @@ SSE event
     2.3 per-character voice phase off it — no JS timer, no queue
 ```
 
-There is no reveal scheduler: slots, gaps, catch-up and backlog ceilings all existed to guess, from arrival order, a moment the recording already knows.
+There is no reveal scheduler. Slots, gaps and backlog ceilings would be guessing, from arrival order, a moment the recording already carries.
 
 The load-bearing invariant: **text may be revised only ahead of the playhead.** Once the colour turn passes a word it is frozen — spelling included — so corrections land in the read-ahead zone where they are invisible. A settled word's typography returns exactly to normal. The frontend's non-negotiables are listed in [web/README.md](web/README.md), and [the project page](https://nobel2040ne.github.io/Weave/) shows the playhead running.
 
 ## Speaker attribution
 
 Attribution runs live with four states — `unknown`, `provisional`, `stable`, `corrected` — and only `stable`/`corrected` may signal a speaker change. Timing and identity are separate evidence: Streaming Sortformer supplies continuous provisional turn slots, and at each endpoint a segmentation pass plus a full-turn voice embedding verifies the durable identity (ERes2Net for English, CAM++ for Korean). [the project page](https://nobel2040ne.github.io/Weave/) shows the four states and what each one may claim.
-
-A haptic module plugs in by consuming either the SSE `word` events or `spec.json` — it must never import analysis code. **The shipped wearable does not use that lane by default**: the Pi drives its motors straight from the array bearing (`scripts/hw/weave_node.py`, `Ring.follow`) because the word lane waits on the endpoint verifier. The SSE lane is the opt-in one.
 
 ## Design decisions
 
@@ -159,7 +146,7 @@ A haptic module plugs in by consuming either the SSE `word` events or `spec.json
 
 ## Extension points
 
-**Haptics** — two lanes, and they answer different questions. *Direction* is local: the node reads the array bearing and actuates itself, with no dependency on this contract at all. *Salience* is the contract's: consume final `type: "word"` events, or read `spec.json`; ignore hypotheses, cues, commits and provisional speaker changes; apply same-`word_id` revisions without re-actuating. Anything needing sub-second latency belongs in the first lane.
+**Haptics** — two lanes answering different questions. *Direction* is local: the node reads the array bearing and actuates itself, with no dependency on this contract, and it is what the wearable ships with because the word lane waits on the endpoint verifier. *Salience* is the contract's, and is opt-in: consume final `type: "word"` events or read `spec.json`; ignore hypotheses, cues, commits and provisional speaker changes; apply same-`word_id` revisions without re-actuating. It must never import analysis code. Anything needing sub-second latency belongs in the first lane.
 
 ---
 

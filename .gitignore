@@ -43,11 +43,15 @@ docs/DESIGN.md
 docs/*
 !docs/index.html
 !docs/RobotoFlex.ttf
+!docs/icon.svg
+!docs/favicon.png
+!docs/apple-touch-icon.png
 !docs/.nojekyll
 !docs/figure/
 !docs/reference/
 docs/reference/*
 !docs/reference/PR_Flim.mp4
+!docs/reference/PR_Flim_Annotated.txt
 !docs/reference/SOURCE.md
 
 tests/
