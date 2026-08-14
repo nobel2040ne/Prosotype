@@ -88,7 +88,9 @@ display:
   studio_stack_words_min: 3           # below three a row stops reading as a phrase
   # Rows the stack must fit before it prefers shorter rows and larger type.
   studio_stack_min_rows: 16
-  max_simultaneous_reveals: 3   # dead; overlapping pops are the design working
+  # Dead for the studio stage — overlapping pops are the design working. Still
+  # read by the legacy diagnostics page (`livepage.py`), so it is not removable.
+  max_simultaneous_reveals: 3
   word_reveal_gap_s: 0.14
   word_reveal_gap_min_s: 0.08
   word_reveal_gap_max_s: 0.26
@@ -111,11 +113,6 @@ display:
   word_motion_follows_speech: false   # tried; the clock stays on speech RATE
   word_motion_speech_scale: 1.5   # animation seconds per second of speech
   word_motion_speech_floor_s: 0.30   # below this an animation is a flicker
-  word_motion_backlog_target_s: 0.60
-  # Past this much backlog a word is history: revealed settled, not animated.
-  word_motion_backlog_ceiling_s: 1.20
-  word_motion_rate_headroom: 0.90
-  word_motion_catchup_scale: 0.82
   # A speculative first phone must outlive its own revision.
   onset_motion_duration_s: 0.68
   word_motion_source_span_s: 0.14   # normalises decoder word lengths
@@ -199,8 +196,6 @@ motion:
     character_wave_lift_em: 0.085
     # POP is the channel still under the reference.
     character_wave_pop: 0.05
-    # How many letters of a word are in flight at once.
-    character_wave_overlap: 4.5
     character_wave_crouch_em: 0.0
     character_wave_lead_s: 0.18
     character_wave_peak_s: 0.18
@@ -213,19 +208,11 @@ motion:
     fast_speech_motion_gain: 0.58
     # Delivery shapes the path without leaving a persistent style behind.
     delivery_enabled: true
-    delivery_contour_lift_em: 0.055
-    delivery_force_lift_em: 0.045
-    delivery_attack_drop_em: 0.025
-    delivery_flow_hold_em: 0.035
-    delivery_intonation_lift_gain: 0.35   # lift from measured intonation
-    delivery_axis_gain_floor: 0.50   # a `steady` word still carries its axes
     # WEIGHT IS THE CHANNEL THAT WAS DOING THE LEAST, MEASURED (2026-07-30).
     weight_range: [100, 900]
-    weight_gain: 1.75
     # Slow flow may use more of the existing window but never exceed the global
     # 720 ms cap; the next fresh word remains hidden until a slot opens.
     delivery_flow_duration_ms: 90
-    delivery_texture_glow_px: 6
     delivery_min_confidence: 0.38
     # THE NEXT STUDIO'S MOTION, STRICTLY FROM THE DESIGN SYSTEM PDF.
     studio:

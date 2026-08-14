@@ -46,7 +46,7 @@ handler, server action, cookie or rewrite.
 
 ## Non-negotiable caption behaviour
 
-[the project page](https://nobel2040ne.github.io/Prosotype/) shows these running.
+[the project page](https://nobel2040ne.github.io/Weave/) shows these running.
 
 - **A word animates at its recorded onset**, scheduled by the playhead through
   one `animation-delay` — not at first paint. No reveal queue, no slot, no

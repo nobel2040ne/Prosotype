@@ -170,7 +170,7 @@ corrections land in the read-ahead zone where they are invisible. A settled
 word's typography returns exactly to normal.
 The frontend's non-negotiables are listed in
 [web/README.md](web/README.md), and
-[the project page](https://nobel2040ne.github.io/Prosotype/) shows the playhead running.
+[the project page](https://nobel2040ne.github.io/Weave/) shows the playhead running.
 
 ## Speaker attribution
 
@@ -179,7 +179,7 @@ Attribution runs live with four states — `unknown`, `provisional`, `stable`,
 and identity are separate evidence: Streaming Sortformer supplies continuous
 provisional turn slots, and at each endpoint a segmentation pass plus a full-turn
 voice embedding verifies the durable identity (ERes2Net for English, CAM++ for
-Korean). [the project page](https://nobel2040ne.github.io/Prosotype/) shows the
+Korean). [the project page](https://nobel2040ne.github.io/Weave/) shows the
 four states and what each one may claim.
 
 A haptic module plugs in by consuming either the SSE `word` events or `spec.json`

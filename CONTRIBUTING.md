@@ -38,6 +38,12 @@ the first run; a busy port is a leftover process (`pkill -f "autocwi live"`).
 npm --prefix web run check        # lint + reducer tests + static build
 ```
 
+`check` runs lint first and stops there if it fails. **Lint is currently red on
+`main`** — 18 `react-hooks/refs` errors in `live-studio.tsx`, unrelated to any
+change you are likely to make — so until that is settled, run the stages
+separately (`npm run lint`, `npm run test`, `npm run build`) and make sure your
+change does not add to the count.
+
 The Python suite and the measurement probes are development tooling and are not
 distributed with the project. If you have them, run `pytest` too — it is offline
 by design and must stay that way.
@@ -72,9 +78,19 @@ again — and each takes `--broken` or an equivalent negative control. **Run tha
 first: a check that has never been seen to fail is not evidence.**
 
 Work on a branch. A pull request says what changed, how it was verified (which
-probes, and a screenshot for anything visual), and which config values moved.
+probes, and a screenshot for anything visual), and which config values moved. The
+issue and pull-request templates ask for exactly that.
+
+## Conduct, and reporting a vulnerability
+
+Participation is covered by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+This project captures a microphone in a room full of people. If you find a way
+audio or transcripts leave the machine on a path that is not documented as
+opt-in, report it privately — [SECURITY.md](SECURITY.md) has the how, and lists
+what is already known and accepted.
 
 ## Next
 
 [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together ·
-[the project page](https://nobel2040ne.github.io/Prosotype/) for what a caption does, and why.
+[the project page](https://nobel2040ne.github.io/Weave/) for what a caption does, and why.

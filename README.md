@@ -8,7 +8,7 @@ for *how* it is said.
 English or Korean, from a microphone, **entirely offline**. No cloud inference,
 no telemetry — the only network access is a one-time model and font download.
 
-**[See how it works →](https://nobel2040ne.github.io/Prosotype/)** — the whole
+**[See how it works →](https://nobel2040ne.github.io/Weave/)** — the whole
 project on one page, with the motion running.
 
 ## Quick start
@@ -55,10 +55,11 @@ Tests and measurement probes are development tooling and are not distributed.
 
 | | |
 |---|---|
-| **[nobel2040ne.github.io/Prosotype](https://nobel2040ne.github.io/Prosotype/)** | the project, on one page |
+| **[nobel2040ne.github.io/Weave](https://nobel2040ne.github.io/Weave/)** | the project, on one page |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | modules, data contract, glossary |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | setup and the ground rules |
 | [web/README.md](web/README.md) | the studio frontend |
+| [SECURITY.md](SECURITY.md) | where audio goes, and how to report a way out of that |
 | [captionwithintention.org](https://captionwithintention.org) | the design system — the final word |
 
 ## Limits

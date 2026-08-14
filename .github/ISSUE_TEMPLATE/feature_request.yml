@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a change to what Weave does
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What a viewer, a talker, or someone running the booth cannot do today.
+        Describe the situation, not the implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How you would know it worked
+      description: >
+        Which probe, benchmark or observation would show the difference. For
+        anything touching recognition, that is `scripts/benchmark.py` on
+        FLEURS — the project has exactly one benchmark and does not add
+        another.
+
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Ground rules this stays inside
+      description: >
+        See CONTRIBUTING.md. If your proposal breaks one of these, say so and
+        say why — it is not automatically disqualifying, but it needs an
+        argument.
+      options:
+        - label: Local and offline; no telemetry, no required cloud inference.
+        - label: No synthesized word onsets — per-word `start`/`end` is the binding constraint.
+        - label: The frontend stays statically exportable (no required Node server, route handler or cookie).
+        - label: A settled caption never re-animates.
+        - label: Any new tunable lives in `config.yaml` with its CWI section cited.

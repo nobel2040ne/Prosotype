@@ -1,0 +1,91 @@
+name: Bug report
+description: Something crashes, fails to start, or produces the wrong output
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a **caption looks or moves wrong** on screen, use the
+        *Caption or motion is wrong* template instead — it asks for the
+        screenshot and probe output that report needs.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >
+        The exact command line, and any values you changed in `config.yaml`.
+      placeholder: |
+        .venv/bin/python -m autocwi live --sample --lang ko
+        config.yaml: live.endpoint_silence_s 1.0 -> 0.6
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Console output
+      description: >
+        The traceback, or the last ~30 lines of stdout. Redact any API key.
+      render: shell
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which mode
+      options:
+        - live (microphone)
+        - live --sample or --file
+        - live --node (hardware node)
+        - cc (closed captions from a spec)
+        - run (offline video pipeline)
+        - tune
+        - a script in scripts/
+    validations:
+      required: true
+
+  - type: dropdown
+    id: lang
+    attributes:
+      label: Language profile
+      options:
+        - en
+        - ko
+        - multi
+        - not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15.5, Apple Silicon (M2) / Ubuntu 24.04, x86_64
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: The one-time downloads completed (`fetch_font.py`, `fetch_streaming_model.py`).
+        - label: The frontend is built (`npm --prefix web run build`) — a stale `web/out` shows as *Preparing language setup*.
+        - label: No leftover server is holding the port (`pkill -f "autocwi live"`).

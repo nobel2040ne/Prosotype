@@ -8,6 +8,7 @@ __pycache__/
 web/node_modules/
 web/.next/
 web/out/
+web/tsconfig.tsbuildinfo
 
 
 .DS_Store
@@ -40,20 +41,11 @@ CLAUDE.md
 docs/DECISIONS.md
 docs/DESIGN.md
 docs/*
-# The GitHub Pages site. `index.html` is the name Pages serves at the site
-# root; the font is copied in beside it because `assets/` is above the site
-# root and is ignored anyway; `.nojekyll` stops Jekyll rendering docs/README.
 !docs/index.html
 !docs/RobotoFlex.ttf
 !docs/.nojekyll
-# The page's figures. `docs/*` ignores everything by default, so an asset added
-# beside index.html is invisible to Pages until it is named here — it renders
-# locally from the working tree and 404s on the live site. (Figure 1 is inline
-# SVG in the page itself and needs no entry.)
 !docs/NanumSquareNeo-Regular.ttf
 !docs/NanumSquareNeo-Bold.ttf
-# The page's figures live in one folder. `docs/*` only matches direct children,
-# so un-ignoring the directory is enough for git to descend into it.
 !docs/figure/
 !docs/reference/
 docs/reference/*
