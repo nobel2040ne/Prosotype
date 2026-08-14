@@ -9,7 +9,7 @@ a Squarespace page whose only scripts are Squarespace's own. Verified
 
 | artifact | official size | ours |
 |---|---|---|
-| `Caption-With-Intention_Design-System_V1.0.pdf` | 45,667,613 | `docs/reference/cwi-design-system-v1.0.pdf` — byte-identical, 56 pages |
+| `Caption-With-Intention_Design-System_V1.0.pdf` | 45,667,613 | `docs/reference/CWI_Design_System.pdf` — byte-identical, 56 pages |
 | `cwi-quickstart-guide.pdf` | 144,710 | `docs/` — byte-identical |
 | `Academy_CI_Template.aep` | 5,083,469 | git blob `1518434:` — byte-identical |
 | `cena-ci-template-v02a.mp4` | 7,364,118 | **here** (was missing until 2026-08-11) |
@@ -18,7 +18,7 @@ a Squarespace page whose only scripts are Squarespace's own. Verified
 **V1.0 is the current design system.** `V1.1` and `V1.2` return 403; there is no
 newer document to be missing.
 
-## `pr-film.mp4` — the film, and the clip `--sample` streams
+## `PR_Flim.mp4` — the film, and the clip `--sample` streams
 
 The Caption with Intention PR film, 68.6 s with audio. **It is the only source
 where motion and audio are both real** — every `*.mov` here is silent, so their
@@ -29,7 +29,7 @@ It is also what `autocwi live --sample` plays. It used to be checked in twice,
 once here and once as `assets/sample.mp4`, byte for byte identical; there is one
 copy now and `live.py` resolves it from this directory.
 
-`pr-film-annotated.txt` in `docs/` is its transcript, annotated word by word
+`PR_Flim_Annotated.txt` in `docs/` is its transcript, annotated word by word
 from 28 s on. Where that annotation disagrees with a statistic, it wins.
 
 ## `cena-ci-template-v02a.mp4` — what it is, and is not

@@ -1,4 +1,4 @@
-"""auto-CWI CLI.
+"""Weave CLI.
 
   python -m autocwi live                           # live CWI captions (primary)
   python -m autocwi run <input> --out out/ [--whisper small] [--speakers 2] [--stub]

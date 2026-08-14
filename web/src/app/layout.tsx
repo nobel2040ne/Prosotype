@@ -2,7 +2,7 @@ import type {Metadata, Viewport} from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AutoCWI Studio",
+  title: "Weave Studio",
   description: "Real-time expressive captions shaped by the voice.",
 };
 

@@ -1,7 +1,7 @@
 """Download the local OFL variable fonts used by English and Korean captions.
 
 This is the only network access in the project besides model-weight downloads;
-everything at runtime is served by AutoCWI from ``assets/``.
+everything at runtime is served by Weave from ``assets/``.
 """
 
 from pathlib import Path

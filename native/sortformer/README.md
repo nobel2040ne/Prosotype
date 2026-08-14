@@ -1,8 +1,8 @@
-# AutoCWI Streaming Sortformer helper
+# Weave Streaming Sortformer helper
 
 This Swift 6 executable keeps NVIDIA Streaming Sortformer v2.1 Core ML state
 outside the Python 3.11 ASR process. It is pinned to FluidAudio 0.15.5 and runs
-only on Apple Silicon; AutoCWI falls back to its ONNX segmentation/embedding
+only on Apple Silicon; Weave falls back to its ONNX segmentation/embedding
 tracker everywhere else.
 
 Prepare it through the repository setup command:

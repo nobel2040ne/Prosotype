@@ -1,4 +1,4 @@
-# Prosotype
+# Weave
 
 Live speech into **expressive captions** for Deaf and hard-of-hearing viewers.
 It automates [Caption with Intention](https://captionwithintention.org): colour

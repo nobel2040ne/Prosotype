@@ -1,4 +1,4 @@
-# Prosotype Studio
+# Weave Studio
 
 The product frontend: a Next.js App Router app, statically exported to
 `web/out` and served by the Python live process. Recognition, diarization,
@@ -68,6 +68,13 @@ handler, server action, cookie or rewrite.
   word id — a late word may only append, never insert.
 - Diarization never partitions stage geometry. Speaker updates recolour without
   changing row keys.
+- **An endpoint is one commit, not one per word.** The server publishes an
+  endpoint word by word — measured, 74 SSE messages inside 100 ms — and the two
+  caption layout effects force a synchronous layout after every commit, so
+  unbatched that was ~150 forced style+layout passes on a stage whose type is
+  driven by animating custom properties. `useCaptionStream` queues caption
+  events and applies them in one reducer pass per animation frame. Word turns
+  are unaffected: they are placed on the acoustic clock, not on arrival.
 - **Grey is reserved for `speaker == null`.** A speaker-carrying word whose
   tracker status is unknown renders `provisional`, or words that turned while
   attribution was pending stay grey forever.

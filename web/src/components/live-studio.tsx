@@ -1426,7 +1426,7 @@ function LanguageGate({
       <div className="language-gate-card">
         <header className="language-gate-brand">
           <div>
-            <strong>AutoCWI</strong>
+            <strong>Weave</strong>
             <span>Live caption setup</span>
           </div>
         </header>
@@ -1450,7 +1450,7 @@ function LanguageGate({
           </h1>
           <p>
             {selecting
-              ? "Choose before capture begins. AutoCWI will load the matching local speech model and lock it for this session."
+              ? "Choose before capture begins. Weave will load the matching local speech model and lock it for this session."
               : unavailable
                 ? "Open this studio through “python -m autocwi live” so it can reach the local session controller."
                 : "Loading the matching recognizer before microphone capture starts. No audio has been captured yet."}
@@ -1831,7 +1831,7 @@ export function LiveStudio() {
       <header className="topbar">
         <div className="brand">
           <div>
-            <strong>AutoCWI</strong>
+            <strong>Weave</strong>
             <span>Expressive caption studio</span>
           </div>
         </div>

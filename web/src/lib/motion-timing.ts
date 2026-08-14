@@ -204,6 +204,6 @@ export function charTurnDelayMs(
   return Math.round(finite(turnDelayMs) + at * Math.max(0, finite(sweepMs)));
 }
 
-/* THE PR FILM'S OWN CLOCK, measured off `docs/reference/pr-film.mp4` rather
+/* THE PR FILM'S OWN CLOCK, measured off `docs/reference/PR_Flim.mp4` rather
    than fitted. */
 export const FILM_WORD_TURN_MS = 80;

@@ -15,7 +15,7 @@ function split(word: string): string {
 }
 
 // THE FILM'S OWN SPLITS, read off frame by frame and recorded in
-// `docs/reference/pr-film-annotated.txt`. These are the acceptance cases:
+// `docs/reference/PR_Flim_Annotated.txt`. These are the acceptance cases:
 // the pairing rule this replaced got the first two right and "button" wrong.
 test("the character groups are the film's syllables", () => {
   assert.equal(split("seen"), "se|en");

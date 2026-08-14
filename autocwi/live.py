@@ -538,7 +538,7 @@ def sample_clip_path(language: str = "en") -> str:
     candidates = [
         # The PR film: reference material AND the clip `--sample` streams. It
         # was checked in twice, byte for byte, until 2026-08-13.
-        root / "docs" / "reference" / "pr-film.mp4",
+        root / "docs" / "reference" / "PR_Flim.mp4",
         root / "AE PROJECT" / "AE PROJECT" / "(Footage)" / "ASETS" / "Video"
              / "Cena_ref_CI_Template_v02a.mp4",
     ]

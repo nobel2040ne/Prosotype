@@ -352,6 +352,23 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
   const rearmedWordsRef = useRef(0);
   const minReadAheadRef = useRef(Number.POSITIVE_INFINITY);
   const eventIdRef = useRef(0);
+  /* AN ENDPOINT ARRIVES AS A BURST, AND A BURST IS ONE PAINT (2026-08-14).
+     The server publishes an endpoint word by word: MEASURED on the PR film,
+     74 SSE messages inside 100 ms, 59 of them `word`. Each one was its own
+     `setModel`, so each one was its own React commit -- and two layout effects
+     in `live-studio.tsx` (the stack FLIP and the row-grow) read
+     `getBoundingClientRect` on every row right after every commit, which
+     forces a synchronous style recalc + layout of a stage whose font-size,
+     font-weight and font-stretch are all driven by animating custom
+     properties. Traced: 64 `UpdateLayoutTree` and 65 `Layout` passes in half a
+     second, and the frame the burst lands on stretched to 59 ms against an
+     8.3 ms median -- the stutter you see when a held utterance turns colour.
+     The events are queued here and applied in ONE reducer pass per animation
+     frame. Nothing about WHEN a word turns changes: the turn is placed on the
+     acoustic clock by `scheduleWord`, which is absolute, and `freezeText`
+     below still runs at arrival so the caption invariant is unaffected. */
+  const pendingRef = useRef<Array<{event: CaptionEvent; id: number}>>([]);
+  const flushFrameRef = useRef(0);
 
   useEffect(() => {
     modelRef.current = model;
@@ -366,10 +383,32 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
   const backendOrigin =
     process.env.NEXT_PUBLIC_AUTOCWI_ORIGIN?.replace(/\/$/, "") ?? "";
 
+  /* Apply every event queued since the last frame, in arrival order, as one
+     state change. Order and ids are exactly what the unbatched path passed, so
+     the reducer sees the same sequence it always did. */
+  const flushPending = useCallback(() => {
+    flushFrameRef.current = 0;
+    const pending = pendingRef.current;
+    if (pending.length === 0) return;
+    pendingRef.current = [];
+    setModel((current) => {
+      let next = current;
+      for (const {event, id} of pending) {
+        next = reduceCaptionEvent(next, event, id, new Set<string>());
+      }
+      return next;
+    });
+    setLastEventAt(Date.now());
+  }, []);
+
+  useEffect(() => () => {
+    if (flushFrameRef.current) cancelAnimationFrame(flushFrameRef.current);
+  }, []);
+
   const dispatch = useCallback((event: CaptionEvent, eventId?: number) => {
     const id = eventId ?? ++eventIdRef.current;
-    setLastEventAt(Date.now());
     if (event.type === "level") {
+      setLastEventAt(Date.now());
       const incoming = event as unknown as LevelEvent;
       // THE CLOCK SOURCE. `level.t` is the capture position in seconds on the
       // same timeline as `word.t` (`stream_base + word.start`), and it arrives
@@ -423,10 +462,11 @@ export function useCaptionStream({reducedMotion}: StreamOptions) {
       // ("it" -> "it,", "okay" -> "okay?") still rewrite coloured captions.
       event = freezeText(event as CaptionEvent & {text: string});
     }
-    setModel((current) => reduceCaptionEvent(
-      current, event, id, new Set<string>(),
-    ));
-  }, []);
+    pendingRef.current.push({event, id});
+    if (flushFrameRef.current === 0) {
+      flushFrameRef.current = requestAnimationFrame(flushPending);
+    }
+  }, [flushPending]);
 
   useEffect(() => {
     let cancelled = false;

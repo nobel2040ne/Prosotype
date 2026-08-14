@@ -1,6 +1,6 @@
 # Architecture
 
-Prosotype has three modes that share one analysis philosophy and one word-data
+Weave has three modes that share one analysis philosophy and one word-data
 shape:
 
 - **live** — captions from a microphone, in real time (the primary product);
@@ -183,7 +183,10 @@ Korean). [the project page](https://nobel2040ne.github.io/Prosotype/) shows the
 four states and what each one may claim.
 
 A haptic module plugs in by consuming either the SSE `word` events or `spec.json`
-— it must never import analysis code.
+— it must never import analysis code. **The shipped wearable does not use that
+lane by default**: the Pi drives its motors straight from the array bearing
+(`scripts/hw/prosotype_node.py`, `Ring.follow`) because the word lane waits on
+the endpoint verifier. The SSE lane is the opt-in one.
 
 ## Design decisions & rationale
 
@@ -207,15 +210,19 @@ A haptic module plugs in by consuming either the SSE `word` events or `spec.json
 
 ## Extension points
 
-**Haptics** — consume final `type: "word"` events, or read `spec.json`. Ignore
-hypotheses, cues, commits and provisional speaker changes; apply same-`word_id`
-revisions without re-actuating.
+**Haptics** — two lanes, and they answer different questions.
+*Direction* is local: the node reads the array bearing and actuates itself, with
+no dependency on this contract at all. *Salience* is the contract's: consume
+final `type: "word"` events, or read `spec.json`; ignore hypotheses, cues,
+commits and provisional speaker changes; apply same-`word_id` revisions without
+re-actuating. Anything needing sub-second latency belongs in the first lane.
 
 ---
 
 ## Glossary
 
-**Prosotype** — this project. "Prosody" (the melody of speech) + "type".
+**Weave** — this project. Text, voice, speaker and direction are
+recognised independently and woven together per word.
 
 **Caption with Intention (CWI)** — the design system implemented here, from the
 Chicago Hearing Society. Its three pillars:
