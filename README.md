@@ -8,7 +8,7 @@
 
 Live speech into expressive captions for Deaf and hard-of-hearing viewers, automating [Caption with Intention](https://captionwithintention.org): colour for who is speaking, motion for when each word is spoken, a variable font for how it is said. English or Korean, entirely offline.
 
-![The studio running: a dark stage of rolling captions, each word coloured by its speaker](docs/figure/fig4.png)
+![The studio running: a dark stage of rolling captions, each word coloured by its speaker](docs/figure/fig5.png)
 
 ## Quick start
 
