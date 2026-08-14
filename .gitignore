@@ -44,8 +44,6 @@ docs/*
 !docs/index.html
 !docs/RobotoFlex.ttf
 !docs/.nojekyll
-!docs/NanumSquareNeo-Regular.ttf
-!docs/NanumSquareNeo-Bold.ttf
 !docs/figure/
 !docs/reference/
 docs/reference/*

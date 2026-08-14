@@ -12,13 +12,9 @@ python3.11 -m venv .venv
 npm --prefix web install && npm --prefix web run build
 ```
 
-Always `.venv/bin/python`, never the system Python. After the downloads the app
-is fully offline. `fetch_streaming_model.py` takes `--korean-only`,
-`--speaker-only`, `--sortformer-only` and `--onset-only`.
+Always `.venv/bin/python`, never the system Python. After the downloads the app is fully offline. `fetch_streaming_model.py` takes `--korean-only`, `--speaker-only`, `--sortformer-only` and `--onset-only`.
 
-The recorded-video pipeline additionally wants Whisper (downloads on first
-`transcribe`) and an `HF_TOKEN` for pyannote diarization — inference still runs
-locally, the token only authorises the download. `--stub` runs it model-free.
+The recorded-video pipeline additionally wants Whisper (downloads on first `transcribe`) and an `HF_TOKEN` for pyannote diarization — inference still runs locally, the token only authorises the download. `--stub` runs it model-free.
 
 ## See it run
 
@@ -28,9 +24,7 @@ locally, the token only authorises the download. `--stub` runs it model-free.
 .venv/bin/python -m autocwi live --list-devices    # if the wrong mic is picked
 ```
 
-Words appear before they are spoken, turn to a speaker colour as they are said,
-and pop as they turn. macOS asks for microphone permission per terminal app on
-the first run; a busy port is a leftover process (`pkill -f "autocwi live"`).
+Words appear before they are spoken, turn to a speaker colour as they are said, and pop as they turn. macOS asks for microphone permission per terminal app on the first run; a busy port is a leftover process (`pkill -f "autocwi live"`).
 
 ## Before you push
 
@@ -38,53 +32,32 @@ the first run; a busy port is a leftover process (`pkill -f "autocwi live"`).
 npm --prefix web run check        # lint + reducer tests + static build
 ```
 
-`check` runs lint first and stops there if it fails. **Lint is currently red on
-`main`** — 18 `react-hooks/refs` errors in `live-studio.tsx`, unrelated to any
-change you are likely to make — so until that is settled, run the stages
-separately (`npm run lint`, `npm run test`, `npm run build`) and make sure your
-change does not add to the count.
+`check` runs lint first and stops there if it fails. **Lint is red on `main`** — 18 `react-hooks/refs` errors in `live-studio.tsx`. Run the stages separately (`npm run lint`, `npm run test`, `npm run build`) and make sure your change does not add to the count.
 
-The Python suite and the measurement probes are development tooling and are not
-distributed with the project. If you have them, run `pytest` too — it is offline
-by design and must stay that way.
+The Python suite and the measurement probes are development tooling and are not distributed with the project. If you have them, run `pytest` too — it is offline by design and must stay that way.
 
-## The ground rules
+## Ground rules
 
 Breaking one of these makes the captions wrong in a way the tests do not catch.
 
-- **Local and offline.** No cloud inference, no telemetry. Permitted network:
-  the one-time downloads and the LAN link to the hardware node.
-- **Every tunable lives in `config.yaml`**, with a comment citing its CWI
-  section. A magic number in code is a bug to report.
-- **The CaptionSpec is a versioned contract** (`autocwi/schema.py`). Consumers
-  read only it. Extend with optional fields; a breaking change bumps the version.
-- **A settled caption never re-animates.** A word gets its motion once, at its
-  own moment on the acoustic timeline. Corrections update it in place and must
-  never restart it. This is the load-bearing visual invariant.
-- **The design system outranks everything** — read the relevant section of
-  [captionwithintention.org](https://captionwithintention.org) before changing
-  any typography or motion.
+- **Local and offline.** No cloud inference, no telemetry. Permitted network: the one-time downloads and the LAN link to the hardware node.
+- **Every tunable lives in `config.yaml`**, with a comment citing its CWI section. A magic number in code is a bug to report.
+- **The CaptionSpec is a versioned contract** (`autocwi/schema.py`). Consumers read only it. Extend with optional fields; a breaking change bumps the version.
+- **A settled caption never re-animates.** A word gets its motion once, at its own moment on the acoustic timeline. Corrections update it in place and must never restart it. This is the load-bearing visual invariant.
+- **The design system outranks everything** — read the relevant section of [captionwithintention.org](https://captionwithintention.org) before changing any typography or motion.
 - **Language is chosen before capture** and locked for the session.
-- **The frontend stays statically exportable**: no required Node server, route
-  handler, server action, cookie or rewrite.
+- **The frontend stays statically exportable**: no required Node server, route handler, server action, cookie or rewrite.
 
 ## Making a change
 
 Start in `config.yaml`: change a value, re-run `live --sample`, watch it.
 
-For anything visual, **do not tune by eye**. There is a probe for each question
-— clipping, colour, row clearance, word overlap, whether a settled word moved
-again — and each takes `--broken` or an equivalent negative control. **Run that
-first: a check that has never been seen to fail is not evidence.**
+For anything visual, **do not tune by eye**. There is a probe for each question — clipping, colour, row clearance, word overlap, whether a settled word moved again — and each takes `--broken` or an equivalent negative control. **Run that first: a check that has never been seen to fail is not evidence.**
 
-Work on a branch. A pull request says what changed, how it was verified (which
-probes, and a screenshot for anything visual), and which config values moved.
+Work on a branch. A pull request says what changed, how it was verified (which probes, and a screenshot for anything visual), and which config values moved.
 
-This project captures a microphone in a room full of people. If you find a way
-audio or transcripts leave the machine on a path that is not documented as
-opt-in, report it privately rather than in a public issue.
+This project captures a microphone in a room full of people. If you find a way audio or transcripts leave the machine on a path that is not documented as opt-in, report it privately rather than in a public issue.
 
 ## Next
 
-[ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together ·
-[the project page](https://nobel2040ne.github.io/Weave/) for what a caption does, and why.
+[ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together · [the project page](https://nobel2040ne.github.io/Weave/) for what a caption does, and why.

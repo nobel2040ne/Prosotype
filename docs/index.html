@@ -3,37 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weave — how it works</title>
+<title>Weave</title>
 <link rel="canonical" href="https://nobel2040ne.github.io/Weave/">
-<meta property="og:title" content="Weave — how it works">
+<meta property="og:title" content="Weave">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://nobel2040ne.github.io/Weave/">
 <meta property="og:description" content="Live Caption with Intention captions, offline: the pipeline, the playhead, and the motion channels — running.">
 <meta name="theme-color" content="#000000">
 <meta name="description" content="Weave turns live speech into Caption with Intention captions, offline: the pipeline, the playhead, and the motion channels — running.">
 <style>
-/* ═══ TWO DESIGN SYSTEMS, AND THE BOUNDARY IS THE WORD ═══════════════════
-   The page chrome follows the Apple design analysis: edge-to-edge tiles that
-   alternate light and dark, SF Pro on its own type ramp, a single blue accent, radii
-   on the 0/5/8/11/18/pill scale, weight 600 never 700, and no shadows except
-   the one signature drop under a product resting on a surface.
-
-   The captions follow CWI, which outranks it. Anything inside a caption line
-   is Roboto Flex on a black box in the CI palette, whatever tile it sits on —
-   and on a light tile that black box is 2.4.1's captions box AND the Apple
-   product-on-a-surface at once, which is why it carries the one permitted
-   shadow. No Apple token ever reaches a caption word. ═════════════════════ */
-
-@font-face {
-  font-family: "NanumSquare Neo";
-  src: url("NanumSquareNeo-Regular.ttf") format("truetype");
-  font-weight: 400; font-display: swap;
-}
-@font-face {
-  font-family: "NanumSquare Neo";
-  src: url("NanumSquareNeo-Bold.ttf") format("truetype");
-  font-weight: 600 700; font-display: swap;
-}
 
 @font-face {
   font-family: "Roboto Flex";
@@ -42,51 +20,37 @@
 }
 
 :root {
-  /* Apple — surfaces */
   --canvas: #ffffff;
   --parchment: #f5f5f7;
   --tile-1: #272729;
   --tile-2: #2a2a2c;
   --tile-3: #252527;
   --black: #000000;
-  /* Apple — ink */
   --ink: #1d1d1f;
   --ink-80: #333333;
   --ink-48: #7a7a7a;
   --on-dark: #ffffff;
   --on-dark-muted: #cccccc;
   --hairline: #e0e0e0;
-  /* Apple — the one accent */
   --action: #0066cc;
   --action-focus: #0071e3;
   --sky: #2997ff;
-  /* CWI — the caption palette, 2.1.1 */
   --y: #E5E517; --g: #17E517; --b: #17E5E5;
   --p: #E517E5; --r: #E51717; --o: #E58017;
-  /* READ-AHEAD INK IS WHITE, not grey: 2.2.1 wants the line legible before it
-     is spoken, and `config.yaml` `read_ahead:` sets #FFFFFF at 0.9. The
-     unknown-SPEAKER state is a different thing wearing a different colour
-     (`--caption-unknown` in the studio), and one token used to serve both. */
-  --ahead: #FFFFFF;               /* read-ahead ink, 2.2.1 */
+  --ahead: #FFFFFF;
   --ahead-opacity: .9;
-  --unknown: #f4f3ef;             /* speaker == null, and a state of its own */
-  --caption-box: #000000;         /* 2.4.1 */
-  /* Where the baseline sits inside a caption word's box. The studio measures
-     this off the live face (`useGlyphBaseline`); .38em is its fallback and
-     the figure every pivot below is written against. */
+  --unknown: #f4f3ef;
+  --caption-box: #000000;
   --glyph-baseline-em: .38em;
 
   --font-ui: "SF Pro Display", "SF Pro Text", -apple-system,
              BlinkMacSystemFont, system-ui, sans-serif;
   --font-caption: "Roboto Flex", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
-  /* The figures are set in the deck's own face, not the page's chrome font. */
-  --font-figure: "NanumSquare Neo", var(--font-ui);
 
   --nav-h: 44px;
   --wide: 980px;
 
-  /* Per-tile roles, re-bound by the tile classes below. */
   --bg: var(--canvas); --fg: var(--ink); --fg-2: var(--ink-48);
   --hair: var(--hairline); --accent: var(--action);
 }
@@ -115,7 +79,6 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Global nav: slim, black, 12px links ──────────────────────────────── */
 .nav { position: sticky; top: 0; z-index: 40; background: var(--black); height: var(--nav-h); }
 .nav-inner {
   max-width: 1024px; margin: 0 auto; padding: 0 22px; height: 100%;
@@ -132,19 +95,11 @@ body {
 .chapters a:focus-visible { outline: 2px solid var(--action-focus); outline-offset: -4px; }
 @media (max-width: 620px) { .brand { display: none; } .chapters { margin-left: 0; } }
 
-/* ── The tile: edge to edge, and the colour change is the divider ─────── */
 .tile { background: var(--bg); color: var(--fg); }
-/* ONE MEASURE. Text and figures share the same column; nothing is narrower
-   than anything else. Body copy therefore uses the analysis's `lead-airy`
-   rung (24px/300/1.5) rather than the 17px body rung, which is a marketing
-   measure and unreadable at 980px. */
 .inner { max-width: var(--wide); margin: 0 auto; padding: 80px 22px; }
 @media (max-width: 700px) { .inner { padding: 56px 22px; } }
-/* A section awaiting its content: the heading still marks the place, but the
-   tile does not open a full-height gap between the two around it. */
 .t-awaiting .inner { padding-bottom: 40px; }
 
-/* ── Type ramp, from the analysis ─────────────────────────────────────── */
 .eyebrow { margin: 0 0 12px; font-size: 14px; font-weight: 600; line-height: 1.29; letter-spacing: -.224px; color: var(--accent); }
 h1 { margin: 0; font-size: clamp(34px, 5.4vw, 54px); font-weight: 600; line-height: 1.07; letter-spacing: -.28px; }
 h2 { margin: 0; font-size: clamp(30px, 4vw, 40px); font-weight: 600; line-height: 1.1; color: var(--fg); }
@@ -162,7 +117,6 @@ code {
   padding: 2px 6px; border-radius: 5px;
 }
 
-/* ── Buttons: one grammar, and no hover state ─────────────────────────── */
 .btn {
   display: inline-block; border: 0; cursor: pointer;
   font-family: var(--font-ui); font-size: 14px; font-weight: 400;
@@ -173,9 +127,6 @@ code {
 .btn:active { transform: scale(.95); }
 .btn:focus-visible { outline: 2px solid var(--action-focus); outline-offset: 3px; }
 
-/* ── The captions box: CWI 2.4.1, and the one place a shadow is allowed.
-   On a light tile it is a product resting on a surface; on a dark tile the
-   shadow is dropped because there is nothing to rest on. ──────────────── */
 .box { background: var(--caption-box); border-radius: 18px; padding: 44px 38px; margin-top: 36px; }
 .t-light .box, .t-parchment .box { box-shadow: rgba(0, 0, 0, .22) 3px 5px 30px; }
 .t-dark .box, .t-dark-2 .box, .t-dark-3 .box, .t-black .box { border: 1px solid rgba(255,255,255,.12); }
@@ -184,86 +135,40 @@ code {
 .box-note b { color: var(--on-dark); font-weight: 600; }
 .box-note i { font-style: italic; }
 
-/* ══ THE MOTION BELOW IS THE SHIPPED RENDERER'S, PORTED ═══════════════════
-   This page cannot import `web/src/app/globals.css`, so every keyframe here
-   is a copy of one and every constant is quoted with the file it came from.
-   The last time these were written by hand they drifted onto the LEGACY
-   clock while the studio shipped ENHANCED, and nothing on the page looked
-   like the app. If you change motion, change it there first and re-port.
-
-   The studio defaults to enhanced (`live-studio.tsx`, `enhancedMotion:
-   true`, and there is no settings persistence). Legacy is one toggle away
-   and is not what this page shows. ══════════════════════════════════════ */
 .line {
   font-family: var(--font-caption);
-  /* `opsz` ONLY. Naming `wght`/`wdth` here would pin them for every
-     descendant and silently override the two axes CWI 2.3 animates. */
   font-variation-settings: "opsz" 40;
   font-size: clamp(26px, 3.6vw, 42px);
   letter-spacing: -.012em; display: flex; flex-wrap: wrap;
   align-items: baseline; color: var(--ahead);
-  /* WORD SPACING IS A MARGIN ON THE WORD, NOT A GAP ON THE ROW, and it is
-     .30em — the stage's own figure. This page ran .82em for a long time, on
-     the theory that the gap had to be wide enough to swallow a crested word's
-     overhang. It does not: LEADING CARRIES THE CREST, which is why the row
-     gap is small and the line-height is generous. A swelling word is
-     deliberately allowed to overlap its neighbours rather than shove them
-     along the line — measured on the reference film, the line extent is
-     unchanged while an interior word swells. */
   row-gap: .12em;
   line-height: 1.38;
 
-  /* ── THE TWO CLOCKS, NEVER COLLAPSED. `--motion-duration` rides the
-     speech rate and carries the pop and the wave; `--crest-duration` rides
-     emphasis and carries size, weight and width. Collapsing them made the
-     words that matter 4.7x too fast and ordinary words 4.8x too slow. ── */
-  /* FILM_WORD_TURN_MS, web/src/lib/motion-timing.ts. THE WHOLE WORD TURNS IN
-     80 ms however many letters it has; each letter takes its share of that,
-     `charTurnDelayMs`. The delays in the markup below are generated from it. */
   --sweep-duration: 80ms;
-  --color-turn-ms: 90ms;          /* config.yaml, display.color_turn_ms */
-  /* `naturalMotionDurationMs` at ~2.5 words/s with a 280 ms spoken span,
-     clamped to 420…700 ms. */
+  --color-turn-ms: 90ms;
   --motion-duration: 538ms;
-  --wave-span: 387ms;             /* --motion-duration * 0.72 */
-  /* `word_motion_enhanced_ms + push * word_motion_enhanced_emphasis_ms`,
-     capped at `word_motion_max_duration_s`: 424 ms at rest, 1050 ms at full
-     emphasis. `.hold` below carries the emphatic figures. */
+  --wave-span: 387ms;
   --crest-duration: 424ms;
-  --rise-ms: 151ms;               /* crest * FILM_PEAK_FRACTION (.357) */
-  --fall-ms: 273ms;               /* `fallDurationMs`: crest * .643 */
+  --rise-ms: 151ms;
+  --fall-ms: 273ms;
   --hold-pre: 260ms; --hold-hold: 420ms; --hold-land: 290ms;
 
-  /* ── THE AMPLITUDES, from config.yaml's enhanced block. ────────────── */
-  --word-lift-em: .16em;          /* word_lift_em_enhanced, on EVERY word */
-  --hold-lift: .525em;            /* hold_lift_em, gated on isolation */
-  /* sync_pop_enhanced is 1.076 AND ONLY ON AN EMPHASISED WORD. A quiet word
-     pins this to 1 and lifts instead — the lift is the default treatment
-     and the pop is the exception. */
+  --word-lift-em: .16em;
+  --hold-lift: .525em;
   --sync-pop: 1;
 }
 
-/* AN EMPHASISED WORD RUNS THE LONG CREST WINDOW. */
 .hold { --crest-duration: 1050ms; --rise-ms: 375ms; --fall-ms: 675ms; }
 
-/* ── ONE WORD, BUILT LIKE `MotionWord` ─────────────────────────────────
-   A hidden sizer owns the layout at the RESTING size and the ink is an
-   overlay on top of it, so a word that grows overhangs into the line gap
-   instead of moving the row. Growing the word in flow moved the whole row,
-   which is the one thing the stage never does. */
 .w {
   position: relative; display: inline-grid; flex: 0 0 auto;
   margin-right: .30em;
   text-align: center; vertical-align: baseline;
   color: var(--sp, var(--y));
-  /* ENHANCED IS UPWARD ONLY. Legacy alone shrinks a quiet word. */
   --crest-scale: calc(1 + var(--phase) * (clamp(1, var(--scale, 1), 1.55) - 1));
 }
 .w:last-child { margin-right: 0; }
 .w .sizer { grid-area: 1 / 1; visibility: hidden; white-space: pre; }
-/* THE PIVOT IS THE BASELINE, NOT THE BOX BOTTOM — wrong four times, per
-   docs/MOTION.md. `translate` then pushes the box back down by exactly what
-   the ink grew, so the word's baseline holds while its type gets bigger. */
 .w .glyph {
   position: absolute; left: 50%; bottom: 0;
   display: block; width: max-content; white-space: nowrap;
@@ -272,8 +177,6 @@ code {
   translate: 0 calc(var(--glyph-baseline-em) * max(0, var(--crest-scale) - 1));
   transform: translate3d(-50%, 0, 0) scale(1);
 }
-/* CWI 2.3 IS A WORD-LEVEL PROPERTY: every glyph of a word is the same size
-   and weight. Only the wave below is per character. */
 .w .ink {
   display: inline-block;
   transform-origin: 50% calc(100% - var(--glyph-baseline-em));
@@ -288,26 +191,12 @@ code {
 
 @property --phase { syntax: "<number>"; inherits: true; initial-value: 0; }
 
-/* ── Channel 1 — THE COLOUR TURN, wiped across the characters ──────────
-   A `from`-only keyframe, exactly as in the studio: after it runs the
-   character paints from its base `color`, which is what lets a late speaker
-   correction ease it seconds later. Giving this a `forwards` fill would hand
-   `color` to the animation permanently and that correction could never fire. */
 @keyframes word-color-turn {
   from { color: var(--ahead); opacity: var(--ahead-opacity, .9); }
 }
-/* Before the line plays, a word that is going to turn waits in read-ahead
-   ink — which is the whole of CWI 2.2.1. */
 .turn .c { color: var(--ahead); opacity: var(--ahead-opacity, .9); }
 .play .turn .c { color: var(--sp, var(--y)); opacity: 1; }
 
-/* ── Channels 2 + 7 — THE POP AND THE LIFT ARE ONE ANIMATION ───────────
-   THE LIFT IS THE DEFAULT TREATMENT AND THE POP IS THE EXCEPTION: read word
-   by word, the PR film carries ~30 lifts to ~8 pops. An unemphasised word
-   lifts and does not grow, which is `--sync-pop: 1`.
-   Split at its own peak so the rise keeps its absolute duration — the moment
-   a word starts moving IS the moment it is spoken — and only the return
-   stretches, out toward the next word's turn. */
 @keyframes word-sync-pop-lift-rise {
   0% { transform: translate3d(-50%, 0, 0) scale(1); }
   100% {
@@ -322,7 +211,6 @@ code {
       translate3d(-50%, calc(var(--word-lift-em, .16em) * -1), 0)
       scale(var(--sync-pop));
   }
-  /* Leaves the peak with almost no slope, to meet the rise's own ease-out. */
   6% {
     transform:
       translate3d(-50%, calc(var(--word-lift-em, .16em) * -.994), 0)
@@ -345,7 +233,6 @@ code {
   }
   100% { transform: translate3d(-50%, 0, 0) scale(1); }
 }
-/* An emphatic word takes one window rather than the split pair. */
 @keyframes word-sync-pop-lift {
   0%, 100% { transform: translate3d(-50%, 0, 0) scale(1); }
   42% {
@@ -371,11 +258,6 @@ code {
     cubic-bezier(.42,0,.22,1) var(--d) both;
 }
 
-/* ── Channels 3, 4, 5 — ONE ENVELOPE, THREE CONSUMERS ──────────────────
-   `--phase` drives the crest (a real font-size), the weight and the width.
-   BOTH HALVES ARRIVE AT THE PEAK WITH ZERO SLOPE, and that is the whole
-   point of these stops: a maximum on a smooth curve has zero derivative, and
-   without it the velocity stepped in a single frame. */
 @keyframes voice-phase-film-rise {
   0% { --phase: 0.000; }
   14.01% { --phase: 0.048; }
@@ -386,7 +268,6 @@ code {
   94% { --phase: 0.983; }
   100% { --phase: 1.000; }
 }
-/* THE TAIL HOLDS ITS AMPLITUDE LONGER THAN THE FILM'S OWN RETURN DOES. */
 @keyframes voice-phase-film-fall {
   0% { --phase: 1.000; }
   6% { --phase: 0.9975; }
@@ -398,10 +279,6 @@ code {
   93% { --phase: 0.140; }
   100% { --phase: 0.000; }
 }
-/* THE EMPHATIC WORD OVERSHOOTS, SETTLES, SUSTAINS, THEN RELEASES. Ordinary
-   words pulse; emphatic ones rise, HOLD and fall, and fitting two endpoints
-   could not express the second shape — which is why the name is what picks
-   between them. */
 @keyframes voice-phase-hold {
   0%, 100% { --phase: 0; }
   8%  { --phase: .30; }
@@ -423,10 +300,6 @@ code {
   animation: voice-phase-hold var(--crest-duration) linear var(--d) both;
 }
 
-/* ── Channel 6 — THE HOLD LIFT: a word that waited crouches, springs,
-   floats, and lands as it turns. It starts BEFORE the turn, by `--hold-pre`,
-   which is why the crouch is visible at all. Gated on isolation — the
-   shorter of the gaps either side — not on sustain. */
 @keyframes word-hold-spring {
   0% {
     transform: translateY(0) scale(1, 1);
@@ -464,7 +337,6 @@ code {
     transform: translateY(calc(-1 * var(--hold-lift, 0em))) scale(1, 1);
     animation-timing-function: cubic-bezier(.32, 0, .24, 1);
   }
-  /* THE STRETCH LIVES IN THE LANDING, BUT THE LANDING DOES NOT BOUNCE. */
   84% {
     transform:
       translateY(calc(-.30 * var(--hold-lift, 0em)))
@@ -480,11 +352,6 @@ code {
     linear calc(var(--d) - var(--hold-pre)) backwards;
 }
 
-/* ── The character wave — texture under the colour turn ────────────────
-   LETTERS LIFT IN SYLLABLES and the colour still travels per letter, so the
-   group's clock (`--cw`) and the letter's (`--ct`) are separate and must
-   stay separate. `--group-lift-em` is 0 for a word that lifts as one piece
-   and non-zero only from six letters up. */
 @keyframes character-wave {
   0%, 100% { transform: translateY(0) rotate(0deg) scale(1, 1); }
   38% {
@@ -508,9 +375,6 @@ code {
       );
   }
 }
-/* Both channels ride ONE shorthand, as they do on `.caption-character`: a
-   second `animation` declaration would replace the list rather than add to
-   it. A delay of 600000ms is the stylesheet's "never". */
 .play .w .c {
   animation:
     word-color-turn var(--color-turn-ms) linear var(--ct, 600000ms) backwards,
@@ -518,8 +382,6 @@ code {
       var(--cw, 600000ms);
 }
 
-/* REDUCED MOTION KEEPS THE COLOUR TURN and drops only the geometry — pin the
-   phase rather than cancelling the word's animation, which also carries it. */
 @media (prefers-reduced-motion: reduce) {
   .play .ph, .play .ph.hold { --phase: 0 !important; animation: none; }
   .play .gl .glyph, .play .gl.hold .glyph, .play .spring .ink {
@@ -531,7 +393,6 @@ code {
   }
 }
 
-/* ── The stat row ─────────────────────────────────────────────────────── */
 .stats {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 32px 24px; margin: 48px 0 0; padding-top: 32px; border-top: 1px solid var(--hair);
@@ -540,17 +401,10 @@ code {
 .stats dd { margin: 0; font-size: 34px; font-weight: 600; line-height: 1.1; letter-spacing: -.374px; color: var(--fg); }
 .stats dd small { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; line-height: 1.3; letter-spacing: -.12px; color: var(--fg-2); }
 
-/* ── Figures: a plate in the tile's own grammar, caption underneath ───── */
 figure { margin: 36px 0 0; }
 .plate { background: var(--canvas); border: 1px solid var(--hairline); border-radius: 18px; padding: 40px 28px 36px; overflow-x: auto; }
-/* A figure that IS an image needs no inner padding — the image is the plate. */
 .plate.shot { padding: 0; overflow: hidden; border: 0; background: none; }
-/* ANY image in a plate fits the plate. Scoping this to `.shot` alone left the
-   pipeline diagram at its intrinsic 2400px, overflowing the column. */
 .plate img, .plate svg { display: block; width: 100%; height: auto; }
-/* A diagram drawn on white stays on white whatever tile it sits on: it is a
-   printed sheet resting on the surface, which is the one place this page
-   allows a shadow. */
 .plate.sheet { background: var(--canvas); padding: 26px 24px; }
 .t-dark .plate.sheet, .t-dark-2 .plate.sheet, .t-dark-3 .plate.sheet,
 .t-black .plate.sheet {
@@ -558,17 +412,9 @@ figure { margin: 36px 0 0; }
   box-shadow: rgba(0, 0, 0, .38) 3px 5px 30px;
 }
 .t-light .plate.shot, .t-parchment .plate.shot { box-shadow: rgba(0, 0, 0, .22) 3px 5px 30px; }
-/* ── The two pipeline figures ──────────────────────────────────────────
-   Block diagrams in the source deck's own language: white ground, near-black
-   hairlines, square corners, labelled group frames, and fills that sort the
-   parts into tiers. They carry their own ink, so they always sit on the white
-   `sheet` plate whatever tile they are on. */
 .blockfig { display: block; width: 100%; height: auto; min-width: 720px; }
-/* The reading column is 980px; these diagrams want more, so they break out of
-   it and stay centred. Without this the type scales below anything else on the
-   page — NanumSquare Neo is ~19% wider than SF Pro at the same size. */
 .fig-wide { width: min(1240px, 94vw); margin-left: calc(50% - min(620px, 47vw)); }
-.blockfig text { font-family: var(--font-figure); fill: #0B0B0B; }
+.blockfig text { font-family: var(--font-ui); fill: #0B0B0B; }
 .blockfig .bt { font-size: 15px; font-weight: 600; text-anchor: middle; letter-spacing: -.2px; }
 .blockfig .bs { font-size: 12.5px; text-anchor: middle; fill: #333333; }
 .blockfig .on-blue { fill: #FFFFFF; }
@@ -576,28 +422,21 @@ figure { margin: 36px 0 0; }
 .blockfig .el { font-size: 12px; fill: #333333; }
 .blockfig .el.accent { fill: #0066CC; font-weight: 600; }
 
-/* The toolpath render carries its own ink, so it needs a dark ground. */
 .plate.toolpath { background: var(--black); padding: 8px 0 0; border: 0; }
 
 .t-dark .plate, .t-dark-2 .plate, .t-dark-3 .plate, .t-black .plate {
   background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.12);
 }
-/* A caption names what the figure shows. It is not running prose, so it sets
-   flush left with the figure rather than centred under it. */
 figcaption { margin: 20px 0 0; max-width: 62ch; font-size: 14px; line-height: 1.43; letter-spacing: -.224px; color: var(--fg-2); }
 figcaption b { color: var(--fg); font-weight: 600; }
 figcaption i { font-style: italic; }
 
-/* A node title is centred; its detail is not. Centring three ragged lines of
-   monospace reads as an accident — the detail is a list, so it sets left. */
-/* A heading inside a section, below the h2. */
 .sub-h {
   margin: 44px 0 0; font-size: 21px; font-weight: 600; line-height: 1.19;
   letter-spacing: .231px; color: var(--fg);
 }
 .sub-h + p { margin-top: 12px; }
 
-/* ── Tables ───────────────────────────────────────────────────────────── */
 .scroll { overflow-x: auto; border: 1px solid var(--hair); border-radius: 18px; margin: 36px 0 0; background: var(--canvas); }
 .t-dark .scroll, .t-dark-2 .scroll, .t-dark-3 .scroll, .t-black .scroll {
   background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.12);
@@ -615,7 +454,6 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
 td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; margin-right: 8px; }
 
-/* ── Footer ───────────────────────────────────────────────────────────── */
 .foot { background: var(--parchment); }
 .foot .inner { padding: 56px 22px; }
 .foot p { margin: 0; font-size: 12px; line-height: 1.5; letter-spacing: -.12px; color: var(--ink-48); }
@@ -639,7 +477,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </nav>
 
-<!-- ═══ HERO — black, because the headline is a caption ═══════════════ -->
 <header class="tile t-black">
   <div class="inner" style="padding-top:100px">
     <p class="eyebrow">Live Caption with Intention</p>
@@ -672,7 +509,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </header>
 
-<!-- ═══ 1 · WHAT IT IS — light ════════════════════════════════════════ -->
 <section class="tile t-light" id="what">
   <div class="inner">
     <p class="eyebrow">What it is</p>
@@ -706,7 +542,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 2 · THE THREE PILLARS — parchment ═════════════════════════════ -->
 <section class="tile t-parchment" id="pillars">
   <div class="inner">
     <p class="eyebrow">The three pillars</p>
@@ -760,7 +595,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 3 · THE PIPELINE — dark ═══════════════════════════════════════ -->
 <section class="tile t-dark" id="pipeline">
   <div class="inner">
     <p class="eyebrow">The pipeline</p>
@@ -773,7 +607,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
 
     <figure>
       <div class="plate sheet fig-wide">
-        <img src="figure/pipeline.png" width="2600" height="1003" loading="lazy"
+        <img src="figure/fig1.png" width="2600" height="1003" loading="lazy"
              alt="The live path. Inside the wearable, four microphones feed echo
                   cancellation, beamforming and direction of arrival on a
                   ReSpeaker board, which passes to a Raspberry Pi Zero 2 W. The
@@ -800,7 +634,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
 
     <figure>
       <div class="plate toolpath">
-        <img src="figure/wearable.svg" width="389" height="201" loading="lazy"
+        <img src="figure/fig2.svg" width="389" height="201" loading="lazy"
              alt="The printed parts of the wearable, drawn as stacked layer
                   contours: a neckband arch carrying a left and a right motor
                   pod, the enclosure body and its lid, a vent grille and two
@@ -835,7 +669,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 4 · INTERNALS — light ═══════════════════════════════════════ -->
 <section class="tile t-light" id="internals">
   <div class="inner">
     <p class="eyebrow">Internals</p>
@@ -926,7 +759,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 5 · THE PLAYHEAD — light ══════════════════════════════════════ -->
 <section class="tile t-parchment" id="playhead">
   <div class="inner">
     <p class="eyebrow">The playhead</p>
@@ -963,7 +795,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 6 · THE MOTION CHANNELS — dark ══════════════════════════════════ -->
 <section class="tile t-dark-3" id="motion">
   <div class="inner">
     <p class="eyebrow">The motion channels</p>
@@ -1163,7 +994,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 7 · THE STUDIO — parchment ════════════════════════════════════ -->
 <section class="tile t-parchment" id="studio">
   <div class="inner">
     <p class="eyebrow">The studio</p>
@@ -1176,7 +1006,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
 
     <figure>
       <div class="plate shot">
-        <img src="figure/studio-stage.png" width="2200" height="1320" loading="lazy"
+        <img src="figure/fig4.png" width="2200" height="1320" loading="lazy"
              alt="The studio running. A dark stage carries rolling captions,
                   each word coloured by speaker and the newest line ruled off
                   below the history; a right-hand rail shows the input level,
@@ -1197,7 +1027,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   </div>
 </section>
 
-<!-- ═══ 8 · LIMITS — light ════════════════════════════════════════════ -->
 <section class="tile t-light" id="limits">
   <div class="inner">
     <p class="eyebrow">What it can't do</p>
@@ -1253,7 +1082,7 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
   function run(line) {
     if (!line) return;
     line.classList.remove("play");
-    void line.offsetWidth;          // restart the animations
+    void line.offsetWidth;
     line.classList.add("play");
   }
 
@@ -1263,8 +1092,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
     });
   });
 
-  // Play each line once when it first scrolls into view, so the page
-  // demonstrates itself without every channel firing at once on load.
   if ("IntersectionObserver" in window) {
     var seen = new WeakSet();
     var io = new IntersectionObserver(function (entries) {
@@ -1280,8 +1107,6 @@ td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; m
     lines.forEach(run);
   }
 
-  // Chapter nav: mark the section the reader is in. Read back from an observer
-  // rather than the scroll offset, so a short section at the foot still lights.
   var links = {};
   document.querySelectorAll("#chapters a").forEach(function (a) {
     links[a.getAttribute("href").slice(1)] = a;

@@ -1,12 +1,10 @@
 # Architecture
 
-Weave has three modes that share one analysis philosophy and one word-data
-shape:
+Weave has three modes that share one analysis philosophy and one word-data shape:
 
 - **live** — captions from a microphone, in real time (the primary product);
 - **offline** — a batch pipeline over recorded media that ends at `spec.json`;
-- **`cc`** — the closed-caption renderer that plays a finished spec and is the
-  motion reference the other two are measured against.
+- **`cc`** — the closed-caption renderer that plays a finished spec and is the motion reference the other two are measured against.
 
 New to the terms? The [glossary](#glossary) is at the foot.
 
@@ -94,27 +92,16 @@ reference:  screen recordings ─► derive_reference_spec ─► assets/referen
 | `scripts/build_demo.py` | Concatenates the three derived specs onto one timeline (`demo.json`). |
 | `scripts/live_render_probe.py` | Injects a deterministic event burst into the pages in headless Chrome and reports DOM, queue, and motion metrics. |
 
-## The data contract
+## Data contract
 
-**`CaptionSpec` (`spec.json`)** is the stable, versioned (currently `"1.0"`)
-boundary between analysis and any consumer. Renderers and the future haptic
-module read only this — never the internal model objects.
+**`CaptionSpec` (`spec.json`)** is the stable, versioned (currently `"1.0"`) boundary between analysis and any consumer. Renderers and the future haptic module read only this — never the internal model objects.
 
 Key semantics:
 
-- `words[].loudness` / `pitch` — normalized **within each speaker** (5th–95th
-  percentile of that speaker's own values), so the mapping reflects each voice's
-  own range. Raw `loudness_db` / `pitch_hz` are kept alongside.
+- `words[].loudness` / `pitch` — normalized **within each speaker** (5th–95th percentile of that speaker's own values), so the mapping reflects each voice's own range. Raw `loudness_db` / `pitch_hz` are kept alongside.
 - `words[].voiced_frac` — used to neutralize pitch styling on unvoiced words.
-- Optional speaker-lifecycle fields: `speaker_status`
-  (`unknown | provisional | stable | corrected`), `speaker_confidence`,
-  `speaker_change_probability`, `speaker_revision_id`, and `overlap`. A legacy
-  word with none of these is treated as a stable assignment to its existing
-  `speaker`.
-- `mapping` — how consumers should style: `loudness_to {axis, min, max, unit}`
-  and `pitch_to {axis, min, max, invert, domain_hz}`. When `domain_hz` is set,
-  the consumer maps **raw Hz** over that domain (CWI's absolute pitch
-  convention).
+- Optional speaker-lifecycle fields: `speaker_status` (`unknown | provisional | stable | corrected`), `speaker_confidence`, `speaker_change_probability`, `speaker_revision_id`, and `overlap`. A legacy word with none of these is treated as a stable assignment to its existing `speaker`.
+- `mapping` — how consumers should style: `loudness_to {axis, min, max, unit}` and `pitch_to {axis, min, max, invert, domain_hz}`. When `domain_hz` is set, the consumer maps **raw Hz** over that domain (CWI's absolute pitch convention).
 
 Example additive word fields:
 
@@ -129,27 +116,15 @@ Example additive word fields:
 }
 ```
 
-Every new field here is optional, so no version bump was needed and `1.0` files
-still validate. Absence means "legacy stable", **not** `unknown`.
+Every new field here is optional, so no version bump was needed and `1.0` files still validate. Absence means "legacy stable", **not** `unknown`.
 
-**Live events** (SSE `/events`, logged to `out/live_events.jsonl`) use the same
-word shape plus `type: "word"`, `final: true`, `utterance`, a stable `word_id`,
-revision counters, and `t` (absolute stream onset). Display clients also receive
-`type: "hypothesis"`, `"cue"`, `"commit"`, and `"verification"` events during the
-speech lifecycle; only `type: "word"` events are durable. Reconnect replays from
-`Last-Event-ID` without replaying motion.
+**Live events** (SSE `/events`, logged to `out/live_events.jsonl`) use the same word shape plus `type: "word"`, `final: true`, `utterance`, a stable `word_id`, revision counters, and `t` (absolute stream onset). Display clients also receive `type: "hypothesis"`, `"cue"`, `"commit"`, and `"verification"` events during the speech lifecycle; only `type: "word"` events are durable. Reconnect replays from `Last-Event-ID` without replaying motion.
 
-The renderer compares text, timing, speaker, finality, source authority, and SSE
-id rather than trusting arrival order, so a delayed provisional event cannot
-downgrade a settled word.
+The renderer compares text, timing, speaker, finality, source authority, and SSE id rather than trusting arrival order, so a delayed provisional event cannot downgrade a settled word.
 
-## How live rendering works
+## Live rendering
 
-The browser reduces the event stream into stable, per-word DOM nodes and
-presents them from a **playhead** that runs `display.read_ahead_delay_s` behind
-the acoustic clock. Because ASR delivers a word after it was spoken, that delay
-is what lets a word be on screen *before* its own colour turn — CWI 2.2.1's
-read-ahead, without predicting anything. The pipeline:
+The browser reduces the event stream into stable, per-word DOM nodes and presents them from a **playhead** that runs `display.read_ahead_delay_s` behind the acoustic clock. Because ASR delivers a word after it was spoken, that delay is what lets a word be on screen *before* its own colour turn — CWI 2.2.1's read-ahead, without predicting anything. The pipeline:
 
 ```text
 SSE event
@@ -161,71 +136,38 @@ SSE event
     2.3 per-character voice phase off it — no JS timer, no queue
 ```
 
-There is no reveal scheduler: slots, gaps, catch-up and backlog ceilings all
-existed to guess, from arrival order, a moment the recording already knows.
+There is no reveal scheduler: slots, gaps, catch-up and backlog ceilings all existed to guess, from arrival order, a moment the recording already knows.
 
-The load-bearing invariant: **text may be revised only ahead of the playhead.**
-Once the colour turn passes a word it is frozen — spelling included — so
-corrections land in the read-ahead zone where they are invisible. A settled
-word's typography returns exactly to normal.
-The frontend's non-negotiables are listed in
-[web/README.md](web/README.md), and
-[the project page](https://nobel2040ne.github.io/Weave/) shows the playhead running.
+The load-bearing invariant: **text may be revised only ahead of the playhead.** Once the colour turn passes a word it is frozen — spelling included — so corrections land in the read-ahead zone where they are invisible. A settled word's typography returns exactly to normal. The frontend's non-negotiables are listed in [web/README.md](web/README.md), and [the project page](https://nobel2040ne.github.io/Weave/) shows the playhead running.
 
 ## Speaker attribution
 
-Attribution runs live with four states — `unknown`, `provisional`, `stable`,
-`corrected` — and only `stable`/`corrected` may signal a speaker change. Timing
-and identity are separate evidence: Streaming Sortformer supplies continuous
-provisional turn slots, and at each endpoint a segmentation pass plus a full-turn
-voice embedding verifies the durable identity (ERes2Net for English, CAM++ for
-Korean). [the project page](https://nobel2040ne.github.io/Weave/) shows the
-four states and what each one may claim.
+Attribution runs live with four states — `unknown`, `provisional`, `stable`, `corrected` — and only `stable`/`corrected` may signal a speaker change. Timing and identity are separate evidence: Streaming Sortformer supplies continuous provisional turn slots, and at each endpoint a segmentation pass plus a full-turn voice embedding verifies the durable identity (ERes2Net for English, CAM++ for Korean). [the project page](https://nobel2040ne.github.io/Weave/) shows the four states and what each one may claim.
 
-A haptic module plugs in by consuming either the SSE `word` events or `spec.json`
-— it must never import analysis code. **The shipped wearable does not use that
-lane by default**: the Pi drives its motors straight from the array bearing
-(`scripts/hw/weave_node.py`, `Ring.follow`) because the word lane waits on
-the endpoint verifier. The SSE lane is the opt-in one.
+A haptic module plugs in by consuming either the SSE `word` events or `spec.json` — it must never import analysis code. **The shipped wearable does not use that lane by default**: the Pi drives its motors straight from the array bearing (`scripts/hw/weave_node.py`, `Ring.follow`) because the word lane waits on the endpoint verifier. The SSE lane is the opt-in one.
 
-## Design decisions & rationale
+## Design decisions
 
-- **Per-speaker loudness, absolute pitch.** Loudness is relative to a voice's
-  own range; CWI's pitch→weight scale is explicitly absolute (80 Hz heavy ↔
-  250 Hz thin), which also makes voice-to-voice contrast visible.
-- **Accuracy-first live path.** The streaming model gives fast provisional text;
-  the endpoint verifier owns the durable result, aligned back onto the streaming
-  timeline rather than re-rendering the sentence.
-- **Verified text is durable; attribution is revisable** under the same
-  `word_id`.
-- **Backlog is lossless.** Capture blocks carry their source-clock position and
-  drain into catch-up batches, so no audio is skipped.
-- **Two-layer level handling.** Adaptive gain drives only the recognizer's copy;
-  raw captured loudness still feeds prosody, so size reflects true loudness.
-- **SSE over stdlib `http.server`.** One-way, automatic reconnect, no extra
-  dependencies, replay from `Last-Event-ID`.
-- **Stable `word_id` nodes** survive every revision; an update never replaces the
-  stage, the line, or the word.
+- **Per-speaker loudness, absolute pitch.** Loudness is relative to a voice's own range; CWI's pitch→weight scale is explicitly absolute (80 Hz heavy ↔ 250 Hz thin), which also makes voice-to-voice contrast visible.
+- **Accuracy-first live path.** The streaming model gives fast provisional text; the endpoint verifier owns the durable result, aligned back onto the streaming timeline rather than re-rendering the sentence.
+- **Verified text is durable; attribution is revisable** under the same `word_id`.
+- **Backlog is lossless.** Capture blocks carry their source-clock position and drain into catch-up batches, so no audio is skipped.
+- **Two-layer level handling.** Adaptive gain drives only the recognizer's copy; raw captured loudness still feeds prosody, so size reflects true loudness.
+- **SSE over stdlib `http.server`.** One-way, automatic reconnect, no extra dependencies, replay from `Last-Event-ID`.
+- **Stable `word_id` nodes** survive every revision; an update never replaces the stage, the line, or the word.
 - **Stubs are first-class** (`--stub`): the contract is testable with no models.
 
 ## Extension points
 
-**Haptics** — two lanes, and they answer different questions.
-*Direction* is local: the node reads the array bearing and actuates itself, with
-no dependency on this contract at all. *Salience* is the contract's: consume
-final `type: "word"` events, or read `spec.json`; ignore hypotheses, cues,
-commits and provisional speaker changes; apply same-`word_id` revisions without
-re-actuating. Anything needing sub-second latency belongs in the first lane.
+**Haptics** — two lanes, and they answer different questions. *Direction* is local: the node reads the array bearing and actuates itself, with no dependency on this contract at all. *Salience* is the contract's: consume final `type: "word"` events, or read `spec.json`; ignore hypotheses, cues, commits and provisional speaker changes; apply same-`word_id` revisions without re-actuating. Anything needing sub-second latency belongs in the first lane.
 
 ---
 
 ## Glossary
 
-**Weave** — this project. Text, voice, speaker and direction are
-recognised independently and woven together per word.
+**Weave** — this project. Text, voice, speaker and direction are recognised independently and woven together per word.
 
-**Caption with Intention (CWI)** — the design system implemented here, from the
-Chicago Hearing Society. Its three pillars:
+**Caption with Intention (CWI)** — the design system implemented here, from the Chicago Hearing Society. Its three pillars:
 
 | Pillar | Question | How |
 |---|---|---|
@@ -233,8 +175,7 @@ Chicago Hearing Society. Its three pillars:
 | **Synchronization** | when a word is spoken | it turns to that colour and pops as it is said |
 | **Intonation** | how it was said | a variable font: louder is larger, pitch moves weight and width |
 
-**Open captions** — burned into the view, not toggleable. Live mode renders
-these.
+**Open captions** — burned into the view, not toggleable. Live mode renders these.
 
 ### Speech processing
 
@@ -261,24 +202,14 @@ these.
 
 ### Data & runtime
 
-**CaptionSpec (`spec.json`)** — the versioned contract: words, timing, speaker,
-loudness, pitch, and how to style them. **Every consumer reads only this**,
-never the internal model objects. Defined in `autocwi/schema.py`.
+**CaptionSpec (`spec.json`)** — the versioned contract: words, timing, speaker, loudness, pitch, and how to style them. **Every consumer reads only this**, never the internal model objects. Defined in `autocwi/schema.py`.
 
-**SSE** — a one-way stream from Python to the browser over plain HTTP. Live
-captions arrive as `word` events; the browser reconnects and replays by itself.
+**SSE** — a one-way stream from Python to the browser over plain HTTP. Live captions arrive as `word` events; the browser reconnects and replays by itself.
 
-**Stage** — the audience-facing caption surface. **Transcript** — the complete
-history, by speaker and utterance. **Voice Compass** — the rail dial: volume,
-pitch, texture, and where each speaker is.
+**Stage** — the audience-facing caption surface. **Transcript** — the complete history, by speaker and utterance. **Voice Compass** — the rail dial: volume, pitch, texture, and where each speaker is.
 
-**Haptics** — a motor ring that pulses on speaker changes and emphasis, never on
-every word. It consumes the same contract and imports no analysis code.
+**Haptics** — a motor ring that pulses on speaker changes and emphasis, never on every word. It consumes the same contract and imports no analysis code.
 
-### The three run modes
+### Run modes
 
-**live** — microphone to captions, in real time. The product.
-**`cc`** — plays a finished `spec.json` with the text known in advance, so it
-renders the exact reference motion. The benchmark, not the product.
-**offline** — a batch pipeline ending at `spec.json`, kept as the contract's
-reference generator.
+**live** — microphone to captions, in real time. The product. **`cc`** — plays a finished `spec.json` with the text known in advance, so it renders the exact reference motion. The benchmark, not the product. **offline** — a batch pipeline ending at `spec.json`, kept as the contract's reference generator.

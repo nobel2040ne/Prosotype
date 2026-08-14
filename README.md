@@ -1,15 +1,12 @@
 # Weave
 
-Live speech into **expressive captions** for Deaf and hard-of-hearing viewers.
-It automates [Caption with Intention](https://captionwithintention.org): colour
-for *who* is speaking, motion for *when* each word is spoken, a variable font
-for *how* it is said.
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
+[![sherpa-onnx](https://img.shields.io/badge/sherpa--onnx-1.13-005CED?style=flat&logo=onnx&logoColor=white)](https://github.com/k2-fsa/sherpa-onnx)
+[![Next.js](https://img.shields.io/badge/Next.js-16.2-000000?style=flat&logo=nextdotjs&logoColor=white)](https://nextjs.org/)
 
-English or Korean, from a microphone, **entirely offline**. No cloud inference,
-no telemetry — the only network access is a one-time model and font download.
+[Project Page](https://nobel2040ne.github.io/Weave/)
 
-**[See how it works →](https://nobel2040ne.github.io/Weave/)** — the whole
-project on one page, with the motion running.
+Live speech into expressive captions for Deaf and hard-of-hearing viewers. It automates [Caption with Intention](https://captionwithintention.org): colour for who is speaking, motion for when each word is spoken, a variable font for how it is said. English or Korean, from a microphone, entirely offline. No cloud inference, no telemetry — the only network access is a one-time model and font download.
 
 ## Quick start
 
@@ -55,7 +52,7 @@ Tests and measurement probes are development tooling and are not distributed.
 
 | | |
 |---|---|
-| **[nobel2040ne.github.io/Weave](https://nobel2040ne.github.io/Weave/)** | the project, on one page |
+| [nobel2040ne.github.io/Weave](https://nobel2040ne.github.io/Weave/) | the project, on one page |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | modules, data contract, glossary |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | setup and the ground rules |
 | [web/README.md](web/README.md) | the studio frontend |
@@ -63,21 +60,11 @@ Tests and measurement probes are development tooling and are not distributed.
 
 ## Limits
 
-A research demonstration, not a product.
-
-- **Live motion follows evidence, not foresight.** The playhead buys back CWI's
-  read-ahead, and pays 1.75 s of latency for it. `cc` shows the exact reference
-  motion because it knows the text in advance.
+- **Live motion follows evidence, not foresight.** The playhead buys back CWI's read-ahead, and pays 1.75 s of latency for it. `cc` shows the exact reference motion because it knows the text in advance.
 - **English and Korean**, chosen before capture and locked for the session.
-- **Attribution is uncertain at the edges** — short turns and similar voices can
-  stay ambiguous. The UI shows that rather than guessing.
-- **Not implemented from the spec:** off-camera italics, the sound-effect and
-  music caption rules, and the haptic device.
+- **Attribution is uncertain at the edges** — short turns and similar voices can stay ambiguous. The UI shows that rather than guessing.
+- **Not implemented from the spec:** off-camera italics, the sound-effect and music caption rules, and the haptic device.
 
 ## License
 
-The code is MIT — see [LICENSE](LICENSE).
-
-The Caption with Intention design system is authored by the Chicago Hearing
-Society. This is an independent implementation, not affiliated with or endorsed
-by them. Bundled samples, model weights and fonts carry their own licenses.
+The Caption with Intention design system is authored by the Chicago Hearing Society. This is an independent implementation, not affiliated with or endorsed by them. The code is MIT; bundled samples, model weights and fonts carry their own licenses — see [LICENSE](LICENSE).
