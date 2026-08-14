@@ -59,7 +59,6 @@ Tests and measurement probes are development tooling and are not distributed.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | modules, data contract, glossary |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | setup and the ground rules |
 | [web/README.md](web/README.md) | the studio frontend |
-| [SECURITY.md](SECURITY.md) | where audio goes, and how to report a way out of that |
 | [captionwithintention.org](https://captionwithintention.org) | the design system — the final word |
 
 ## Limits

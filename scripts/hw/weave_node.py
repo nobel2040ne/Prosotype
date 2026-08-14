@@ -5,10 +5,10 @@ Runs ON THE PI. Captures from the array, ships audio and direction to the Mac
 running `autocwi live --node`, and drives the motor ring from the haptic cues
 that come back.
 
-    python3 scripts/hw/prosotype_node.py --host 192.168.0.10
-    python3 scripts/hw/prosotype_node.py --host 192.168.0.10 \
+    python3 scripts/hw/weave_node.py --host 192.168.0.10
+    python3 scripts/hw/weave_node.py --host 192.168.0.10 \
         --ring 17,27,22,23 --doa-cmd "xvf_host GET_DOA"
-    python3 scripts/hw/prosotype_node.py --host ... --no-motors   # audio only
+    python3 scripts/hw/weave_node.py --host ... --no-motors   # audio only
 
 Why the split is this way: the Pi Zero 2 W has 512 MB of RAM and the
 recognizers are 600 MB per model, so the Pi cannot caption. It captures and

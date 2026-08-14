@@ -78,17 +78,11 @@ again — and each takes `--broken` or an equivalent negative control. **Run tha
 first: a check that has never been seen to fail is not evidence.**
 
 Work on a branch. A pull request says what changed, how it was verified (which
-probes, and a screenshot for anything visual), and which config values moved. The
-issue and pull-request templates ask for exactly that.
-
-## Conduct, and reporting a vulnerability
-
-Participation is covered by the [Code of Conduct](CODE_OF_CONDUCT.md).
+probes, and a screenshot for anything visual), and which config values moved.
 
 This project captures a microphone in a room full of people. If you find a way
 audio or transcripts leave the machine on a path that is not documented as
-opt-in, report it privately — [SECURITY.md](SECURITY.md) has the how, and lists
-what is already known and accepted.
+opt-in, report it privately rather than in a public issue.
 
 ## Next
 

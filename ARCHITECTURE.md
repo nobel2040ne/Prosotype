@@ -185,7 +185,7 @@ four states and what each one may claim.
 A haptic module plugs in by consuming either the SSE `word` events or `spec.json`
 — it must never import analysis code. **The shipped wearable does not use that
 lane by default**: the Pi drives its motors straight from the array bearing
-(`scripts/hw/prosotype_node.py`, `Ring.follow`) because the word lane waits on
+(`scripts/hw/weave_node.py`, `Ring.follow`) because the word lane waits on
 the endpoint verifier. The SSE lane is the opt-in one.
 
 ## Design decisions & rationale

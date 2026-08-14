@@ -81,7 +81,7 @@ def pack_json(kind: int, seq: int, obj: dict) -> bytes:
     return pack(kind, seq, json.dumps(obj, separators=(",", ":")).encode("utf-8"))
 
 
-def pack_hello(sample_rate: int, block: int, node: str = "prosotype-node") -> bytes:
+def pack_hello(sample_rate: int, block: int, node: str = "weave-node") -> bytes:
     return pack_json(KIND_HELLO, 0, {
         "node": node,
         "sample_rate": sample_rate,
