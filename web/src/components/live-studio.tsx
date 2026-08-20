@@ -280,6 +280,9 @@ const MotionWord = memo(function MotionWord({
       /* 2.2.3's amplitude is per clock: the PDF's verbatim 15% on legacy,
          and the smaller figure the PR film actually renders on enhanced. */
       enhancedMotion ? runtime.syncPopEnhanced : runtime.syncPop,
+      /* Enhanced scales the pop with emphasis; legacy keeps the flat step,
+         which is what its 1 does. */
+      enhancedMotion ? runtime.syncPopFloorEnhanced : 1,
     );
     memo.voice.set(id, fresh);
     return fresh;
@@ -463,10 +466,17 @@ const MotionWord = memo(function MotionWord({
     /* The size cue trails the turn on the enhanced clock and starts with it on
        legacy, where `calc(X + 0ms)` is X and the delay arithmetic is untouched. */
     "--crest-lag": `${enhancedMotion ? runtime.crestLagMs : 0}ms`,
-    /* NOT EVERY WORD POPS. Decided from the stage twice, against the film
-       both times: forty pops at 2.5 words/s is noise where four in a held
-       shot is emphasis. Legacy still pops everything. */
-    "--sync-pop": (quietWord ? 1 : motion.sync.scale).toFixed(3),
+    /* EVERY WORD POPS, BY AN AMOUNT THAT IS NOT THE SAME (2026-08-20).
+       This used to read `quietWord ? 1 : motion.sync.scale` -- a binary gate
+       that gave a word either the whole pop or none of it. Both of that gate's
+       settings were the wrong shape: loose, it drew forty identical pops at
+       2.5 words/s and read as noise; tight, it sent 79% of words to exactly
+       1.000 and the size channel went flat. The reference does neither -- 90%
+       of its words move and 60% of them only slightly -- so the amplitude is
+       proportional now (`sync_pop_floor_enhanced`) and there is nothing left
+       for a gate to decide. `quietWord` still governs WEIGHT, which the film
+       really does withhold, per line rather than per word. */
+    "--sync-pop": motion.sync.scale.toFixed(3),
     /* ...AND WHAT AN UNEMPHASISED WORD DOES INSTEAD IS LIFT. */
     "--word-lift-em": `${runtime.wordLiftEmEnhanced}em`,
     "--motion-duration": `${duration.toFixed(0)}ms`,

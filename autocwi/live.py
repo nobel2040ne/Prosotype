@@ -6342,6 +6342,11 @@ def _studio_runtime_config(
         ),
         "syncPop": live_sync.get("sync_pop", 0.15),
         "syncPopEnhanced": live_sync.get("sync_pop_enhanced", 0.55),
+        # What fraction of the pop an UNEMPHASISED word takes. The fallback
+        # here matches config.yaml deliberately: the other fallbacks on this
+        # object do NOT, and a word built from them before /runtime-config.json
+        # resolves freezes at that amplitude for the rest of the session.
+        "syncPopFloorEnhanced": live_sync.get("sync_pop_floor_enhanced", 0.5),
         "wordLiftEmEnhanced": live_sync.get("word_lift_em_enhanced", 0.045),
         "wordMotionEnhancedMs": live_sync.get("word_motion_enhanced_ms", 500),
         "wordMotionEnhancedEmphasisMs": live_sync.get(

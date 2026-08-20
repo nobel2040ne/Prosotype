@@ -308,18 +308,34 @@ export function captionMotionFor(
   ranges: VoiceTypeRanges,
   expression: number,
   syncPop: number,
+  /** What fraction of the pop an UNEMPHASISED word takes, 0..1.
+     1 is the historic behaviour -- a flat step, the same for every word that
+     pops at all -- and is the default so LEGACY is untouched. */
+  syncPopFloor = 1,
 ): CaptionMotionPlan {
   const target = voiceTypeFor(voice, ranges);
   const amount = clamp(Number.isFinite(expression) ? expression : 1, 0, 1);
+  const voiceScale = 1 + (target.scale - 1) * amount;
+  /* THE POP IS PROPORTIONAL TO EMPHASIS, NOT A FIXED STEP.
+     As a constant it was a binary decision on a continuous quantity: a word
+     0.6% over the gate got exactly what the loudest word in the session got,
+     and a word 0.6% under got nothing at all. That cannot produce the band
+     the reference actually lives in -- across assets/reference_specs 90% of
+     words move and 60% land between 1.02x and 1.15x -- at ANY gate threshold,
+     because the only two reachable values were 1.000 and 1+syncPop. Moving
+     the gate just traded "too many identical big pops" for "79% of words with
+     no size motion", which is how this was found. */
+  const floor = clamp(Number.isFinite(syncPopFloor) ? syncPopFloor : 1, 0, 1);
+  const lean = floor + (1 - floor) * emphasisOf(voiceScale, ranges);
   return {
     rest: {...NORMAL_CAPTION_TYPE},
     voice: {
-      scale: 1 + (target.scale - 1) * amount,
+      scale: voiceScale,
       weight: Math.round(400 + (target.weight - 400) * amount),
       width: Math.round(100 + (target.width - 100) * amount),
     },
     sync: {
-      scale: 1 + Math.max(0, syncPop),
+      scale: 1 + Math.max(0, syncPop) * lean,
     },
   };
 }

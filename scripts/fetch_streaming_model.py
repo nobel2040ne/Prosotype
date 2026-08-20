@@ -32,6 +32,14 @@ CORE_MODELS = (
      "streaming-nemotron35-multi-1120ms"),
 )
 
+# THE KOREAN CAPTURE MODEL IS THE MULTILINGUAL NEMOTRON SINCE 2026-08-21 --
+# `live.languages.ko` pins it to `ko` and shares the weights with the bilingual
+# profile, so `--korean-only` must fetch THAT, not the Zipformer below.
+KOREAN_STREAM_DIR = "streaming-nemotron35-multi-1120ms"
+
+# The 174M causal Zipformer Korean ran until 2026-08-21. Kept fetchable because
+# it is the documented revert target and the subject of `korean_sweep.py`; it is
+# no longer downloaded by a default run's Korean step.
 KOREAN_MODEL_ID = "kangkyu/icefall-asr-ko-streaming-zipformer-174m"
 KOREAN_MODEL_DIR = "streaming-zipformer-ko-174m"
 # chunk-32 is what `live.languages.ko.streaming_files` loads; chunk-16 and
@@ -253,7 +261,9 @@ def main() -> None:
     parser.add_argument(
         "--korean-sweep",
         action="store_true",
-        help="also fetch the chunk-16/64 exports scripts/korean_sweep.py A/Bs",
+        help="fetch the SUPERSEDED 174M Zipformer and its chunk-16/64 exports, "
+             "which scripts/korean_sweep.py A/Bs and which Korean ran on "
+             "before 2026-08-21",
     )
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
@@ -265,8 +275,18 @@ def main() -> None:
     if args.onset_only:
         fetch_onset_model(assets)
         return
-    if args.korean_only or args.korean_sweep:
-        fetch_korean_model(assets, sweep=args.korean_sweep)
+    if args.korean_sweep:
+        # The revert target and the sweep grid, both on the old Zipformer.
+        fetch_korean_model(assets, sweep=True)
+        return
+    if args.korean_only:
+        # Korean shares the bilingual weights now, so this is the same tarball
+        # the `multi` profile uses -- fetching the Zipformer here would leave
+        # `live --lang ko` with no model it can actually load.
+        korean = [entry for entry in CORE_MODELS
+                  if entry[1] == KOREAN_STREAM_DIR]
+        assert len(korean) == 1, korean
+        fetch_tarball_models(assets, tuple(korean), "asr-models")
         return
     fetch_speaker_models(assets)
     fetch_tarball_models(
@@ -283,7 +303,6 @@ def main() -> None:
         "asr-models",
     )
     fetch_sortformer(root, assets)
-    fetch_korean_model(assets)
     fetch_tarball_models(assets, AUDIO_TAGGING, "audio-tagging-models")
     fetch_onset_model(assets)
 

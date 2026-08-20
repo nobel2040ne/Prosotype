@@ -221,6 +221,21 @@ motion:
       sync_pop: 0.15
       # ...AND THE PR FILM DOES NOT RENDER 15%.
       sync_pop_enhanced: 0.076
+      # THE POP IS PROPORTIONAL TO EMPHASIS, NOT A FIXED STEP (2026-08-20).
+      # It used to be a constant: a word either took the whole of
+      # `sync_pop_enhanced` or exactly nothing, decided by `quietWord`. That is
+      # a binary gate on a continuous quantity, and it makes the band the film
+      # actually lives in unreachable -- measured across assets/reference_specs,
+      # 90% of words move and 60% of them land between 1.02x and 1.15x, which a
+      # flat 7.6% step cannot produce at ANY gate threshold. Both failure modes
+      # came from it: too many identical big pops before, and 79% of words with
+      # no size motion at all after the gate was tightened.
+      # This is the floor of that proportion -- what an UNEMPHASISED word gets,
+      # as a fraction of the full pop. The most emphatic word gets 1.0.
+      # Fitted against the reference band distribution (8/60/25/6 percent):
+      # at 0.0 the L1 error is 116, at 0.5 it is 22, and 0.35..0.8 are flat, so
+      # this is the middle of a plateau rather than a sharp optimum.
+      sync_pop_floor_enhanced: 0.5
       # How long the enhanced size cue lasts, end to end.
       word_lift_em_enhanced: 0.16
       word_motion_enhanced_ms: 424
@@ -268,6 +283,14 @@ motion:
       # above on the enhanced clock.
       voice_scale_points_enhanced:
         # REFITTED 2026-08-12 against a CORRECTED film measurement.
+        # THE KNEE MOVED TO 0.41 ON 2026-08-20 AND WAS PUT BACK THE SAME DAY.
+        # Moving it did cut the pop rate 41.5% -> 20.8%, but it bought that by
+        # sending 79% of words to EXACTLY 1.000 -- no size motion at all -- and
+        # the reference does the opposite: measured across the four reference
+        # specs, 90% of words move and only 12% exceed 1.20x. The mass sits in
+        # a SMALL pop, which no knee position can reach while the pop amplitude
+        # is a constant. The knee was the wrong knob; `sync_pop_floor_enhanced`
+        # below is the right one. See docs/MOTION.md.
         - [0.00, 0.000]
         - [0.21, 0.000]
         - [0.30, 0.107]
@@ -342,13 +365,41 @@ live:
     ko:
       label: Korean
       native_label: 한국어
-      description: 6,500-hour Korean causal Zipformer
-      model_label: Korean Zipformer 174M · 640ms
-      streaming_model_dir: assets/streaming-zipformer-ko-174m
-      # The 2026 174M stream is already the most accurate local recognizer
-      # in the measured Korean A/B.
+      description: Nemotron 3.5 multilingual streaming ASR, pinned to Korean
+      model_label: Nemotron 3.5 ASR 0.6B · 1120ms · ko
+      # SWAPPED OFF THE 174M ZIPFORMER 2026-08-21, ON RECALL NOT ACCURACY.
+      # The complaint was that Korean "cannot catch" speech, so the deciding
+      # column is DELETIONS -- units the model never emitted -- which
+      # `scripts/benchmark.py` now reports beside CER. Measured on 50 FLEURS ko
+      # clips, Zipformer -> this model:
+      #   clean            del 3.88% -> 1.47%,  CER  9.64% ->  7.01%
+      #   room-noise 14dB  del 5.35% -> 2.81%,  CER 16.02% -> 12.18%
+      #   fast 1.15x       del 25.70% -> 5.80%, CER 51.85% -> 18.38%
+      # The fast-speech column is why this shipped: FLEURS is slow read
+      # narration and the Zipformer was dropping a QUARTER of all words once
+      # speech ran 15% quicker, which is nearer a real speaking rate.
+      # Full 120-clip clean CER: 10.54% -> 7.52% pinned (7.70% auto-detecting),
+      # deletions 3.01%, coverage 0.974, 0/120 clips silent. It also beats
+      # the 7.94% the Whisper endpoint verifier bought at 8.6x RTF -- in the
+      # stream, keeping native word spans, with no revision lane added.
+      # NOT a fix for a silent stage: under `quiet-device` BOTH models go
+      # silent on ~19-20 of 50 clips, because `InputGain` never calls sub-8dB-
+      # SNR audio speech and so never gains it. That is a microphone problem;
+      # see docs/DECISIONS.md and scripts/mic_probe.py.
+      # REVERTING is this block alone: restore `streaming_model_dir`,
+      # `streaming_files` and drop `streaming_language`. The 174M export is
+      # still on disk under assets/streaming-zipformer-ko-174m.
+      streaming_model_dir: assets/streaming-nemotron35-multi-1120ms
+      # THE LANGUAGE IS PER STREAM, NOT PER RECOGNIZER -- the multilingual
+      # encoder takes a 6th input (`prompt_index`) and `_new_stream` applies it
+      # at EVERY stream creation, including the reset after each endpoint.
+      # PINNED rather than `auto`: naming the language wins on every measured
+      # condition, and on fast speech it is worth 4.2 CER points
+      # (22.58% -> 18.38%) and 1.9 points of deletions (7.72% -> 5.80%).
+      streaming_language: ko
       draft_enabled: false
-      # THE VERIFIER IS ON AGAIN, AND ON A DIFFERENT ENGINE (2026-08-11).
+      # Off, and now for a second reason: the endpoint verifier existed to fix
+      # first-word errors this model already recognizes with full context.
       verifier_enabled: false
       verifier_engine: whisper
       verifier_whisper:
@@ -364,11 +415,6 @@ live:
       # own table. Measured on 120 FLEURS clips.
       decoding_method: greedy_search
       streaming_max_active_paths: 8
-      streaming_files:
-        tokens: tokens.txt
-        encoder: encoder-epoch-99-avg-1-chunk-32-left-128.int8.onnx
-        decoder: decoder-epoch-99-avg-1-chunk-32-left-128.int8.onnx
-        joiner: joiner-epoch-99-avg-1-chunk-32-left-128.int8.onnx
       # The TIMIT first-phone sidecar maps English phones to English
       # letters.
       onset_prefix:

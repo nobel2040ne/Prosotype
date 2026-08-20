@@ -145,6 +145,55 @@ def edit_distance(reference: list[str], hypothesis: list[str]) -> int:
     return previous[-1]
 
 
+def edit_counts(reference: list[str], hypothesis: list[str]) -> dict[str, int]:
+    """Split the edit distance into substitutions, DELETIONS and insertions.
+
+    `edit_distance` returns one number, and one number cannot tell "recognized
+    it wrong" apart from "never emitted it at all". Those are different
+    failures here: a substitution still produces a word with a span, so the
+    caption stage still pops, colours and lays it out, whereas a DELETION is a
+    word the viewer never sees. A model can hold its CER flat while trading the
+    first for the second, which reads as the captions missing speech even
+    though the score did not move.
+
+    Full table rather than `edit_distance`'s rolling row, because the operation
+    mix only exists in the backtrace. The sets here are ~45 units a clip, so
+    the extra memory is irrelevant.
+    """
+
+    rows, columns = len(reference), len(hypothesis)
+    table = [[0] * (columns + 1) for _ in range(rows + 1)]
+    for i in range(rows + 1):
+        table[i][0] = i
+    for j in range(columns + 1):
+        table[0][j] = j
+    for i in range(1, rows + 1):
+        for j in range(1, columns + 1):
+            table[i][j] = min(
+                table[i][j - 1] + 1,
+                table[i - 1][j] + 1,
+                table[i - 1][j - 1] + (reference[i - 1] != hypothesis[j - 1]),
+            )
+
+    counts = {"hits": 0, "sub": 0, "delete": 0, "insert": 0}
+    i, j = rows, columns
+    while i > 0 or j > 0:
+        if i > 0 and j > 0:
+            cost = reference[i - 1] != hypothesis[j - 1]
+            if table[i][j] == table[i - 1][j - 1] + cost:
+                counts["sub" if cost else "hits"] += 1
+                i, j = i - 1, j - 1
+                continue
+        # A reference unit with no hypothesis partner: never emitted.
+        if i > 0 and table[i][j] == table[i - 1][j] + 1:
+            counts["delete"] += 1
+            i -= 1
+        else:
+            counts["insert"] += 1
+            j -= 1
+    return counts
+
+
 def has_digits(text: str) -> bool:
     """Digit-vs-spelled-out is a formatting convention, not a recognition error.
 

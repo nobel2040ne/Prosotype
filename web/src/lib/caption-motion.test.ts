@@ -65,6 +65,43 @@ test("2.2.3 is a constant 15% growth on every voice", () => {
   assert.deepEqual(loud.sync, quiet.sync);
 });
 
+test("the enhanced pop is proportional to emphasis, and never zero", () => {
+  // THE BAND THE REFERENCE LIVES IN IS UNREACHABLE WITH A FLAT STEP.
+  // Measured across assets/reference_specs, 90% of words move and 60% land
+  // between 1.02x and 1.15x. A constant pop can only ever produce two values,
+  // so no gate threshold reproduces that -- which is why moving the gate
+  // traded forty identical big pops for 79% of words not moving at all.
+  const FLOOR = 0.5;
+  const quiet = captionMotionFor(
+    {loudness: 0, pitchHz: 250, texture: 1}, RANGES, 1, 0.15, FLOOR,
+  );
+  const loud = captionMotionFor(
+    {loudness: 1, pitchHz: 80, texture: 0}, RANGES, 1, 0.15, FLOOR,
+  );
+
+  // An unemphasised word still moves -- the film's own rule is "every word
+  // pops", and what it varies is by how much.
+  assert.ok(quiet.sync.scale > 1,
+    `an unemphasised word must still pop, got ${quiet.sync.scale}`);
+  // ...but by strictly less than an emphatic one.
+  assert.ok(loud.sync.scale > quiet.sync.scale,
+    `emphasis must buy a bigger pop: ${loud.sync.scale} vs ${quiet.sync.scale}`);
+  // The floor is exactly that: the quiet word takes FLOOR of the full pop.
+  assert.ok(Math.abs(quiet.sync.scale - (1 + 0.15 * FLOOR)) < 1e-9);
+  // And the ceiling is unchanged, so the loudest word renders as it always did.
+  assert.ok(loud.sync.scale <= 1 + 0.15 + 1e-9);
+
+  // Omitting the floor must keep LEGACY bit-identical: a flat step.
+  const legacyQuiet = captionMotionFor(
+    {loudness: 0, pitchHz: 250, texture: 1}, RANGES, 1, 0.15,
+  );
+  const legacyLoud = captionMotionFor(
+    {loudness: 1, pitchHz: 80, texture: 0}, RANGES, 1, 0.15,
+  );
+  assert.deepEqual(legacyQuiet.sync, {scale: 1.15});
+  assert.deepEqual(legacyLoud.sync, legacyQuiet.sync);
+});
+
 test("expression changes voice shape without weakening the synchronization cue", () => {
   const voice = {loudness: 1, pitchHz: 80, texture: 0};
   const off = captionMotionFor(voice, RANGES, 0, 0.15);

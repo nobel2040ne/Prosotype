@@ -90,6 +90,10 @@ export interface RuntimeConfig {
   syncPop: number;
   /** 2.2.3 on the enhanced clock -- measured off the PR film. */
   syncPopEnhanced: number;
+  /** The pop is PROPORTIONAL to emphasis; this is what an unemphasised word
+     gets, as a fraction of the full pop. A flat step cannot produce the
+     1.02-1.15x band that 60% of the reference's words sit in. */
+  syncPopFloorEnhanced: number;
   /** How far an ordinary word lifts, em -- the film's default treatment. */
   wordLiftEmEnhanced: number;
   /** The enhanced size cue's whole window, ms, for an unemphasised word. */
@@ -175,6 +179,7 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   wordMotionPopMaxMs: 700,
   syncPop: 0.15,
   syncPopEnhanced: 0.55,
+  syncPopFloorEnhanced: 0.5,
   wordLiftEmEnhanced: 0.045,
   wordMotionEnhancedMs: 500,
   wordMotionEnhancedEmphasisMs: 0,
